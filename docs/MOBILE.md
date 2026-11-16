@@ -9,14 +9,17 @@
 
 ## 一、安装主机端
 
-两种方式任选：
+三种方式任选，详见 [README 的「安装」](../README.md#安装)：
 
 ```bash
-# 方式一：安装包（推荐）
-双击 dist/静静-0.2.0.pkg
+# 方式一：一条命令装 App（Apple Silicon）
+curl -fsSL https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.sh | bash -s -- --app
 
-# 方式二：解压 zip，把「静静.app」拖进「应用程序」
-unzip dist/静静-0.2.0.zip
+# 方式二：下载 Release 里的 jingjing-<版本>-macos-arm64.pkg 双击安装
+# 方式三：解压同名 zip，把「静静.app」拖进「应用程序」
+
+# 只用命令行版（macOS / Linux，不需要 sudo，缺 Node 会自动下载）
+curl -fsSL https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.sh | bash
 ```
 
 这个包没有经过 Apple 公证，第一次打开可能被 Gatekeeper 拦住：

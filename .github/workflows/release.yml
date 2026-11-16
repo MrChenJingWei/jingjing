@@ -12,6 +12,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,6 +22,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+
+      - name: 读取版本号
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: 校验 tag 与 package.json 一致
         if: startsWith(github.ref, 'refs/tags/v')
@@ -45,8 +51,50 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          gh release create "v$VERSION" \
-            "dist/jingjing-app-$VERSION.zip" \
-            "dist/latest.json" \
-            --title "v$VERSION" \
-            --generate-notes
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" \
+              "dist/jingjing-app-$VERSION.zip" "dist/latest.json" "scripts/install.sh" --clobber
+          else
+            gh release create "v$VERSION" \
+              "dist/jingjing-app-$VERSION.zip" \
+              "dist/latest.json" \
+              "scripts/install.sh" \
+              --title "v$VERSION" \
+              --generate-notes
+          fi
+
+  # macOS App 只能在 macOS 上打（swiftc + pkgbuild），单独一个 job。
+  macos-app:
+    needs: release
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 运行测试
+        run: npm test
+
+      - name: 构建 App / pkg / zip
+        run: bash packaging/macos/build.sh
+
+      - name: 生成 SHA256SUMS
+        run: |
+          VERSION="${{ needs.release.outputs.version }}"
+          cd dist
+          shasum -a 256 "jingjing-$VERSION-macos-arm64.pkg" "jingjing-$VERSION-macos-arm64.zip" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: 上传到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.release.outputs.version }}"
+          gh release upload "v$VERSION" \
+            "dist/jingjing-$VERSION-macos-arm64.pkg" \
+            "dist/jingjing-$VERSION-macos-arm64.zip" \
+            "dist/SHA256SUMS" \
+            --clobber

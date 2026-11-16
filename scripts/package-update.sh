@@ -24,7 +24,7 @@ rsync -a \
 
 for required in server.js package.json src public plugins workers; do
   if [[ ! -e "$STAGE/app/$required" ]]; then
-    echo "升级包缺少 $required，打包中止" >&2
+    echo "升级包缺少 ${required}，打包中止" >&2
     exit 1
   fi
 done

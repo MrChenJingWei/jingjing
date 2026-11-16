@@ -34,18 +34,60 @@
 
 ---
 
-## 快速开始
+## 安装
 
-要求：Node.js **23.4+**（用到了内置的 `node:sqlite`，推荐 24），不需要安装任何依赖。
+三种方式任选一种。装完都能用同一个界面、同一套数据格式。
+
+### 1. macOS App（推荐：菜单栏常驻 + 原生窗口 + 系统通知）
+
+Apple Silicon（M 系列）。一条命令装好：
 
 ```bash
+curl -fsSL https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.sh | bash -s -- --app
+```
+
+也可以直接下载 Release 里的 `jingjing-<版本>-macos-arm64.pkg` 双击安装，或解压对应的 zip 把「静静.app」拖进「应用程序」。
+
+装好后数据在 `~/Library/Application Support/Jingjing/`，配对码在同目录的 `access-key`。安装包没有 Apple 公证，第一次打开需要右键 →「打开」。
+
+### 2. 命令行版（macOS / Linux）
+
+```bash
+curl -fsSL https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.sh | bash
+```
+
+脚本会读取最新 Release、校验 sha256、装到用户目录（macOS 默认 `~/Library/Application Support/Jingjing/cli`，Linux 默认 `~/.local/share/jingjing`）；本机没有 Node.js 23.4+ 时自动下载官方 Node 24，所以**不需要预装 Node，也不需要 sudo**。
+
+装好后：
+
+```bash
+jingjing                    # 前台启动，然后打开 http://127.0.0.1:7777
+jingjing url                # 打印带配对码的地址
+jingjing service install    # macOS：装成 LaunchAgent，开机自启、崩溃自动拉起
+jingjing status             # 看服务是否在跑
+```
+
+数据目录是 `<安装目录>/data`；脚本会提示把 `<安装目录>/bin` 加进 PATH，之后就能直接用 `jingjing`。
+
+常用参数：`--version v0.3.1` 装指定版本，`--prefix <目录>` 换安装位置，`--port` / `--host` 改监听，`--dry-run` 只演练，`--no-node` 禁止自动下载 Node。完整说明见 `bash scripts/install.sh --help`。
+
+### 3. 从源码跑
+
+要求 Node.js **23.4+**（用到了内置的 `node:sqlite`，推荐 24），不需要安装任何依赖。
+
+```bash
+git clone https://github.com/MrChenJingWei/jingjing.git
 cd jingjing
 npm start
 ```
 
 打开 <http://127.0.0.1:7777>。
 
-第一次打开需要配对码，它保存在 `data/access-key`：
+---
+
+## 第一次使用
+
+第一次打开需要配对码，它保存在数据目录的 `access-key`（从源码跑就是 `data/access-key`，命令行版是 `<安装目录>/data/access-key`）：
 
 ```bash
 cat data/access-key
@@ -166,9 +208,9 @@ plugins/
 
 ---
 
-## 安装主机 App（macOS）
+## 主机 App（macOS）
 
-双击 `dist/静静-<版本>.pkg` 安装，或解压 `dist/静静-<版本>.zip` 把 App 拖进「应用程序」。
+安装方式见上面「安装」：从 Release 下载 `jingjing-<版本>-macos-arm64.pkg` 双击安装，或运行 `install.sh --app` 一条命令装好。目前只发布 Apple Silicon 的 App 包，Intel Mac 用命令行版。
 
 打开后菜单栏出现「静静」，服务自动启动，第一次会自动打开静静的窗口并完成配对。菜单里还可以显示/复制配对码、打开手机安装二维码、切换「仅本机访问」、开机时启动、重启和看日志。
 
@@ -179,6 +221,14 @@ plugins/
 - **手机安装**：菜单栏「手机安装二维码…」，手机扫码 → 自动配对 → Chrome 里「安装应用」。iPhone 用 Safari「添加到主屏幕」。
 
 App 没有经过 Apple 公证，第一次打开需要右键 →「打开」。完整步骤、Tailscale 和排错见 [docs/MOBILE.md](docs/MOBILE.md)。
+
+自己打安装包（需要 Xcode 命令行工具）：
+
+```bash
+bash packaging/macos/build.sh
+# 产物：dist/jingjing-<版本>-macos-<架构>.pkg / .zip
+#      dist/jingjing-app-<版本>.zip、dist/latest.json（在线升级用）
+```
 
 开发时可以直接用仓库里的代码构建并运行 App（默认用仓库的 `data/` 和 7787 端口，不影响已安装的静静）：
 
@@ -218,11 +268,17 @@ git tag v0.3.1
 git push origin main --tags
 ```
 
-工作流 [.github/workflows/release.yml](.github/workflows/release.yml) 会先跑测试，再生成 `dist/jingjing-app-<版本>.zip` 和 `dist/latest.json`（含 sha256），作为 Release 附件发布。本地想验证发布产物：
+工作流 [.github/workflows/release.yml](.github/workflows/release.yml) 会先跑测试，然后分两个 job 发布：
+
+- `release`（ubuntu）：`dist/jingjing-app-<版本>.zip`、`dist/latest.json`（含 sha256）、`scripts/install.sh`；
+- `macos-app`（macos-14 / arm64）：`jingjing-<版本>-macos-arm64.pkg`、同名 zip、`SHA256SUMS`。
+
+本地想验证发布产物：
 
 ```bash
 npm test
-bash scripts/package-update.sh   # 产物在 dist/
+bash scripts/package-update.sh   # 在线升级包：dist/
+bash packaging/macos/build.sh    # App + pkg + zip（需要 macOS）
 ```
 
 ### 用镜像或本地模拟源调试

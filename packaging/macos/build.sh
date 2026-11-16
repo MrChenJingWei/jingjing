@@ -20,6 +20,18 @@ fi
 
 VERSION="$("$NODE_BIN" -p "require('$ROOT/package.json').version")"
 
+# 产物名用 ASCII（Release 下载链接要能被脚本直接拼出来），App 本身仍叫「静静.app」。
+case "$(uname -m)" in
+  arm64) PKG_ARCH="arm64" ;;
+  x86_64) PKG_ARCH="x86_64" ;;
+  *)
+    echo "不支持的架构：$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+PKG="$DIST/jingjing-$VERSION-macos-$PKG_ARCH.pkg"
+ZIP="$DIST/jingjing-$VERSION-macos-$PKG_ARCH.zip"
+
 rm -rf "$BUILD"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/app" "$APP/Contents/Resources/runtime" "$DIST"
 
@@ -75,16 +87,16 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/静静.app"
 pkgbuild --component "$STAGE/静静.app" --install-location /Applications \
-  --identifier ai.jingjing.host --version "$VERSION" "$DIST/静静-$VERSION.pkg" >/dev/null
-ditto -c -k --sequesterRsrc --keepParent "$STAGE/静静.app" "$DIST/静静-$VERSION.zip"
+  --identifier ai.jingjing.host --version "$VERSION" "$PKG" >/dev/null
+ditto -c -k --sequesterRsrc --keepParent "$STAGE/静静.app" "$ZIP"
 rm -rf "$STAGE"
 
 echo "==> 生成在线升级包"
 bash "$ROOT/scripts/package-update.sh"
 
 echo ""
-echo "完成："
+echo "完成（macOS ${PKG_ARCH}）："
 echo "  App:  $APP"
-echo "  PKG:  $DIST/静静-$VERSION.pkg"
-echo "  ZIP:  $DIST/静静-$VERSION.zip"
-du -sh "$APP" "$DIST/静静-$VERSION.pkg" "$DIST/静静-$VERSION.zip"
+echo "  PKG:  $PKG"
+echo "  ZIP:  $ZIP"
+du -sh "$APP" "$PKG" "$ZIP"

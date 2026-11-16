@@ -3,24 +3,27 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NODE_BIN="$(command -v node || true)"
-if [[ -z "$NODE_BIN" ]]; then
+# 用安装时已经确定好的 Node（命令行版可能是下载到 prefix/runtime 里的那份）。
+NODE_BIN="${JINGJING_NODE:-$(command -v node || true)}"
+if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then
   echo "找不到 node。请先安装 Node.js 24（或 23.4+）。" >&2
   exit 1
 fi
 
 NODE_VERSION="$("$NODE_BIN" -v | sed 's/^v//')"
 NODE_MAJOR="${NODE_VERSION%%.*}"
-if (( NODE_MAJOR < 23 )); then
-  echo "当前 Node 是 $NODE_VERSION，静静需要 23.4+。" >&2
+NODE_MINOR="$(printf '%s' "$NODE_VERSION" | cut -d. -f2)"
+if (( NODE_MAJOR < 23 || (NODE_MAJOR == 23 && NODE_MINOR < 4) )); then
+  echo "当前 Node 是 ${NODE_VERSION}，静静需要 23.4+。" >&2
   exit 1
 fi
 
 HOST="${JINGJING_HOST:-0.0.0.0}"
 PORT="${JINGJING_PORT:-7777}"
+DATA_DIR="${JINGJING_DATA_DIR:-$ROOT/data}"
 LABEL="${JINGJING_LABEL:-com.jingjing.server}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG_DIR="$ROOT/data/logs"
+LOG_DIR="$DATA_DIR/logs"
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 
 xml_escape() {
@@ -46,6 +49,8 @@ PLIST_CONTENT="<?xml version=\"1.0\" encoding=\"UTF-8\"?>
     <string>$(xml_escape "$HOST")</string>
     <key>JINGJING_PORT</key>
     <string>$(xml_escape "$PORT")</string>
+    <key>JINGJING_DATA_DIR</key>
+    <string>$(xml_escape "$DATA_DIR")</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$(xml_escape "$HOME/.local/bin")</string>
   </dict>
@@ -77,7 +82,7 @@ launchctl kickstart -k "gui/$(id -u)/$LABEL"
 
 sleep 1
 echo ""
-echo "静静已经装成常驻服务（$LABEL）。"
+echo "静静已经装成常驻服务（${LABEL}）。"
 echo "  本机：   http://127.0.0.1:$PORT"
 if [[ "$HOST" == "0.0.0.0" ]]; then
   LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
@@ -92,4 +97,4 @@ if [[ "$HOST" == "0.0.0.0" ]]; then
 fi
 echo "  日志：   $LOG_DIR/server.log"
 echo ""
-echo "停止并卸载：bash scripts/uninstall-service.sh"
+echo "停止并卸载：bash \"$ROOT/scripts/uninstall-service.sh\""
