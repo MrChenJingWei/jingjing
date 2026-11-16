@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectNeed, pickWorker, namedWorker } from '../src/worker-routing.js';
+import { detectNeed, pickWorker, namedWorker, toolSignal, handoffWorker } from '../src/worker-routing.js';
 
 const codeAbilities = ['code', 'write-file', 'manage-files', 'text'];
 const builtins = [
@@ -75,4 +75,23 @@ test('一句话里点名了哪个可用的 Worker', () => {
   assert.equal(namedWorker('用 codex 跑一下', builtins), null, '点名的 Worker 本机不可用');
   assert.equal(namedWorker('先放着，下午再说', builtins), null);
   assert.equal(namedWorker('', builtins), null);
+});
+
+test('toolSignal：写了要用 MCP / 命令行工具才算，单词里带这几个字母的不算', () => {
+  assert.deepEqual(toolSignal('使用tapd-mcp,或者tapd-cli查看进度'), { need: 'code', term: 'mcp' });
+  assert.deepEqual(toolSignal('用 tapd-cli 查一下'), { need: 'code', term: 'cli' });
+  assert.deepEqual(toolSignal('在命令行里跑一下'), { need: 'code', term: '命令行' });
+  assert.equal(toolSignal('client 那边说进度正常'), null);
+  assert.equal(toolSignal('蓝马的4.5需求做的怎么样了'), null);
+  assert.equal(toolSignal(''), null);
+});
+
+test('handoffWorker：拍板选项是「改用 / 交给 X」才算换人，「我去 X 里查」不算', () => {
+  assert.equal(handoffWorker('改用 Claude Code 在工作区调 tapd 工具查', builtins)?.id, 'claude');
+  assert.equal(handoffWorker('改用「Claude Code」去查', builtins)?.id, 'claude');
+  assert.equal(handoffWorker('交给 claude 处理', builtins)?.id, 'claude');
+  assert.equal(handoffWorker('我去 Claude Code 查完贴给你', builtins), null);
+  assert.equal(handoffWorker('我去TAPD查了贴给你', builtins), null);
+  assert.equal(handoffWorker('改用 codex 跑一下', builtins), null, '点名的 Worker 本机不可用');
+  assert.equal(handoffWorker('改成先发草稿', builtins), null, '没点名 Worker');
 });

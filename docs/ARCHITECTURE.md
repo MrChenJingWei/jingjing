@@ -176,7 +176,7 @@ export async function test(config) { return { ok: true, detail: '...' }; }
 
 **外部内容不能决定交给谁**：条目是外人写的（邮件、群消息、Webhook），所以派 Worker 只认主人的配置——工作流程指定的 Worker、分配规则，都没命中就交给最便宜的文本 Worker。消息里点名的 Worker、模型挑的 Worker、按文字推断出的能力都不算；模型只能在主人配好的工作流程里判断属于哪个。只有主人在对话里（Web、配对的 Telegram）才能点名 Worker。
 
-外部消息点名了本机可用的 Worker、或含有默认 Worker 做不了的强能力信号（代码、仓库、生成文件），而流程和规则都没命中时，不直接降级成文字回复：`createTask({ hold })` 建好任务就停在一条 `kind = 'routing'` 的审批上（`approvals.meta.choices` 记着每个选项交给谁、要不要顺手建规则）。主人选了才改派并入队；选「以后这类都交给它」由 `ensureWorkerRule()` 建一条限定这个来源的分配规则（同样的规则已存在就复用）。这类审批选的是 Worker，不是给 Worker 的答复，所以不传给 Worker、不算拍板次数，也不会被记进习惯。
+外部消息点名了本机可用的 Worker、或含有默认 Worker 做不了的强能力信号（代码、仓库、生成文件、MCP / 命令行工具；命中的流程没指定 Worker 时也看流程步骤），而流程和规则都没指定 Worker 时，不直接降级成文字回复：`createTask({ hold })` 建好任务就停在一条 `kind = 'routing'` 的审批上（`approvals.meta.choices` 记着每个选项交给谁、要不要顺手建规则）。主人选了才改派并入队；选「以后这类都交给它」由 `ensureWorkerRule()` 建一条限定这个来源的分配规则（同样的规则已存在就复用）。这类审批选的是 Worker，不是给 Worker 的答复，所以不传给 Worker、不算拍板次数，也不会被记进习惯。
 
 模型不可用时退回关键词规则；插件抛错或超时只影响它自己，不会中断其他来源或调度器。
 

@@ -18,6 +18,13 @@ function capableWorkers(workers) {
   return names.length ? names.join(' / ') : '具备文件或代码能力的 Worker';
 }
 
+// 能执行命令、调 MCP 的 Worker。选项写成「改用「X」…」时，用户一选静静就把任务交给它。
+function handoffHint(workers) {
+  const names = workers.filter((w) => w.abilities?.includes('code')).map((w) => `「${w.label}」`);
+  if (!names.length) return '';
+  return `要查外部系统、调 MCP 或命令行工具才能完成时，不要反复向用户要数据：提问，并给出以「改用」开头的选项，比如「改用${names[0]}去查」——用户选了，静静会把任务交给它。能做这些的有：${names.join(' / ')}。`;
+}
+
 export async function execute(task, ctx) {
   // 只看用户的原始请求：分隔线之后是静静附加的来源信息或工作流程步骤。
   const promptText = String(task.prompt || task.title || '').split(/\n-{3,}\n/)[0];
@@ -58,6 +65,7 @@ export async function execute(task, ctx) {
     '你在执行一个已经派给你的任务。直接交付结果，不要说「作为一个 AI」。',
     '你是「问答」Worker，只能处理和回答文本；你没有读写文件、执行命令、访问网络或修改系统的能力。',
     `不要声称「已保存」「已写入」「已执行」「已修改」任何文件或系统；需要落盘时告诉用户改用 ${capableWorkers(ctx.workers)}。`,
+    handoffHint(ctx.workers),
     '不要描述系统内部操作，不要声称「任务板已更新」「已写入数据库」；只交付内容本身。',
     `当前时间：${new Date().toLocaleString('zh-CN', { hour12: false })}。`,
     '需要用户拍板才能继续时，把问题写在最后，并单独输出一行：',

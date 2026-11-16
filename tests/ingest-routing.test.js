@@ -142,6 +142,29 @@ test('接了模型：模型挑的 Worker 不算；流程指定的 Worker 优先�
   }
 });
 
+test('命中的流程没指定 Worker，但步骤里写了用 MCP / 命令行工具：先问主人交给谁，提示把 Worker 写进流程', async () => {
+  const flow = workflows.createWorkflow({ name: '看进度', when: '进度', steps: '使用tapd-mcp,或者tapd-cli查看进度' });
+  try {
+    const held = await taskOf([item('@静静 请回复一下蓝马4.5需求的进度')]);
+    assert.equal(held.workflow_id, flow.id);
+    assert.equal(held.status, 'waiting_approval', '不会悄悄交给只能回文字的 Worker');
+    assert.equal(held.worker, 'cheap-text');
+    const approval = scheduler.getApproval(held.approval_id);
+    assert.equal(approval.kind, 'routing');
+    assert.match(approval.question, /流程「看进度」的步骤里提到「mcp」，看起来要读写代码、执行命令/);
+    assert.match(approval.question, /在流程「看进度」的头部加一行 worker: tool-agent/);
+    // 词在流程里、不在消息里：不提供「以后这类都交给」（按这个词建的规则匹配不到以后的消息）。
+    assert.deepEqual(approval.options, ['交给「tool-agent」', '只用「cheap-text」回文字', '不处理']);
+    scheduler.approve(approval.id, 0);
+    assert.equal(scheduler.getTask(held.id).worker, 'tool-agent');
+    scheduler.cancel(held.id);
+  } finally {
+    workflows.deleteWorkflow(flow.id);
+  }
+  // 没命中流程、消息里也没有工具：照旧交给文本 Worker。
+  assert.equal((await taskOf([item('请回复一下周报')])).worker, 'cheap-text');
+});
+
 test('判断途中同一条再进来（比如发送方重发）只建一个任务；出错时放掉占位，下次还能处理', async () => {
   const model = fakeModel();
   model.delay = 80;

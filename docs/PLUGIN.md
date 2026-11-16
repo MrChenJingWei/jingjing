@@ -578,6 +578,7 @@ curl -X POST "$JINGJING_REPORT_URL" \
 
 - 返回 `needs_approval` 后任务挂起、Worker 退出；用户拍板后会重新调用 `execute`，`ctx.resume` 里带着选择。
 - `approval.custom: true` 时，拍板卡片上会多一个输入框，用户可以不选选项、直接写自己的决定（`ctx.parseApproval` 解析出来的审批默认开启）。按选项下标做不同操作的 Worker（比如「归档 / 取消 / 列清单」）不要开，免得自己写的决定落进默认分支。
+- 换一个 Worker 来做：用户自己写的决定里点名了另一个可用 Worker（按它的 `keywords`），或者选了以「改用 / 换成 / 交给 …」开头、点名了可用 Worker 的选项（比如「改用 Claude Code 去查」），任务会改派给它从头做，`ctx.resume` 里带着这个选择。「我去 Claude Code 里查」这类是让用户自己去用，不会改派。
 - 抛出异常或返回非法结果都按 `failed` 处理，不会卡住队列。
 - 取消和超时由调度器负责：`signal` 触发后调度器立刻释放槽位，**之后 `execute` 返回的任何结果都会被丢弃**。请尽快响应 `signal`，尤其是自己启动的子进程（用 `ctx.exec` 就不用操心）。
 

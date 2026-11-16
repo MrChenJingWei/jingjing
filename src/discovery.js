@@ -3,7 +3,7 @@ import { bus } from './events.js';
 import * as plugins from './plugins.js';
 import { matchWorkerRule } from './worker-rules.js';
 import { defaultWorker, workerCatalog } from './workers.js';
-import { namedWorker, needSignal, cheapestWith } from './worker-routing.js';
+import { namedWorker, needSignal, toolSignal, cheapestWith } from './worker-routing.js';
 import * as workflows from './workflows.js';
 import { postAssistant } from './router.js';
 import { chat as llmChat } from './llm.js';
@@ -78,17 +78,19 @@ const ABILITY_LABEL = {
 const escapeRegExp = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * 外部消息没命中工作流程和分配规则，但点名了一个本机可用的 Worker（按它声明的 keywords），
- * 或明显需要默认 Worker 没有的能力（只认强信号：代码、仓库、生成文件……）：
+ * 外部消息没命中分配规则、命中的工作流程也没指定 Worker，但点名了一个本机可用的 Worker（按它声明的 keywords），
+ * 或明显需要默认 Worker 没有的能力（只认强信号：代码、仓库、生成文件、MCP / 命令行工具……）：
  * 不替外人做主，也不悄悄降级成一段文字回复——任务建好先停下，问主人交给谁。全部按关键词判断，不靠模型。
+ * 命中的流程步骤是主人自己写的，也一起看（比如步骤写了「用 tapd-mcp 查」）。
  * 返回给 createTask 的 hold，没有要问的返回 null。
  */
-function routingHold({ id, plugin, item, rawText, title, fallback, catalog }) {
+function routingHold({ id, plugin, item, rawText, title, fallback, catalog, flow = null }) {
   const usable = catalog.filter((w) => w.available !== false);
   const fallbackWorker = usable.find((w) => w.id === fallback) || null;
   let candidate = null;
   let reason = '';
   let rule = null;
+  let tip = '';
   const sourceLabel = plugin.label || plugin.manifest.name;
   const named = namedWorker(rawText, usable);
   if (named && named.id !== fallback) {
@@ -96,23 +98,34 @@ function routingHold({ id, plugin, item, rawText, title, fallback, catalog }) {
     reason = `点名要用「${named.label}」`;
     rule = { name: `${sourceLabel}里点名「${named.label}」的消息`, pattern: named.keywords };
   } else {
-    const signal = needSignal(rawText, { decided: true });
+    const steps = flow?.steps || '';
+    const fromMessage = needSignal(rawText, { decided: true }) || toolSignal(rawText);
+    const fromFlow = fromMessage ? null : needSignal(steps, { decided: true }) || toolSignal(steps);
+    const signal = fromMessage || fromFlow;
     if (signal && !(fallbackWorker?.abilities || []).includes(signal.need)) {
       const able = cheapestWith(usable, signal.need);
       if (able && able.id !== fallback) {
         candidate = able;
-        reason = `提到「${signal.term}」，看起来要${ABILITY_LABEL[signal.need] || signal.need}`;
-        rule = { name: `${sourceLabel}里提到「${signal.term}」的消息`, pattern: escapeRegExp(signal.term) };
+        const need = ABILITY_LABEL[signal.need] || signal.need;
+        if (fromFlow) {
+          // 词在流程步骤里、不在消息里：按这个词建分配规则匹配不到以后的消息，「以后都这样」得写进流程。
+          reason = `流程「${flow.name}」的步骤里提到「${signal.term}」，看起来要${need}`;
+          tip = `\n想以后都这样，在流程「${flow.name}」的头部加一行 worker: ${able.id}`;
+        } else {
+          reason = `提到「${signal.term}」，看起来要${need}`;
+          rule = { name: `${sourceLabel}里提到「${signal.term}」的消息`, pattern: escapeRegExp(signal.term) };
+        }
       }
     }
   }
   if (!candidate) return null;
 
-  const options = [`交给「${candidate.label}」`, `以后这类都交给「${candidate.label}」`];
-  const choices = [
-    { worker: candidate.id },
-    { worker: candidate.id, rule: { ...rule, name: rule.name.slice(0, 80), source: `plugin:${id}` } }
-  ];
+  const options = [`交给「${candidate.label}」`];
+  const choices = [{ worker: candidate.id }];
+  if (rule) {
+    options.push(`以后这类都交给「${candidate.label}」`);
+    choices.push({ worker: candidate.id, rule: { ...rule, name: rule.name.slice(0, 80), source: `plugin:${id}` } });
+  }
   if (fallbackWorker) {
     const textOnly = (fallbackWorker.abilities || []).every((ability) => ability === 'text');
     options.push(textOnly ? `只用「${fallbackWorker.label}」回文字` : `改用「${fallbackWorker.label}」`);
@@ -125,7 +138,7 @@ function routingHold({ id, plugin, item, rawText, title, fallback, catalog }) {
     candidate,
     reason,
     hold: {
-      question: `「${sourceLabel}」来的「${title}」${reason}。外部消息不能自己指定 Worker，要交给谁？${said ? `\n原话：${said}` : ''}`,
+      question: `「${sourceLabel}」来的「${title}」${reason}。外部消息不能自己指定 Worker，要交给谁？${said ? `\n原话：${said}` : ''}${tip}`,
       options,
       choices,
       progress: `等你决定交给谁（${reason}）`
@@ -406,7 +419,7 @@ async function processFresh(id, plugin, fresh, verb) {
     const fallback = defaultWorker();
     const routing = flowWorker || matchedRule
       ? null
-      : routingHold({ id, plugin, item, rawText, title: decision.title || item.title, fallback, catalog });
+      : routingHold({ id, plugin, item, rawText, title: decision.title || item.title, fallback, catalog, flow });
     const worker = flowWorker?.id || matchedRule?.worker || fallback || routing?.candidate.id || null;
     const flowNote = flow?.worker && !flowWorker ? `（流程指定的「${flow.worker}」现在不可用）` : '';
     // 要先问主人交给谁的，不合并进已有任务：合并进去这个请求就被默默交给了别的 Worker。

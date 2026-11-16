@@ -53,6 +53,24 @@ export function needSignal(text, { decided = false } = {}) {
   return null;
 }
 
+// 要调外部工具（MCP 服务、命令行工具）才能做：只有能执行命令的 Worker（code 能力）做得了。
+const TOOL_RE = /\bmcp\b|\bcli\b|命令行/i;
+
+/** 文本里写了要用 MCP / 命令行工具（比如「用 tapd-mcp 查」）：返回 { need: 'code', term }，没有返回 null。 */
+export function toolSignal(text) {
+  const hit = String(text || '').match(TOOL_RE);
+  return hit ? { need: 'code', term: hit[0] } : null;
+}
+
+// Worker 给的拍板选项以「改用 / 换成 / 交给 …」开头，说的是换一个 Worker 来做；
+// 「我去 Claude Code 里查」是让用户自己去用，不算。
+const HANDOFF_RE = /^\s*(?:改用|换用|换成|改派给?|转交给?|交给|让)/;
+
+/** 拍板选项是不是「换成某个可用 Worker 来做」，是的话返回那个 Worker，否则 null。 */
+export function handoffWorker(option, workers = []) {
+  return HANDOFF_RE.test(String(option || '')) ? namedWorker(option, workers) : null;
+}
+
 /** 能做这件事（具备 ability）的可用 Worker 里开销最低的一个。 */
 export function cheapestWith(workers, ability) {
   return cheapest(workers.filter((w) => w.available !== false), (w) => can(w, ability));

@@ -4,7 +4,7 @@ import * as memory from './memory.js';
 import * as lifecycle from './lifecycle.js';
 import * as workflows from './workflows.js';
 import { runWorker, availability, isWorker, workerLimits, workerRecovery, workerLabelOf, defaultWorker, reportUrl, workerCatalog, terminateChildren } from './workers.js';
-import { namedWorker } from './worker-routing.js';
+import { namedWorker, handoffWorker } from './worker-routing.js';
 import { ensureWorkerRule, listWorkerRules } from './worker-rules.js';
 import * as channels from './channels.js';
 
@@ -635,8 +635,9 @@ export function approve(approvalId, choice, { by = 'user', answer = '' } = {}) {
   }
 
   // 自己写的决定里点名了另一个可用的 Worker（比如「用 claude 通过 tapd 查」）：改派给它接着做。
-  // 只认用户自己的话，不认 Worker 给的选项——选项里提到别的工具，多半是建议用户自己去用。
-  const named = custom ? namedWorker(custom, workerCatalog()) : null;
+  // Worker 给的选项只认明确换人的说法（「改用 Claude Code 去查」）；「我去 Claude Code 里查」是让用户自己去用，不算。
+  const catalog = workerCatalog();
+  const named = custom ? namedWorker(custom, catalog) : handoffWorker(approval.options[index], catalog);
   const handoff = named && named.id !== task.worker ? named : null;
   const payload = { ...(getTask(task.id)?.resume_payload || {}) };
   if (handoff) {

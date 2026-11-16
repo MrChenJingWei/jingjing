@@ -251,10 +251,10 @@ test('拍板时可以不选选项、自己写决定；Worker 没开这个口子�
   assert.equal(scheduler.getTask(fixed.id).result, '不动');
 });
 
-test('自己写的决定里点名了别的 Worker：改派给它从头接着做；Worker 给的选项里提到不算', async () => {
+test('自己写的决定里点名了别的 Worker：改派给它从头接着做；Worker 给的选项只认「改用 X」', async () => {
   fakeWorker('asker2', {}, async (task, ctx) => (ctx.resume
     ? { status: 'done', summary: 'asker2 接着做了' }
-    : { status: 'needs_approval', summary: '拿不到数据', sessionId: 's-asker2', approval: { question: '数据怎么拿？', options: ['我自己去 fancy 里查'], custom: true } }));
+    : { status: 'needs_approval', summary: '拿不到数据', sessionId: 's-asker2', approval: { question: '数据怎么拿？', options: ['我自己去 fancy 里查', '改用 fancy 去查'], custom: true } }));
   const handed = [];
   fakeWorker('fancy', { abilities: ['text', 'code'], keywords: 'fancy' }, async (task, ctx) => {
     handed.push({ resume: ctx.resume, sessionId: ctx.sessionId });
@@ -272,13 +272,25 @@ test('自己写的决定里点名了别的 Worker：改派给它从头接着做�
   const edited = scheduler.taskEvents(task.id).find((e) => e.type === 'task/edited');
   assert.deepEqual([edited.data.from.worker, edited.data.to.worker, edited.data.by], ['asker2', 'fancy', 'approval']);
 
-  // 选了 Worker 自己给的选项，哪怕里面提到 fancy，也不改派。
+  // 选了「我自己去 fancy 里查」：是用户自己去用，哪怕提到 fancy，也不改派。
   const option = scheduler.createTask({ title: '不改派', prompt: '查进度', worker: 'asker2' });
   await waitFor(() => status(option.id) === 'waiting_approval', '等待拍板');
   scheduler.approve(scheduler.getTask(option.id).approval_id, 0);
   await waitFor(() => status(option.id) === 'done', '原 Worker 完成');
   assert.equal(scheduler.getTask(option.id).worker, 'asker2');
   assert.equal(handed.length, 1);
+
+  // 选了 Worker 给的「改用 fancy 去查」：真的交给 fancy，带上这个选择。
+  const swap = scheduler.createTask({ title: '按选项改派', prompt: '查进度', worker: 'asker2' });
+  await waitFor(() => status(swap.id) === 'waiting_approval', '等待拍板');
+  scheduler.approve(scheduler.getTask(swap.id).approval_id, 1);
+  await waitFor(() => status(swap.id) === 'done', '改派后完成');
+  assert.equal(scheduler.getTask(swap.id).worker, 'fancy');
+  assert.equal(handed.length, 2);
+  assert.equal(handed[1].sessionId, null, '原 Worker 的会话不交给新 Worker');
+  assert.equal(handed[1].resume.options[handed[1].resume.choice], '改用 fancy 去查');
+  const edited2 = scheduler.taskEvents(swap.id).find((e) => e.type === 'task/edited');
+  assert.deepEqual([edited2.data.from.worker, edited2.data.to.worker, edited2.data.by], ['asker2', 'fancy', 'approval']);
 });
 
 function writePlugin(id, source) {
