@@ -1,0 +1,117 @@
+{
+  "$schema": "../plugin.schema.json",
+  "id": "email-imap",
+  "apiVersion": 1,
+  "name": "邮箱（IMAP）",
+  "version": "0.1.0",
+  "icon": "邮",
+  "description": "只读查看指定邮箱的新未读邮件，交给 Router 判断是否需要回复或跟进。默认不标记已读、不发送邮件。",
+  "entry": "index.js",
+  "type": "poll",
+  "intervalMinutes": 10,
+  "capabilities": {
+    "network": true,
+    "read": true,
+    "write": false
+  },
+  "config": [
+    {
+      "key": "preset",
+      "label": "邮箱类型",
+      "type": "select",
+      "default": "custom",
+      "options": [
+        {
+          "value": "custom",
+          "label": "自定义 / 公司邮箱"
+        },
+        {
+          "value": "qq",
+          "label": "QQ 邮箱（imap.qq.com）"
+        },
+        {
+          "value": "163",
+          "label": "163 邮箱（imap.163.com）"
+        },
+        {
+          "value": "gmail",
+          "label": "Gmail（imap.gmail.com）"
+        },
+        {
+          "value": "icloud",
+          "label": "iCloud（imap.mail.me.com）"
+        },
+        {
+          "value": "outlook",
+          "label": "Outlook（outlook.office365.com）"
+        }
+      ],
+      "help": "选好类型后，下面的服务器和端口留空即可自动使用"
+    },
+    {
+      "key": "host",
+      "label": "IMAP 服务器",
+      "type": "text",
+      "placeholder": "留空则使用上面选择的服务器",
+      "required": false,
+      "help": "选好邮箱类型后可留空，插件会自动使用对应服务器"
+    },
+    {
+      "key": "port",
+      "label": "端口",
+      "type": "number",
+      "default": 993,
+      "min": 1,
+      "max": 65535
+    },
+    {
+      "key": "secure",
+      "label": "使用 SSL/TLS",
+      "type": "checkbox",
+      "default": true
+    },
+    {
+      "key": "user",
+      "label": "邮箱账号",
+      "type": "text",
+      "placeholder": "you@gmail.com",
+      "required": true
+    },
+    {
+      "key": "pass",
+      "label": "授权码 / App Password",
+      "type": "password",
+      "help": "不是邮箱登录密码。Gmail、QQ、163 都需要单独生成授权码",
+      "required": true
+    },
+    {
+      "key": "mailbox",
+      "label": "邮箱文件夹",
+      "type": "text",
+      "default": "INBOX"
+    },
+    {
+      "key": "days",
+      "label": "回看多少天内的未读",
+      "type": "number",
+      "default": 2,
+      "min": 1,
+      "max": 14
+    },
+    {
+      "key": "max",
+      "label": "每次最多读几封",
+      "type": "number",
+      "default": 8,
+      "min": 1,
+      "max": 10
+    },
+    {
+      "key": "markSeen",
+      "label": "读取后标记为已读",
+      "type": "checkbox",
+      "default": false
+    }
+  ],
+  "multiInstance": true
+}

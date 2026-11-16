@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jingjing.local/plugin.schema.json",
+  "title": "静静任务来源插件清单",
+  "description": "plugins/<id>/plugin.json 的规范。运行时由 src/plugin-spec.js 做同样的校验。",
+  "type": "object",
+  "required": ["id", "name", "entry"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,31}$",
+      "description": "必须与所在目录名一致"
+    },
+    "apiVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "default": 1
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+    "version": { "type": "string", "maxLength": 24, "default": "0.0.0" },
+    "description": { "type": "string", "maxLength": 500 },
+    "icon": { "type": "string", "maxLength": 8, "default": "插" },
+    "entry": {
+      "type": "string",
+      "minLength": 1,
+      "description": "插件目录内的相对路径"
+    },
+    "kind": {
+      "enum": ["source", "worker"],
+      "default": "source",
+      "description": "source = 任务来源；worker = 执行器 Worker"
+    },
+    "type": {
+      "enum": ["poll", "webhook", "stream", "manual", "watch"],
+      "default": "poll",
+      "description": "来源类型；决定核心如何调度它"
+    },
+    "intervalMinutes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1440,
+      "default": 30
+    },
+    "webhook": {
+      "type": "boolean",
+      "default": false,
+      "description": "为 true 时，核心会生成 POST /api/hooks/<token> 并调用插件的 webhook()"
+    },
+    "lifecycle": {
+      "type": "boolean",
+      "default": false,
+      "description": "为 true 时，启用插件会调用 start(config, ctx)，停用会调用 stop()"
+    },
+    "multiInstance": {
+      "type": "boolean",
+      "default": false,
+      "description": "为 true 时，同一个插件可以创建多份独立配置实例"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": { "type": "boolean" },
+        "read": { "type": "boolean" },
+        "write": { "type": "boolean" }
+      }
+    },
+    "config": {
+      "type": "array",
+      "maxItems": 40,
+      "items": { "$ref": "#/$defs/field" }
+    }
+  },
+  "$defs": {
+    "field": {
+      "type": "object",
+      "required": ["key", "label", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,39}$"
+        },
+        "label": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "kind": {
+      "enum": ["source", "worker"],
+      "default": "source",
+      "description": "source = 任务来源；worker = 执行器 Worker"
+    },
+    "type": {
+          "enum": ["text", "url", "password", "number", "checkbox", "textarea", "select"]
+        },
+        "default": {},
+        "placeholder": { "type": "string", "maxLength": 200 },
+        "help": { "type": "string", "maxLength": 300 },
+        "required": { "type": "boolean", "default": false },
+        "wide": { "type": "boolean" },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["value", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "value": { "type": "string" },
+              "label": { "type": "string" }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "select" } }, "required": ["type"] },
+          "then": { "required": ["options"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "number" } }, "required": ["type"] },
+          "then": {
+            "properties": {
+              "default": { "type": "number" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "checkbox" } }, "required": ["type"] },
+          "then": {
+            "properties": {
+              "default": { "type": "boolean" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

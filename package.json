@@ -1,0 +1,20 @@
+{
+  "name": "jingjing",
+  "version": "0.2.0",
+  "private": true,
+  "description": "静静 — 本地优先的个人 AI 工作站：Router + 调度器 + Worker + 长线记忆",
+  "type": "module",
+  "engines": {
+    "node": ">=23.4"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "reset": "node scripts/reset.js",
+    "test": "node --test tests/*.test.js",
+    "service:install": "bash scripts/install-service.sh",
+    "service:uninstall": "bash scripts/uninstall-service.sh",
+    "plugin:check": "node scripts/plugin-check.js"
+  },
+  "dependencies": {}
+}

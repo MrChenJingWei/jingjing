@@ -1,0 +1,20 @@
+{
+  "$schema": "../plugin.schema.json",
+  "id": "webhook",
+  "apiVersion": 1,
+  "name": "Webhook 接收",
+  "version": "0.1.0",
+  "icon": "钩",
+  "description": "生成一个入站地址，接收外部服务 POST 的 JSON，转成静静能处理的通用条目。",
+  "entry": "index.js",
+  "type": "webhook",
+  "intervalMinutes": 60,
+  "webhook": true,
+  "capabilities": {
+    "network": false,
+    "read": false,
+    "write": false
+  },
+  "config": [],
+  "multiInstance": true
+}

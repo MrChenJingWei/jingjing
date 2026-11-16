@@ -1,0 +1,8 @@
+node_modules/
+data/
+inbox/processed/
+dist/
+.toolchain/
+packaging/macos/build/
+.DS_Store
+plugin-src/*/node_modules/

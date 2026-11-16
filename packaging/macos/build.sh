@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# 构建 macOS 菜单栏 App、pkg 和 zip。
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BUILD="$ROOT/packaging/macos/build"
+APP="$BUILD/Jingjing.app"
+DIST="$ROOT/dist"
+NODE_BIN="$(command -v node || true)"
+
+if [[ -z "$NODE_BIN" ]]; then
+  echo "找不到 node，无法打包运行时。" >&2
+  exit 1
+fi
+
+rm -rf "$BUILD"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/app" "$APP/Contents/Resources/runtime" "$DIST"
+
+echo "==> 编译菜单栏 App"
+CACHE="$BUILD/modulecache"
+mkdir -p "$CACHE" "$BUILD/tmp"
+CLANG_MODULE_CACHE_PATH="$CACHE" SWIFT_MODULE_CACHE_PATH="$CACHE" TMPDIR="$BUILD/tmp" \
+swiftc -O -swift-version 5 -module-cache-path "$CACHE" -framework AppKit \
+  -o "$APP/Contents/MacOS/Jingjing" \
+  "$ROOT/packaging/macos/JingjingApp.swift"
+
+cp "$ROOT/packaging/macos/Info.plist" "$APP/Contents/Info.plist"
+
+echo "==> 生成图标"
+ICONSET="$BUILD/AppIcon.iconset"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$ROOT/public/icon-512.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  double=$((size * 2))
+  sips -z "$double" "$double" "$ROOT/public/icon-512.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$ICONSET"
+
+echo "==> 复制服务与静态资源"
+rsync -a \
+  --exclude 'data' --exclude 'tests' --exclude 'docs' --exclude 'packaging' \
+  --exclude '.git' --exclude '.toolchain' --exclude 'mobile' --exclude 'scripts' \
+  --exclude 'dist' --exclude 'plugin-src' --exclude 'node_modules' --exclude '.DS_Store' \
+  "$ROOT/" "$APP/Contents/Resources/app/"
+
+echo "==> 打包 Node 运行时"
+cp "$NODE_BIN" "$APP/Contents/Resources/runtime/node"
+chmod +x "$APP/Contents/Resources/runtime/node"
+
+echo "==> 修正权限"
+chmod -R u+rwX,go+rX "$APP"
+chmod 755 "$APP/Contents/MacOS/Jingjing" "$APP/Contents/Resources/runtime/node"
+
+echo "==> 签名（ad-hoc）"
+codesign --force --deep --sign - "$APP" >/dev/null
+
+echo "==> 生成安装包"
+STAGE="$BUILD/stage"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/静静.app"
+pkgbuild --component "$STAGE/静静.app" --install-location /Applications \
+  --identifier ai.jingjing.host --version 0.2.0 "$DIST/静静-0.2.0.pkg" >/dev/null
+ditto -c -k --sequesterRsrc --keepParent "$STAGE/静静.app" "$DIST/静静-0.2.0.zip"
+rm -rf "$STAGE"
+
+echo ""
+echo "完成："
+echo "  App:  $APP"
+echo "  PKG:  $DIST/静静-0.2.0.pkg"
+echo "  ZIP:  $DIST/静静-0.2.0.zip"
+du -sh "$APP" "$DIST/静静-0.2.0.pkg" "$DIST/静静-0.2.0.zip"

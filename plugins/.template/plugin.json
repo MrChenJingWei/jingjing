@@ -1,0 +1,34 @@
+{
+  "$schema": "../plugin.schema.json",
+  "id": "my-source",
+  "apiVersion": 1,
+  "name": "我的来源",
+  "version": "0.1.0",
+  "icon": "源",
+  "description": "把这个目录复制成 plugins/<你的 id>，改 id、name 和 poll()。",
+  "entry": "index.js",
+  "type": "poll",
+  "intervalMinutes": 30,
+  "capabilities": {
+    "network": true,
+    "read": true,
+    "write": false
+  },
+  "config": [
+    {
+      "key": "endpoint",
+      "label": "数据地址",
+      "type": "url",
+      "placeholder": "https://example.com/feed",
+      "required": true
+    },
+    {
+      "key": "limit",
+      "label": "每次最多几条",
+      "type": "number",
+      "default": 10,
+      "min": 1,
+      "max": 10
+    }
+  ]
+}

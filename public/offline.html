@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>静静 · 离线</title>
+  <meta name="theme-color" content="#F4F1EA" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    .offline { max-width: 460px; margin: 0 auto; padding: 18vh 24px; text-align: center; }
+    .offline .orb { margin: 0 auto 22px; }
+    .offline h1 { font-family: var(--serif); font-size: 28px; margin-bottom: 8px; }
+    .offline p { color: var(--muted); font-size: 14px; margin-bottom: 10px; }
+    .offline button { margin-top: 18px; }
+  </style>
+</head>
+<body>
+  <div class="offline">
+    <div class="orb" aria-hidden="true"><span></span></div>
+    <h1>主机暂时联系不上</h1>
+    <p>页面已经装在这台设备上，但主机上的静静服务没有响应。</p>
+    <p>确认主机没睡眠、Tailscale 在线，然后重试。</p>
+    <button class="solid-btn" onclick="location.reload()">重试</button>
+  </div>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "jingjing-plugin-wecom",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@wecom/aibot-node-sdk": "1.0.7"
+  }
+}

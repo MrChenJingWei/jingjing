@@ -1,0 +1,40 @@
+{
+  "id": "wecom",
+  "apiVersion": 1,
+  "name": "企业微信智能机器人",
+  "version": "0.1.0",
+  "icon": "企",
+  "description": "通过 WebSocket 长连接接收企业微信智能机器人的单聊/群聊 @ 消息，交给静静判断并建任务。",
+  "entry": "index.js",
+  "type": "stream",
+  "intervalMinutes": 1440,
+  "lifecycle": true,
+  "capabilities": {
+    "network": true,
+    "read": true,
+    "write": false
+  },
+  "config": [
+    {
+      "key": "botId",
+      "label": "机器人 BotID",
+      "type": "text",
+      "placeholder": "企业微信机器人详情页复制",
+      "required": true
+    },
+    {
+      "key": "secret",
+      "label": "机器人 Secret",
+      "type": "password",
+      "help": "长连接凭证，不是企业应用 Secret",
+      "required": true
+    },
+    {
+      "key": "replyAck",
+      "label": "收到消息后在企微里回执",
+      "type": "checkbox",
+      "default": true
+    }
+  ],
+  "multiInstance": true
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "../plugin.schema.json",
+  "id": "calendar",
+  "apiVersion": 1,
+  "name": "日历（ICS）",
+  "version": "0.1.0",
+  "icon": "日",
+  "description": "订阅一个只读的 ICS 日历地址，发现接下来一段时间的安排，并生成「准备日程」任务。",
+  "entry": "index.js",
+  "type": "poll",
+  "intervalMinutes": 60,
+  "capabilities": {
+    "network": true,
+    "read": true,
+    "write": false
+  },
+  "config": [
+    {
+      "key": "icsUrl",
+      "label": "ICS 订阅地址",
+      "type": "url",
+      "placeholder": "https://calendar.google.com/calendar/ical/…/basic.ics",
+      "help": "Google / iCloud / Outlook 都能生成只读的秘密地址",
+      "required": true
+    },
+    {
+      "key": "hoursAhead",
+      "label": "向前看多少小时",
+      "type": "number",
+      "default": 24,
+      "min": 1,
+      "max": 168
+    },
+    {
+      "key": "keywords",
+      "label": "只关注这些关键词（逗号分隔）",
+      "type": "text",
+      "placeholder": "留空表示全部日程"
+    }
+  ],
+  "multiInstance": true
+}
