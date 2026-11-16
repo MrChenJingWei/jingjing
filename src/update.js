@@ -325,7 +325,12 @@ export function rollbackUpdate() {
   const previous = record.previous;
   if (!previous?.dir || !fs.existsSync(path.join(previous.dir, 'server.js'))) {
     fs.rmSync(CURRENT_FILE, { force: true });
-    return { rolledBack: true, version: VERSION, restartRequired: true, note: '已回退到内置版本' };
+    return {
+      rolledBack: true,
+      version: process.env.JINGJING_BUNDLED_VERSION || VERSION,
+      restartRequired: true,
+      note: '已回退到内置版本'
+    };
   }
   writeCurrentRecord({
     version: previous.version,

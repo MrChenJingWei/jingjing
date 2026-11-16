@@ -83,7 +83,8 @@ export async function activateOverlay() {
       ...process.env,
       JINGJING_DATA_DIR: DATA_DIR,
       JINGJING_OVERLAY_GUARD: '1',
-      JINGJING_OVERLAY_VERSION: overlay.version
+      JINGJING_OVERLAY_VERSION: overlay.version,
+      JINGJING_BUNDLED_VERSION: VERSION
     },
     stdio: 'inherit'
   });

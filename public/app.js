@@ -1012,10 +1012,14 @@ function fillSettings() {
   renderRules();
   $('#about-host').textContent = `${location.host}`;
   $('#about-tz').textContent = state.server.timezone || '—';
+  const running = state.server?.version || '—';
   const installed = state.server?.update?.installed;
+  const pending = installed && installed.version !== running ? installed : null;
   const versionEl = $('#about-version');
   if (versionEl) {
-    versionEl.textContent = `${state.server?.version || '—'}${installed ? ` · 已装 v${installed.version}（重启生效）` : ''}`;
+    const pendingText = pending ? ` · 已装 v${pending.version}（重启生效）` : '';
+    const brokenText = installed?.broken ? ' · 上次更新启动失败，已回退' : '';
+    versionEl.textContent = `${running}${pendingText}${brokenText}`;
   }
 }
 
