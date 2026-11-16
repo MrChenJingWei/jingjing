@@ -307,3 +307,16 @@ test('外部消息点名了 Worker 或要读写代码：停下问主人交给谁
     off();
   }
 });
+
+test('外部消息里的「deepseek」不会被当成 Worker 别名', async () => {
+  fake('dsh', { abilities: ['code', 'text'], cost: 4, keywords: 'deepseek harness|\\bdsh\\b' });
+  const model = fakeModel();
+  model.answer = { title: '外部消息' };
+  try {
+    const task = await taskOf([item('@静静 改用 deepseek 去做这个任务')]);
+    assert.equal(task.worker, 'cheap-text', '外部来源不认主人对话里的口语别名');
+    assert.notEqual(task.status, 'waiting_approval');
+  } finally {
+    model.restore();
+  }
+});

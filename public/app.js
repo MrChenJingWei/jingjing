@@ -651,7 +651,45 @@ function messageHtml(msg, index) {
     </div>`;
 }
 
+const CHAT_WORKSPACE_KEY = 'jingjing.chatWorkspace';
+
+/** 聊天框上方的「工作区」选择：列设置里的工作区，记住上次选的；也可以临时挑一个自定义文件夹。 */
+function renderChatWorkspace() {
+  const scope = $('#composer-scope');
+  const select = $('#chat-workspace');
+  if (!scope || !select) return;
+  const list = state.settings?.workspaces || [];
+  scope.hidden = list.length === 0;
+  if (!list.length) return;
+  const savedId = select.value && select.value !== '__custom__'
+    ? select.value
+    : localStorage.getItem(CHAT_WORKSPACE_KEY);
+  const current = list.find((ws) => ws.id === savedId)
+    || list.find((ws) => ws.id === state.settings?.defaultWorkspaceId)
+    || list[0];
+  select.innerHTML = list.map((ws) => `<option value="${esc(ws.id)}">${esc(ws.name)}</option>`).join('')
+    + '<option value="__custom__">自定义文件夹…</option>';
+  select.value = current.id;
+  select.title = `这条消息建的任务放在「${current.name}」：${current.path}`;
+}
+
+async function pickChatWorkspace() {
+  const select = $('#chat-workspace');
+  try {
+    const picked = await api('/api/system/pick-folder', { method: 'POST' });
+    const workspace = await ensureWorkspaceForPath(picked.path);
+    renderChatWorkspace();
+    select.value = workspace.id;
+    localStorage.setItem(CHAT_WORKSPACE_KEY, workspace.id);
+    toast(`这条消息会建在「${workspace.name}」。`);
+  } catch (err) {
+    toast(err.message);
+    renderChatWorkspace();
+  }
+}
+
 function renderChat({ forceBottom = false, initial = false } = {}) {
+  renderChatWorkspace();
   const scroller = $('#chat-scroll');
   const nearBottom = !initial && scroller.clientHeight > 0 &&
     scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
@@ -702,9 +740,14 @@ async function sendMessage(text) {
   renderChat({ forceBottom: true });
 
   try {
+    const workspaceId = $('#chat-workspace')?.value;
     const data = await api('/api/chat', {
       method: 'POST',
-      body: { text: value, sessionId: state.sessionId },
+      body: {
+        text: value,
+        sessionId: state.sessionId,
+        ...(workspaceId && workspaceId !== '__custom__' ? { workspaceId } : {})
+      },
       timeoutMs: 60000
     });
     state.messages = state.messages.filter((message) => message.id !== temp.id);
@@ -741,6 +784,16 @@ function autoGrow() {
 $('#composer')?.addEventListener('submit', (e) => {
   e.preventDefault();
   sendMessage();
+});
+$('#chat-workspace')?.addEventListener('change', (event) => {
+  const select = event.target;
+  if (select.value === '__custom__') {
+    pickChatWorkspace();
+    return;
+  }
+  localStorage.setItem(CHAT_WORKSPACE_KEY, select.value);
+  const workspace = (state.settings?.workspaces || []).find((item) => item.id === select.value);
+  if (workspace) select.title = `这条消息建的任务放在「${workspace.name}」：${workspace.path}`;
 });
 $('#input')?.addEventListener('input', autoGrow);
 $('#input')?.addEventListener('keydown', (e) => {
@@ -1131,7 +1184,7 @@ const SETTINGS_PAGES = [
   { id: 'workflows', group: '助手', glyph: '流', title: '工作流程', desc: '读取你写好的流程文档，确认静静学到的习惯，按流程派活。', needsSave: false },
   { id: 'workspaces', group: '助手', glyph: '区', title: '工作区', desc: '任务来源落到的目录；每个来源可以单独绑定。', needsSave: false },
   { id: 'plugins', group: '来源', glyph: '插', title: '任务来源插件', desc: '邮箱、日历等发现来源，单独启用和配置。', needsSave: false },
-  { id: 'rules', group: '助手', glyph: '报', title: '每日简报', desc: '每天定时汇总昨天完成和今天待处理的事。', needsSave: false },
+  { id: 'rules', group: '助手', glyph: '报', title: '自动化', desc: '按时间自己跑：建任务，或扫一遍来源并按流程处理。', needsSave: false },
   { id: 'pairing', group: '访问', glyph: '配', title: '配对与手机', desc: '配对码、手机地址与退出登录。', needsSave: false },
   { id: 'install', group: '访问', glyph: '装', title: '安装到手机', desc: '把 PWA 安装到手机或桌面。', needsSave: false },
   { id: 'channels', group: '访问', glyph: '通', title: '通知通道', desc: 'Telegram、飞书和通用 Webhook。', needsSave: true },
@@ -1177,8 +1230,9 @@ function settingsSummary(id) {
     return `${list.filter((p) => p.enabled).length}/${list.length} 个来源启用`;
   }
   if (id === 'rules') {
-    const rule = (state.rules || []).find((item) => item.id === 'morning-digest');
-    return rule ? `每天 ${rule.trigger.at} · ${rule.enabled ? '已启用' : '已暂停'}` : '未配置';
+    const list = state.rules || [];
+    const enabled = list.filter((item) => item.enabled).length;
+    return list.length ? `${list.length} 条 · ${enabled} 条启用` : '未配置';
   }
   return `v${state.server?.version || '—'}`;
 }
@@ -1743,21 +1797,130 @@ function renderChannelBadges() {
   }
 }
 
+function ruleTriggerText(trigger = {}) {
+  if (trigger.type === 'interval') return `每 ${trigger.minutes || 60} 分钟`;
+  return `每天 ${trigger.at || '08:00'}`;
+}
+
+function workflowName(id) {
+  return (state.workflows?.workflows || []).find((item) => item.id === id)?.name || id;
+}
+
+function ruleActionText(action = {}) {
+  if (action.kind === 'scan') {
+    const plugin = (state.plugins || []).find((item) => item.id === action.source);
+    const parts = [`扫描「${plugin?.label || action.source}」`];
+    if (action.workflow) parts.push(`按流程「${workflowName(action.workflow)}」`);
+    if (action.worker) parts.push(`交给「${workerLabel(action.worker)}」`);
+    return parts.join('，');
+  }
+  const parts = [`创建任务「${action.title || '（用自动化名称）'}」`];
+  if (action.worker) parts.push(`交给「${workerLabel(action.worker)}」`);
+  if (action.workflow) parts.push(`按流程「${workflowName(action.workflow)}」`);
+  return parts.join('，');
+}
+
+function ruleForm(rule = {}) {
+  const trigger = rule.trigger || { type: 'daily', at: '08:00' };
+  const action = rule.action || { kind: 'task', title: '', prompt: '', worker: '', cwd: '', workflow: '' };
+  const isScan = action.kind === 'scan';
+  const plugins = (state.plugins || []).filter((item) => ['poll', 'manual'].includes(item.type || 'poll'));
+  const flows = state.workflows?.workflows || [];
+  const dailyHidden = trigger.type === 'interval' ? 'hidden' : '';
+  const intervalHidden = trigger.type === 'interval' ? '' : 'hidden';
+  return `
+    <label class="field"><span>名称</span><input name="name" value="${esc(rule.name || '')}" placeholder="例如：每天 2 点修 TAPD bug" /></label>
+    <label class="field"><span>触发方式</span>
+      <select name="trigger_type">
+        <option value="daily" ${trigger.type === 'interval' ? '' : 'selected'}>每天固定时间</option>
+        <option value="interval" ${trigger.type === 'interval' ? 'selected' : ''}>每隔一段时间</option>
+      </select>
+    </label>
+    <label class="field" data-trigger-daily ${dailyHidden}><span>时间</span><input name="at" type="time" value="${esc(trigger.at || '08:00')}" /></label>
+    <label class="field" data-trigger-interval ${intervalHidden}><span>间隔（分钟，1–1440）</span><input name="minutes" type="number" min="1" max="1440" value="${esc(String(trigger.minutes || 60))}" /></label>
+    <label class="field"><span>动作</span>
+      <select name="action_kind">
+        <option value="task" ${isScan ? '' : 'selected'}>创建一个任务</option>
+        <option value="scan" ${isScan ? 'selected' : ''}>扫描一个来源</option>
+      </select>
+    </label>
+    <div data-action-task ${isScan ? 'hidden' : ''}>
+      <label class="field"><span>任务名（可空）</span><input name="title" value="${esc(action.title || '')}" placeholder="默认用自动化名称" /></label>
+      <label class="field"><span>给 Worker 的指令</span><textarea name="prompt" rows="4" placeholder="例如：用 tapd-cli 查我名下未完成的 bug，按「TAPD bug 修复」流程处理，最多 2 个。">${esc(action.prompt || '')}</textarea></label>
+      <label class="field"><span>工作流程（可空）</span><select name="task_workflow"><option value="">不指定</option>${flows.map((flow) => `<option value="${esc(flow.id)}" ${action.workflow === flow.id ? 'selected' : ''}>${esc(flow.name)}</option>`).join('')}</select></label>
+      <label class="field"><span>Worker</span><select name="task_worker"><option value="">自动（最便宜的文本 Worker）</option>${workerIds().map((id) => `<option value="${esc(id)}" ${action.worker === id ? 'selected' : ''}>${workerLabel(id)}</option>`).join('')}</select></label>
+      <label class="field"><span>工作区</span><select name="cwd"><option value="">默认工作区</option>${(state.settings?.workspaces || []).map((ws) => `<option value="${esc(ws.path)}" ${action.cwd === ws.path ? 'selected' : ''}>${esc(ws.name)}</option>`).join('')}</select></label>
+    </div>
+    <div data-action-scan ${isScan ? '' : 'hidden'}>
+      <label class="field"><span>来源插件</span><select name="source"><option value="">请选择</option>${plugins.map((plugin) => `<option value="${esc(plugin.id)}" ${action.source === plugin.id ? 'selected' : ''}>${esc(plugin.label || plugin.id)}</option>`).join('')}</select></label>
+      <label class="field"><span>新条目按流程处理（可空）</span><select name="scan_workflow"><option value="">照常判断，不强制</option>${flows.map((flow) => `<option value="${esc(flow.id)}" ${action.workflow === flow.id ? 'selected' : ''}>${esc(flow.name)}</option>`).join('')}</select></label>
+      <label class="field"><span>强制 Worker（可空）</span><select name="scan_worker"><option value="">跟随流程 / 分配规则</option>${workerIds().map((id) => `<option value="${esc(id)}" ${action.worker === id ? 'selected' : ''}>${workerLabel(id)}</option>`).join('')}</select></label>
+    </div>
+    <label class="field field-inline"><span>启用</span><input type="checkbox" name="enabled" ${rule.enabled === false ? '' : 'checked'} /></label>
+  `;
+}
+
+function openRuleDialog(rule = null) {
+  openDialog({
+    title: rule ? '编辑自动化' : '新建自动化',
+    desc: '到点自动执行：建一个任务，或把某个来源扫一遍、按流程处理新条目。扫描只处理没见过的新条目，不会重复建卡。',
+    body: ruleForm(rule || {}),
+    onSubmit: async (values) => {
+      const body = {
+        ...(rule?.id ? { id: rule.id } : {}),
+        name: values.name,
+        enabled: Boolean(values.enabled),
+        trigger: { type: values.trigger_type, at: values.at, minutes: Number(values.minutes) },
+        action: values.action_kind === 'scan'
+          ? { kind: 'scan', source: values.source, workflow: values.scan_workflow, worker: values.scan_worker }
+          : { kind: 'task', title: values.title, prompt: values.prompt, workflow: values.task_workflow, worker: values.task_worker, cwd: values.cwd }
+      };
+      const data = await api('/api/rules', { method: 'POST', body });
+      state.rules = data.rules;
+      renderRules();
+      toast('自动化已保存。');
+    }
+  });
+  const body = $('#dialog-body');
+  const sync = () => {
+    const triggerType = body.querySelector('[name="trigger_type"]').value;
+    body.querySelector('[data-trigger-daily]').hidden = triggerType === 'interval';
+    body.querySelector('[data-trigger-interval]').hidden = triggerType !== 'interval';
+    const actionKind = body.querySelector('[name="action_kind"]').value;
+    body.querySelector('[data-action-task]').hidden = actionKind === 'scan';
+    body.querySelector('[data-action-scan]').hidden = actionKind !== 'scan';
+  };
+  body.querySelectorAll('[name="trigger_type"], [name="action_kind"]').forEach((el) => el.addEventListener('change', sync));
+  sync();
+}
+
 function renderRules() {
-  $('#rules-list').innerHTML = (state.rules || []).map((r) => {
-    const trigger = r.trigger.type === 'daily' ? `每天 ${r.trigger.at}` : `每 ${Math.round((r.trigger.seconds || 300) / 60)} 分钟`;
+  const list = state.rules || [];
+  $('#rules-list').innerHTML = list.map((r) => {
+    const status = r.last_status === 'error'
+      ? ` · <em class="rule-error">上次失败</em>`
+      : r.last_run ? ` · 上次 ${timeAgo(r.last_run)}` : '';
     return `
-      <div class="rule-item">
-        <span><b>${esc(r.name)}</b><small>${trigger} · 交给${workerLabel(r.action.worker)}${r.last_run ? ` · 上次 ${timeAgo(r.last_run)}` : ''}</small></span>
-        <input type="checkbox" class="switch" data-rule="${r.id}" ${r.enabled ? 'checked' : ''} />
+      <div class="rule-item" data-rule-row="${esc(r.id)}">
+        <span>
+          <b>${esc(r.name)}</b>
+          <small>${ruleTriggerText(r.trigger)} · ${esc(ruleActionText(r.action))}${status}</small>
+          ${r.last_summary ? `<small class="rule-summary">${esc(r.last_summary)}</small>` : ''}
+        </span>
+        <span class="rule-actions">
+          <button type="button" class="mini-btn" data-rule-run="${esc(r.id)}">立即运行</button>
+          <button type="button" class="mini-btn" data-rule-edit="${esc(r.id)}">编辑</button>
+          <button type="button" class="mini-btn danger" data-rule-delete="${esc(r.id)}">删除</button>
+          <input type="checkbox" class="switch" data-rule="${esc(r.id)}" ${r.enabled ? 'checked' : ''} />
+        </span>
       </div>`;
-  }).join('') || '<div class="empty"><p>还没有规则。</p></div>';
+  }).join('') || '<div class="empty"><p>还没有自动化。点右上角「新建」加一条，比如每天 8 点汇总 TAPD 待办。</p></div>';
   $$('#rules-list [data-rule]').forEach((input) => {
     input.addEventListener('change', async () => {
       try {
         const data = await api(`/api/rules/${input.dataset.rule}/toggle`, { method: 'POST', body: { enabled: input.checked } });
         state.rules = data.rules;
-        toast(input.checked ? '规则已启用。' : '规则已暂停。');
+        toast(input.checked ? '自动化已启用。' : '自动化已暂停。');
       } catch (err) {
         toast(err.message);
       }
@@ -1765,13 +1928,42 @@ function renderRules() {
   });
 }
 
+$('#rules-list')?.addEventListener('click', async (event) => {
+  const run = event.target.closest('[data-rule-run]');
+  if (run) {
+    run.disabled = true;
+    try {
+      const data = await api(`/api/rules/${run.dataset.ruleRun}/run`, { method: 'POST' });
+      state.rules = data.rules;
+      renderRules();
+      toast(data.result?.summary || '已经跑完了。');
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      run.disabled = false;
+    }
+    return;
+  }
+  const edit = event.target.closest('[data-rule-edit]');
+  if (edit) {
+    openRuleDialog((state.rules || []).find((rule) => rule.id === edit.dataset.ruleEdit));
+    return;
+  }
+  const del = event.target.closest('[data-rule-delete]');
+  if (del) {
+    if (!confirm('删除这条自动化？')) return;
+    try {
+      const data = await api(`/api/rules/${del.dataset.ruleDelete}`, { method: 'DELETE' });
+      state.rules = data.rules;
+      renderRules();
+      toast('自动化已删除。');
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+});
 
-
-function defaultWorkspaceName() {
-  const list = state.settings?.workspaces || [];
-  const current = list.find((item) => item.id === state.settings?.defaultWorkspaceId);
-  return current?.name || '默认工作区';
-}
+$('#add-rule')?.addEventListener('click', () => openRuleDialog());
 
 function renderWorkspaces() {
   const list = state.settings?.workspaces || [];
@@ -2989,6 +3181,11 @@ function connectEvents() {
     renderChat();
     if (state.view === 'admin') renderAdminTasks();
     if (state.openTaskId === task.id) openTask(task.id);
+  });
+
+  on('rules/updated', ({ rules }) => {
+    state.rules = rules || [];
+    if (state.view === 'settings') renderRules();
   });
 
   on('task/progress', ({ taskId, message }) => {

@@ -160,3 +160,11 @@ test('问句和进度查询不套流程；流程指定的工作区会生效', as
   await waitFor(() => ['done', 'failed'].includes(scheduler.getTask(run.task.id).status), '晨会任务结束');
   assert.equal(scheduler.getTask(run.task.id).status, 'done', scheduler.getTask(run.task.id).error || '');
 });
+
+test('从任务学流程时，默认工作区不写死，别的工作区才记下来', async () => {
+  const task = { id: 't_learn_ws', title: '整理佣金字段', prompt: '整理佣金字段的命名', worker: 'llm' };
+  const def = await wf.learnFromTask(task, [], { workerLabel: '问答', workspaceName: '默认工作区', force: true });
+  assert.equal(def.workflow.workspace, '', '默认工作区不写进流程');
+  const yu = await wf.learnFromTask({ ...task, id: 't_learn_ws2', prompt: '整理佣金字段的命名和引用' }, [], { workerLabel: '问答', workspaceName: '渔童', force: true });
+  assert.equal(yu.workflow.workspace, '渔童');
+});

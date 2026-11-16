@@ -102,3 +102,26 @@ test('兜底 Worker：主人指定的优先；指定的不可用或没指定时�
   assert.equal(pick('帮我写一份本周工作总结'), 'llm');
   assert.equal(pick('帮我生成一个 notes.md 文件', { fallback: 'llm' }), 'file', '需要的能力照旧优先');
 });
+
+test('口语别名「deepseek」只认主人自己的对话，外部来源不认', () => {
+  const workers = [
+    { id: 'llm', label: '问答', abilities: ['text'], cost: 1, source: 'builtin', available: true },
+    { id: 'dsh', label: 'DeepSeek Harness', abilities: codeAbilities, cost: 4, keywords: 'deepseek harness|\\bdsh\\b', source: 'builtin', available: true }
+  ];
+
+  // 主人在聊天 / 拍板里说 deepseek：就是让 DeepSeek Harness 去做。
+  assert.equal(namedWorker('改用 deepseek 去做这个任务', workers, { aliases: true })?.id, 'dsh');
+  assert.equal(pickWorker({ text: '改用 deepseek 去做这个任务', workers, aliases: true }).worker, 'dsh');
+  assert.equal(pickWorker({ text: '用 deepseek 把登录页的 bug 修了', workers, aliases: true, requested: 'llm', decided: true }).worker, 'dsh',
+    '模型选了问答，但主人点名了 deepseek，照样改派');
+
+  // 外部来源（discovery）不传 aliases：只有完整写「deepseek harness / dsh」才算点名。
+  assert.equal(namedWorker('改用 deepseek 去做这个任务', workers), null);
+  assert.equal(namedWorker('改用 DeepSeek Harness 去做这个任务', workers)?.id, 'dsh');
+  assert.equal(pickWorker({ text: '改用 deepseek 去做这个任务', workers }).worker, 'llm', '外部不加别名，回到最便宜的文本 Worker');
+
+  // 模型名 deepseek-chat 不算换 Worker。
+  assert.equal(namedWorker('切到 deepseek-chat 模型再试', workers, { aliases: true }), null);
+  // Worker 给的拍板选项维持原样：只认 manifest 的关键词。
+  assert.equal(handoffWorker('改用 deepseek 去做', workers), null);
+});

@@ -77,17 +77,88 @@ export async function execute(task, ctx) {
     ...(apiKey ? { DEEPSEEK_API_KEY: apiKey } : {})
   };
   await ctx.emit('DeepSeek Harness 已启动，正在自己的会话里工作…');
-  const result = await ctx.exec(harness.cmd, [...harness.args, 'headless', task.prompt || task.title], {
+
+  // 用 --json 跑：Harness 会把每一步（工具调用、文字、结束原因）逐行写到 stdout，
+  // 这里解析成事件转成进度，对话卡片就能边跑边看到它在做什么，而不是等最后一次性出结果。
+  const events = [];
+  let line = '';
+  let streamedBytes = 0;
+  let lastProgressAt = 0;
+  const progress = (message) => {
+    const text = String(message || '').replace(/\s+/g, ' ').trim();
+    if (!text) return;
+    const now = Date.now();
+    if (now - lastProgressAt < 900) return;
+    lastProgressAt = now;
+    ctx.emit(text.slice(0, 200)).catch(() => {});
+  };
+  const toolDetail = (input = {}) => String(
+    input.command || input.path || input.file_path || input.query || input.url || ''
+  ).replace(/\s+/g, ' ').trim().slice(0, 80);
+
+  const handle = (raw) => {
+    let event;
+    try { event = JSON.parse(raw); } catch { return; }
+    if (!event || typeof event !== 'object') return;
+    events.push(event);
+    if (event.type === 'tool_call') {
+      const detail = toolDetail(event.input);
+      progress(`调用「${event.tool || '工具'}」${detail ? `：${detail}` : '…'}`);
+    } else if (event.type === 'tool_result' && event.status === 'error') {
+      progress('工具报错了，换办法继续…');
+    } else if (event.type === 'text') {
+      const lastLine = String(event.text || '').split('\n').map((part) => part.trim()).filter(Boolean).pop();
+      if (lastLine) progress(lastLine.slice(0, 160));
+    }
+  };
+
+  const result = await ctx.exec(harness.cmd, [...harness.args, 'headless', '--json', task.prompt || task.title], {
     cwd: ctx.workspace,
-    env
+    env,
+    onOutput: (chunk) => {
+      streamedBytes += chunk.length;
+      line += chunk;
+      let index;
+      while ((index = line.indexOf('\n')) !== -1) {
+        const current = line.slice(0, index).trim();
+        line = line.slice(index + 1);
+        if (current) handle(current);
+      }
+    }
   });
-  const text = String(result.stdout || result.stderr || '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+
+  // 没走 onOutput 的实现（或者最后一行没有换行）也要能解析。
+  if (line.trim()) { handle(line.trim()); line = ''; }
+  const rawStdout = String(result.stdout || '');
+  if (rawStdout.length > streamedBytes) {
+    for (const current of rawStdout.slice(streamedBytes).split('\n')) {
+      if (current.trim()) handle(current.trim());
+    }
+  }
+  if (line.trim()) { handle(line.trim()); line = ''; }
+
+  const finalEvent = [...events].reverse().find((event) => event.type === 'final');
+  const streamedText = events.filter((event) => event.type === 'text').map((event) => event.text || '').join('');
+  const usage = [...events].reverse().find((event) => event.type === 'status' && event.phase === 'step_end')?.usage;
+  const stdoutText = events.length
+    ? String(finalEvent?.text || streamedText || '').trim()
+    : rawStdout.replace(/\x1b\[[0-9;]*m/g, '').trim();
+  const text = stdoutText || String(result.stderr || '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+
   if (result.error === 'aborted') return { status: 'cancelled', summary: '任务已停止。' };
   if (result.code !== 0) return { status: 'failed', summary: `DeepSeek Harness 退出码 ${result.code}。\n${text.slice(-1200)}` };
   // 缺 Key 之类的启动错误也会以退出码 0 结束，只能从输出里认出来。
   const fatal = String(result.stderr || '').match(/^dsh: ([A-Z_]+): .*$/m);
-  if (!String(result.stdout || '').trim() && fatal) {
+  if (!rawStdout.trim() && fatal) {
     return { status: 'failed', retryable: false, summary: `DeepSeek Harness 没能开始：${fatal[0].replace(/^dsh: /, '')}` };
   }
-  return { status: 'done', summary: text || 'DeepSeek Harness 没有输出。', tokens: ctx.estimateTokens(text) };
+  const reason = finalEvent?.reason?.kind;
+  if (reason && reason !== 'completed') {
+    return { status: 'failed', summary: `DeepSeek Harness 没有正常结束（${reason}）。\n${text.slice(-1200)}` };
+  }
+  return {
+    status: 'done',
+    summary: text || 'DeepSeek Harness 没有输出。',
+    tokens: usage?.totalTokens || ctx.estimateTokens(text)
+  };
 }

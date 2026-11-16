@@ -13,7 +13,7 @@ flowchart TB
   subgraph Channels["入口"]
     Web["Web / PWA<br/>（对话、任务板、审批）"]
     TG["Telegram Bot<br/>（指令 + 按钮拍板）"]
-    Rule["每日简报"]
+    Rule["自动化<br/>（定时建任务 / 扫来源）"]
   end
 
   subgraph Sources["来源插件 · plugins/"]
@@ -217,7 +217,7 @@ Router **不碰** `approvals` 表，也**不启动** Worker。插件发现走的
 - 决定 Worker（流程指定 > 分配规则 > 按能力 / 开销 / 关键词，见 `worker-routing.js`）、标题、工作目录
 - 任务结束时（调度器发出 `task/finished`）统计流程效果；值得记住的任务总结成候选习惯，等用户在对话里确认
 - 把任务交给 `scheduler.createTask`
-- 每日简报到点建任务，往对话里留一条说明
+- 自动化到点执行动作：建任务，或扫描某个来源并按指定流程/Worker 处理（`rules` 表，`router.runRule`）
 
 调度器**不碰**会话消息和长期记忆（除了完成时写回一条情景记忆）。这条边界让两边都可以单独测试。
 

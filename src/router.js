@@ -112,10 +112,21 @@ function resolveFolderCwd(text, base) {
   return base;
 }
 
-function pickWorkspace(text, settings) {
+function mentionedWorkspace(text, settings) {
   const list = Array.isArray(settings.workspaces) ? settings.workspaces : [];
-  const matched = list.find((workspace) => text.includes(workspace.name) || text.includes(path.basename(workspace.path)));
+  return list.find((workspace) => text.includes(workspace.name) || text.includes(path.basename(workspace.path))) || null;
+}
+
+function workspaceById(id, settings) {
+  if (!id) return null;
+  const list = Array.isArray(settings.workspaces) ? settings.workspaces : [];
+  return list.find((workspace) => workspace.id === id || workspace.path === id) || null;
+}
+
+function pickWorkspace(text, settings) {
+  const matched = mentionedWorkspace(text, settings);
   if (matched) return matched;
+  const list = Array.isArray(settings.workspaces) ? settings.workspaces : [];
   if (/(桌面|desktop)/i.test(text)) {
     const desktop = path.join(os.homedir(), 'Desktop');
     if (fs.existsSync(desktop)) return { id: 'desktop', name: '桌面', path: desktop };
@@ -212,7 +223,7 @@ async function routeWithTools(clean, { priorMessages, settings }) {
   return { decision: { intent: intents[call.name] || 'chat', reason: 'model' }, reply: intents[call.name] ? null : res.text || '' };
 }
 
-export async function handleMessage(text, { sessionId = MAIN_SESSION, source = 'web' } = {}) {
+export async function handleMessage(text, { sessionId = MAIN_SESSION, source = 'web', workspaceId = null } = {}) {
   ensureSession(sessionId);
   const clean = String(text || '').trim();
   if (!clean) throw new Error('消息不能为空');
@@ -294,7 +305,11 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     }
   } else if (decision.intent === 'task') {
     const workflow = flowHit?.workflow || (decision.workflow ? workflows.getWorkflow(decision.workflow) : null);
-    const workspace = workflows.resolveWorkspace(workflow, settings) || pickWorkspace(clean, settings);
+    // 工作区优先级：聊天框里显式选的 > 文字里点名的 > 流程指定的 > 兜底（桌面 / 默认工作区）。
+    const workspace = workspaceById(workspaceId, settings)
+      || mentionedWorkspace(clean, settings)
+      || workflows.resolveWorkspace(workflow, settings)
+      || pickWorkspace(clean, settings);
     const catalog = workerCatalog();
     // 优先级：工作流程指定的 Worker > Worker 分配规则 > 按能力挑选。
     const flowWorker = workflow?.worker ? catalog.find((w) => w.id === workflow.worker) : null;
@@ -315,7 +330,9 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
         requested: workflow?.worker || decision.worker || null,
         decided: Boolean(workflow?.worker) || (decision.reason === 'model' && Boolean(decision.worker)),
         workers: catalog,
-        fallback: settings.fallbackWorker || null
+        fallback: settings.fallbackWorker || null,
+        // 主人自己在聊天里说「用 deepseek 去做」= DeepSeek Harness；外部来源走 discovery，不认这个别名。
+        aliases: true
       }));
     }
     if (!worker) {
@@ -385,24 +402,187 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
   return { userMessage: userMsg, reply: assistantMsg, task, intent: decision.intent };
 }
 
-/* ------------------------------ 主动发现 ------------------------------- */
+/* ------------------------------ 自动化 -------------------------------- */
 
-/** 每日规则（目前只有 daily 一种）：到点后 3 小时内、今天还没跑过就该跑。 */
-function ruleDue(rule) {
-  const trigger = JSON.parse(rule.trigger);
-  if (trigger.type !== 'daily') return false;
+/**
+ * 自动化 = 触发器 + 动作，用户自己在设置里加。
+ *   trigger: { type: 'daily', at: '08:00' } | { type: 'interval', minutes: 60 }
+ *   action:  { kind: 'task', title, prompt, worker, cwd, workflow }
+ *          | { kind: 'scan', source, workflow, worker }
+ * task：按指令建一个任务；scan：立刻扫一遍某个来源，新条目按指定流程/Worker 处理。
+ */
+const runningRules = new Set();
+
+/** 每日规则：到点后 3 小时内、今天还没跑过就该跑；间隔规则：距上次运行超过间隔。 */
+export function ruleDue(rule, nowDate = new Date()) {
+  let trigger;
+  try { trigger = JSON.parse(rule.trigger); } catch { return false; }
   const last = rule.last_run ? new Date(rule.last_run) : null;
-  const nowDate = new Date();
+  if (trigger.type === 'interval') {
+    const minutes = Math.min(1440, Math.max(1, Number(trigger.minutes) || 60));
+    return !last || nowDate - last >= minutes * 60 * 1000;
+  }
+  if (trigger.type !== 'daily') return false;
   const [hh, mm] = String(trigger.at || '08:00').split(':').map(Number);
   const target = new Date(nowDate);
   target.setHours(hh, mm, 0, 0);
   const diff = nowDate - target;
   if (diff < 0 || diff > 3 * 60 * 60 * 1000) return false;
-  if (!last) return true;
-  return last < target;
+  return !last || last < target;
 }
 
-// 到点了却建不了任务（比如一个可用的 Worker 都没有）时，每条规则每天只提醒一次，不每分钟刷日志。
+function normalizeTrigger(raw) {
+  const trigger = raw && typeof raw === 'object' ? raw : {};
+  if (trigger.type === 'interval') {
+    const minutes = Math.round(Number(trigger.minutes));
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) {
+      throw Object.assign(new Error('间隔要在 1–1440 分钟之间'), { statusCode: 400 });
+    }
+    return { type: 'interval', minutes };
+  }
+  const at = String(trigger.at || '08:00').trim();
+  if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(at)) {
+    throw Object.assign(new Error('时间要写成 HH:MM（比如 08:00）'), { statusCode: 400 });
+  }
+  return { type: 'daily', at: at.padStart(5, '0') };
+}
+
+function normalizeAction(raw) {
+  const action = raw && typeof raw === 'object' ? raw : {};
+  if (action.kind === 'scan') {
+    const source = String(action.source || '').trim();
+    if (!source) throw Object.assign(new Error('扫描来源要先选一个来源插件'), { statusCode: 400 });
+    return {
+      kind: 'scan',
+      source,
+      workflow: String(action.workflow || '').trim(),
+      worker: String(action.worker || '').trim()
+    };
+  }
+  const prompt = String(action.prompt || '').trim();
+  if (!prompt) throw Object.assign(new Error('动作要写一段给 Worker 的指令'), { statusCode: 400 });
+  return {
+    kind: 'task',
+    title: String(action.title || '').trim().slice(0, 60),
+    prompt: prompt.slice(0, 4000),
+    worker: String(action.worker || '').trim(),
+    cwd: String(action.cwd || '').trim(),
+    workflow: String(action.workflow || '').trim()
+  };
+}
+
+/** 动作里的工作区：可以是 id、名称或路径；没写就跟随默认工作区。 */
+function ruleWorkspace(value, settings) {
+  const wanted = String(value || '').trim();
+  const list = Array.isArray(settings.workspaces) ? settings.workspaces : [];
+  if (wanted) {
+    const matched = list.find((w) => w.id === wanted || w.name === wanted || w.path === wanted);
+    if (matched) return matched.path;
+    if (path.isAbsolute(wanted)) return wanted;
+  }
+  return defaultWorkspacePath(settings);
+}
+
+export function saveRule(input = {}) {
+  const name = String(input.name || '').trim().slice(0, 60);
+  if (!name) throw Object.assign(new Error('自动化名称不能为空'), { statusCode: 400 });
+  const trigger = normalizeTrigger(input.trigger);
+  const action = normalizeAction(input.action);
+  const enabled = input.enabled === false ? 0 : 1;
+  const id = String(input.id || '').trim();
+  if (id) {
+    const existing = db.prepare('SELECT id FROM rules WHERE id = ?').get(id);
+    if (!existing) throw Object.assign(new Error('自动化不存在'), { statusCode: 404 });
+    db.prepare('UPDATE rules SET name = ?, enabled = ?, trigger = ?, action = ? WHERE id = ?')
+      .run(name, enabled, JSON.stringify(trigger), JSON.stringify(action), id);
+  } else {
+    db.prepare('INSERT INTO rules(id, name, enabled, trigger, action, last_run, created_at) VALUES(?,?,?,?,?,NULL,?)')
+      .run(`auto_${uid()}`, name, enabled, JSON.stringify(trigger), JSON.stringify(action), now());
+  }
+  const rules = listRules();
+  bus.emit('rules/updated', { rules });
+  return rules;
+}
+
+export function deleteRule(id) {
+  db.prepare('DELETE FROM rules WHERE id = ?').run(id);
+  const rules = listRules();
+  bus.emit('rules/updated', { rules });
+  return rules;
+}
+
+export async function runRuleNow(id) {
+  const rule = db.prepare('SELECT * FROM rules WHERE id = ?').get(id);
+  if (!rule) throw Object.assign(new Error('自动化不存在'), { statusCode: 404 });
+  return runRule(rule, { manual: true });
+}
+
+async function runRule(rule, { manual = false } = {}) {
+  if (runningRules.has(rule.id)) return { skipped: 'running' };
+  runningRules.add(rule.id);
+  const action = JSON.parse(rule.action || '{}');
+  const settings = getSettings();
+  try {
+    let summary = '';
+    let taskId = null;
+    if (action.kind === 'scan') {
+      // 动态引入：discovery 依赖 router（发消息），静态引用会成环。
+      const discovery = await import('./discovery.js');
+      const override = { workflow: action.workflow || '', worker: action.worker || '' };
+      const result = await discovery.runPlugin(action.source, { force: true, override });
+      summary = `扫描了「${action.source}」：${result.scanned || 0} 条新内容，建了 ${result.created || 0} 个任务`;
+      if (!result.created) {
+        addMessage({ sessionId: MAIN_SESSION, role: 'assistant', text: `我按自动化「${rule.name}」${summary}。`, kind: 'text' });
+      }
+    } else {
+      const flow = action.workflow ? workflows.getWorkflow(action.workflow) : null;
+      const flowWorker = flow?.worker && isWorker(flow.worker) ? flow.worker : null;
+      const worker = action.worker && isWorker(action.worker) ? action.worker : flowWorker || defaultWorker();
+      if (!worker) throw new Error('本机没有可用的 Worker');
+      const cwd = ruleWorkspace(action.cwd, settings);
+      const title = action.title || rule.name;
+      const prompt = action.prompt + workflows.promptSection(flow);
+      const task = scheduler.createTask({
+        title,
+        prompt,
+        worker,
+        cwd,
+        origin: 'proactive',
+        sessionId: MAIN_SESSION,
+        ruleId: rule.id,
+        priority: 3,
+        source: 'rule',
+        workflowId: flow?.id || null,
+        workflowName: flow?.name || ''
+      });
+      taskId = task.id;
+      event(task.id, 'task/proactive', { rule: rule.name });
+      const workerLabel = workerCatalog().find((w) => w.id === worker)?.label || worker;
+      summary = `建了任务「${title}」，交给「${workerLabel}」`;
+      addMessage({
+        sessionId: MAIN_SESSION,
+        role: 'assistant',
+        text: `我按自动化「${rule.name}」起了任务「${title}」。有结果我会回来告诉你。`,
+        kind: 'task',
+        taskId: task.id
+      });
+    }
+    db.prepare('UPDATE rules SET last_run = ?, last_status = ?, last_summary = ? WHERE id = ?')
+      .run(now(), 'ok', summary.slice(0, 300), rule.id);
+    bus.emit('rules/updated', { rules: listRules() });
+    if (taskId) bus.emit('stats/updated', scheduler.stats());
+    return { summary, taskId, manual };
+  } catch (err) {
+    db.prepare('UPDATE rules SET last_run = ?, last_status = ?, last_summary = ? WHERE id = ?')
+      .run(now(), 'error', String(err.message).slice(0, 300), rule.id);
+    bus.emit('rules/updated', { rules: listRules() });
+    throw err;
+  } finally {
+    runningRules.delete(rule.id);
+  }
+}
+
+// 到点了却没跑成（比如一个可用的 Worker 都没有）时，每条规则每天只提醒一次，不每分钟刷日志。
 const ruleWarnings = new Map(); // rule id -> 日期
 
 export async function proactiveScan() {
@@ -410,48 +590,19 @@ export async function proactiveScan() {
   if (!settings.proactive) return { created: 0 };
   const rules = db.prepare('SELECT * FROM rules WHERE enabled = 1').all();
   let created = 0;
-
   for (const rule of rules) {
     if (!ruleDue(rule)) continue;
-    const action = JSON.parse(rule.action);
-
-    const prompt = action.prompt;
-    const title = action.title || rule.name;
-    let task;
     try {
-      task = scheduler.createTask({
-        title,
-        prompt,
-        worker: isWorker(action.worker) ? action.worker : defaultWorker(),
-        cwd: action.cwd || defaultWorkspacePath(settings),
-        origin: 'proactive',
-        sessionId: MAIN_SESSION,
-        ruleId: rule.id,
-        priority: 3,
-        source: 'rule'
-      });
+      const result = await runRule(rule);
+      if (result?.taskId) created += 1;
     } catch (err) {
-      // 不记 last_run：3 小时窗口内 Worker 恢复了还能补上。
       const today = new Date().toDateString();
       if (ruleWarnings.get(rule.id) !== today) {
         ruleWarnings.set(rule.id, today);
-        console.warn(`[proactive] 「${rule.name}」到点了但没能建任务：${err.message}`);
+        console.warn(`[automation] 「${rule.name}」失败：${err.message}`);
       }
-      continue;
     }
-    db.prepare('UPDATE rules SET last_run = ? WHERE id = ?').run(now(), rule.id);
-    event(task.id, 'task/proactive', { rule: rule.name });
-    addMessage({
-      sessionId: MAIN_SESSION,
-      role: 'assistant',
-      text: `我按「${rule.name}」的安排起了一个任务：${title}。有结果我会回来告诉你。`,
-      kind: 'task',
-      taskId: task.id
-    });
-    created += 1;
   }
-
-  if (created) bus.emit('stats/updated', scheduler.stats());
   return { created };
 }
 
@@ -471,7 +622,7 @@ export function setRuleEnabled(id, enabled) {
 
 export function startProactiveLoop() {
   setInterval(() => {
-    proactiveScan().catch((err) => console.warn('[proactive]', err.message));
+    proactiveScan().catch((err) => console.warn('[automation]', err.message));
   }, 60 * 1000).unref();
 }
 

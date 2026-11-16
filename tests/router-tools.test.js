@@ -11,6 +11,7 @@ process.env.JINGJING_DATA_DIR = dataDir;
 const { saveSettings } = await import('../src/db.js');
 const { validateManifest } = await import('../src/plugin-spec.js');
 const workers = await import('../src/workers.js');
+const workflows = await import('../src/workflows.js');
 const router = await import('../src/router.js');
 
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -87,4 +88,34 @@ test('模型不支持工具调用：退回两步判断，并且之后不再尝�
   calls.length = 0;
   await router.handleMessage('再聊两句');
   assert.deepEqual(calls.map((c) => c.kind), ['classify', 'chat'], '记住了这个模型不支持工具');
+});
+
+test('工作区：聊天框里显式选的 > 文字里点名的 > 流程指定的 > 默认', async () => {
+  const sandbox = path.join(dataDir, 'sandbox');
+  const yu = path.join(dataDir, '渔童');
+  fs.mkdirSync(sandbox, { recursive: true });
+  fs.mkdirSync(yu, { recursive: true });
+  saveSettings({
+    workspaces: [
+      { id: 'default', name: '默认工作区', path: sandbox },
+      { id: 'ws_yu', name: '渔童', path: yu }
+    ],
+    defaultWorkspaceId: 'default'
+  });
+  const flow = workflows.createWorkflow({ name: '字段改名', when: '字段改名', worker: 'quiet', workspace: '默认工作区', steps: '1. 改字段' });
+  try {
+    // 文字里点名渔童：压过流程写死的默认工作区。
+    const byText = await router.handleMessage('字段改名，在渔童工作区里做');
+    assert.equal(byText.task.cwd, yu);
+
+    // 聊天框显式选工作区：最高优先级。
+    const byPicker = await router.handleMessage('字段改名', { workspaceId: 'ws_yu' });
+    assert.equal(byPicker.task.cwd, yu);
+
+    // 都没指定：按流程的默认工作区。
+    const byFlow = await router.handleMessage('字段改名');
+    assert.equal(byFlow.task.cwd, sandbox);
+  } finally {
+    workflows.deleteWorkflow(flow.id);
+  }
 });

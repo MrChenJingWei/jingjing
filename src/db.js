@@ -161,6 +161,8 @@ ensureColumn('source_items', 'occurred_at', 'TEXT');
 ensureColumn('source_items', 'decision_reason', 'TEXT');
 ensureColumn('source_items', 'event_type', 'TEXT');
 ensureColumn('source_items', 'hops', 'INTEGER');
+ensureColumn('rules', 'last_status', 'TEXT');
+ensureColumn('rules', 'last_summary', 'TEXT');
 ensureColumn('source_plugins', 'webhook_token', 'TEXT');
 ensureColumn('source_plugins', 'workspace_id', 'TEXT');
 ensureColumn('source_plugins', 'interval_minutes', 'INTEGER');

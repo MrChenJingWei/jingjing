@@ -72,6 +72,10 @@
           <div class="typing" id="typing" hidden><span></span><span></span><span></span><em>静静在想</em></div>
         </div>
         <div class="composer-wrap">
+          <div class="composer-scope" id="composer-scope" hidden>
+            <label for="chat-workspace">工作区</label>
+            <select id="chat-workspace" title="这条消息建的任务放在哪个工作区"></select>
+          </div>
           <form class="composer" id="composer">
             <textarea id="input" rows="1" placeholder="跟静静说点什么，或直接丢一件事过来…" autocomplete="off"></textarea>
             <button type="submit" class="send-btn" id="send-btn" aria-label="发送">
@@ -446,8 +450,13 @@
           </section>
 
           <section class="panel" data-settings-panel="rules">
-            <h3>每日简报</h3>
-            <p class="panel-hint">每天到点汇总昨天完成的任务、今天等待处理的事项和近期记忆。外部来源请用「任务来源插件」。</p>
+            <div class="worker-rule-head">
+              <div>
+                <h3>自动化</h3>
+                <p class="panel-hint">按时间自己跑：到点建一个任务，或者把某个来源扫一遍、按指定流程处理新条目。比如「每天早上汇总 TAPD 待办」「每天 2 点把 TAPD 里可自动修的 bug 修掉」。</p>
+              </div>
+              <button type="button" class="mini-btn" id="add-rule">新建</button>
+            </div>
             <div id="rules-list" class="rules-list"></div>
           </section>
 

@@ -318,7 +318,8 @@ const server = http.createServer(async (req, res) => {
       console.log(`[chat] ${body.source || 'web'}: ${String(body.text || '').slice(0, 60)}`);
       const result = await router.handleMessage(body.text, {
         sessionId: body.sessionId || router.MAIN_SESSION,
-        source: body.source || 'web'
+        source: body.source || 'web',
+        workspaceId: body.workspaceId || null
       });
       return json(res, 200, { ...result, stats: scheduler.stats() });
     }
@@ -854,6 +855,22 @@ const server = http.createServer(async (req, res) => {
     if (ruleMatch && req.method === 'POST') {
       const body = await readBody(req);
       return json(res, 200, { rules: router.setRuleEnabled(ruleMatch[1], Boolean(body.enabled)) });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/rules') {
+      const body = await readBody(req);
+      return json(res, 200, { rules: router.saveRule(body) });
+    }
+
+    const ruleRun = pathname.match(/^\/api\/rules\/([^/]+)\/run$/);
+    if (ruleRun && req.method === 'POST') {
+      const result = await router.runRuleNow(ruleRun[1]);
+      return json(res, 200, { result, rules: router.listRules() });
+    }
+
+    const ruleDelete = pathname.match(/^\/api\/rules\/([^/]+)$/);
+    if (ruleDelete && req.method === 'DELETE') {
+      return json(res, 200, { rules: router.deleteRule(ruleDelete[1]) });
     }
 
     if (req.method === 'POST' && pathname === '/api/channels/test') {

@@ -66,6 +66,21 @@ export function toolSignal(text) {
 // 「我去 Claude Code 里查」是让用户自己去用，不算。
 const HANDOFF_RE = /^\s*(?:改用|换用|换成|改派给?|转交给?|交给|让)/;
 
+// 只在主人自己的对话（网页 / Telegram 聊天、拍板里的自定义回复）里才认的口语别名：
+// 说「用 deepseek 去做」=「DeepSeek Harness」。外部来源消息（插件、企微等）走 namedWorker
+// 的默认分支，不带 aliases 开关，所以外部的「deepseek」不会改派。
+const CHAT_ALIASES = [['deepseek', 'dsh']];
+
+function aliasWorker(text, workers) {
+  const t = String(text || '');
+  for (const [word, id] of CHAT_ALIASES) {
+    const worker = workers.find((w) => w.id === id && w.available !== false);
+    // 用边界排除「deepseek-chat」这类模型名，避免把模型配置说成换 Worker。
+    if (worker && new RegExp(`(^|[^a-z0-9_-])${word}([^a-z0-9_-]|$)`, 'i').test(t)) return worker;
+  }
+  return null;
+}
+
 /** 拍板选项是不是「换成某个可用 Worker 来做」，是的话返回那个 Worker，否则 null。 */
 export function handoffWorker(option, workers = []) {
   return HANDOFF_RE.test(String(option || '')) ? namedWorker(option, workers) : null;
@@ -105,10 +120,15 @@ export function describeWorker(w) {
 /**
  * 一句话里点名了哪个可用的 Worker（按 manifest 的 keywords 认，比如「用 claude 通过 tapd 查」→ Claude Code）。
  * 点名了多个时取开销最低的；没点名或点名的不可用时返回 null。
+ * aliases=true 时额外认主人对话里的口语别名（目前只有「deepseek」→ dsh），外部来源不要传。
  */
-export function namedWorker(text, workers = []) {
+export function namedWorker(text, workers = [], { aliases = false } = {}) {
   const t = String(text || '');
   if (!t) return null;
+  if (aliases) {
+    const alias = aliasWorker(t, workers);
+    if (alias) return alias;
+  }
   return workers.filter((w) => w.available !== false && keywordRe(w)?.test(t)).sort(byPreference)[0] || null;
 }
 
@@ -119,9 +139,10 @@ export function namedWorker(text, workers = []) {
  * @param {boolean} input.decided   requested 是否来自模型判断
  * @param {Array} input.workers     [{ id, label, available, abilities, cost, keywords, source }]
  * @param {string|null} input.fallback  主人在设置里指定的兜底 Worker；不可用或没指定时用最便宜的文本 Worker
+ * @param {boolean} input.aliases  是否认主人对话里的口语别名（外部来源不要传）
  * @returns {{ worker: string|null, need: string|null, reason: string, note: string }}
  */
-export function pickWorker({ text = '', requested = null, decided = false, workers = [], fallback: preferred = null } = {}) {
+export function pickWorker({ text = '', requested = null, decided = false, workers = [], fallback: preferred = null, aliases = false } = {}) {
   const usable = workers.filter((w) => w.available !== false);
   const byId = new Map(workers.map((w) => [w.id, w]));
   // 用户点名了一个本机不可用的 Worker（比如「用 codex 跑」但没装 codex）：按它被请求处理，好在回复里说明改派。
@@ -137,6 +158,10 @@ export function pickWorker({ text = '', requested = null, decided = false, worke
 
   // 1. 插件声明的关键词：用户点名了某个工具时优先交给它。
   const hits = usable.filter((w) => keywordRe(w)?.test(text));
+  if (aliases) {
+    const alias = aliasWorker(text, usable);
+    if (alias && !hits.some((w) => w.id === alias.id)) hits.push(alias);
+  }
   if (hits.length) {
     const picked = requestedUsable && hits.some((w) => w.id === requested) ? requestedWorker : hits.sort(byPreference)[0];
     return { worker: picked.id, need: null, reason: 'keywords', note: unavailableNote(picked) };

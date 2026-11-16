@@ -334,7 +334,7 @@ async function decide(items, pluginName, { flows = [] } = {}) {
  * 把一批通用条目交给核心处理：去重、判断、建任务、写回对话。
  * 插件（poll 或 webhook）只负责交条目，行为全部在这里。
  */
-export async function ingestItems(id, rawItems, { verb = '接收' } = {}) {
+export async function ingestItems(id, rawItems, { verb = '接收', override = null } = {}) {
   const plugin = plugins.getPlugin(id);
   if (!plugin) throw new Error('插件不存在');
   const items = (Array.isArray(rawItems) ? rawItems : [])
@@ -356,19 +356,23 @@ export async function ingestItems(id, rawItems, { verb = '接收' } = {}) {
   }
 
   try {
-    return await processFresh(id, plugin, fresh, verb);
+    return await processFresh(id, plugin, fresh, verb, override);
   } catch (err) {
     releasePending(id, fresh.map((item) => item.externalId));
     throw err;
   }
 }
 
-async function processFresh(id, plugin, fresh, verb) {
+async function processFresh(id, plugin, fresh, verb, override = null) {
   const workspace = workspaceFor(plugin);
   const canReply = typeof plugin.module?.reply === 'function';
   const autoReply = canReply && Boolean(plugin.row?.auto_reply);
   const catalog = workerCatalog();
-  const decisions = await decide(fresh, plugin.manifest.name, { flows: workflows.catalog() });
+  // 自动化指定了工作流程 / Worker 时，不再让模型判断要不要动手：这条规则就是主人配的处理器。
+  const forced = override && (override.workflow || override.worker) ? override : null;
+  const decisions = forced
+    ? fresh.map((item) => ({ actionable: true, title: '', reason: '按自动化规则处理', priority: 2 }))
+    : await decide(fresh, plugin.manifest.name, { flows: workflows.catalog() });
   let created = 0;
   const createdTasks = [];
   const details = [];
@@ -398,11 +402,14 @@ async function processFresh(id, plugin, fresh, verb) {
     // 先用原消息匹配触发词；没命中再看模型挑的流程；最后用模型改写的任务名再匹配一次
     // （「蓝马的4.5做的怎么样了」里没有「进度」，改写成「回复蓝马4.5需求进度」就有了）。
     const rawText = `${item.title}\n${item.content || ''}`;
-    const flow = workflows.matchWorkflow(rawText)?.workflow
+    const forcedFlow = forced?.workflow ? workflows.getWorkflow(forced.workflow) : null;
+    const flow = forcedFlow
+      || workflows.matchWorkflow(rawText)?.workflow
       || (decision.workflow ? workflows.getWorkflow(decision.workflow) : null)
       || (decision.title ? workflows.matchWorkflow(decision.title)?.workflow : null)
       || null;
-    const flowWorker = flow?.worker ? catalog.find((w) => w.id === flow.worker && w.available) : null;
+    const forcedWorker = forced?.worker ? catalog.find((w) => w.id === forced.worker && w.available) : null;
+    const flowWorker = forcedWorker || (flow?.worker ? catalog.find((w) => w.id === flow.worker && w.available) : null);
     const taskWorkspace = workflows.resolveWorkspace(flow) || workspace;
     const prompt = [
       decision.prompt || `处理来自「${plugin.manifest.name}」的这条事项。`,
@@ -429,10 +436,10 @@ async function processFresh(id, plugin, fresh, verb) {
       workspaceId: workspace.id
     });
     const fallback = defaultWorker();
-    const routing = flowWorker || matchedRule
+    const routing = forced || flowWorker || matchedRule
       ? null
       : routingHold({ id, plugin, item, rawText, title: decision.title || item.title, fallback, catalog, flow });
-    const worker = flowWorker?.id || matchedRule?.worker || fallback || routing?.candidate.id || null;
+    const worker = forcedWorker?.id || flowWorker?.id || matchedRule?.worker || fallback || routing?.candidate.id || null;
     const flowNote = flow?.worker && !flowWorker ? `（流程指定的「${flow.worker}」现在不可用）` : '';
     // 要先问主人交给谁的，不合并进已有任务：合并进去这个请求就被默默交给了别的 Worker。
     if (item.groupKey && !routing) {
@@ -514,7 +521,7 @@ async function processFresh(id, plugin, fresh, verb) {
   return { scanned: fresh.length, created, details };
 }
 
-export async function runPlugin(id, { force = false } = {}) {
+export async function runPlugin(id, { force = false, override = null } = {}) {
   const plugin = plugins.getPlugin(id);
   if (!plugin) throw new Error('插件不存在');
   const type = plugin.manifest.type || 'poll';
@@ -547,7 +554,7 @@ export async function runPlugin(id, { force = false } = {}) {
       state: stateFor(id)
     }), limits.pollMs, `拉取超时（${seconds(limits.pollMs)}）`);
     const rawItems = Array.isArray(result?.items) ? result.items : [];
-    const ingested = await ingestItems(id, rawItems, { verb: '扫描' });
+    const ingested = await ingestItems(id, rawItems, { verb: '扫描', override });
     plugins.recordRun(id, { startedAt, status: 'ok', scanned: ingested.scanned, created: ingested.created });
     return ingested;
   } catch (err) {

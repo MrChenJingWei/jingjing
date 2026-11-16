@@ -636,9 +636,11 @@ export function approve(approvalId, choice, { by = 'user', answer = '' } = {}) {
   }
 
   // 自己写的决定里点名了另一个可用的 Worker（比如「用 claude 通过 tapd 查」）：改派给它接着做。
-  // Worker 给的选项只认明确换人的说法（「改用 Claude Code 去查」）；「我去 Claude Code 里查」是让用户自己去用，不算。
+  // 主人自己的回复认口语别名（「改用 deepseek 去做」→ DeepSeek Harness）；Worker 给的选项只认明确换人的说法。
   const catalog = workerCatalog();
-  const named = custom ? namedWorker(custom, catalog) : handoffWorker(approval.options[index], catalog);
+  const named = custom
+    ? namedWorker(custom, catalog, { aliases: true })
+    : handoffWorker(approval.options[index], catalog);
   const handoff = named && named.id !== task.worker ? named : null;
   const payload = { ...(getTask(task.id)?.resume_payload || {}) };
   if (handoff) {

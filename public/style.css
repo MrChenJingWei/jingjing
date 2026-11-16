@@ -392,6 +392,22 @@ html[data-theme="dark"] .ambient {
 .send-btn:hover { filter: brightness(1.07); transform: translateY(-1px); }
 .send-btn:disabled { opacity: .45; transform: none; cursor: default; }
 .composer-hint { text-align: center; font-size: 10.5px; color: var(--faint); margin-top: 7px; }
+.composer-scope {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  margin-bottom: 7px;
+  font-size: 11px; color: var(--faint);
+}
+.composer-scope select {
+  max-width: 68%;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit; font-size: 11px;
+  outline: none;
+}
+.composer-scope select:focus { border-color: var(--accent); }
 
 /* ---------------- shared view ---------------- */
 .view-head {
@@ -716,6 +732,10 @@ html[data-theme="dark"] .switch::after { background: #e9e5dc; }
 }
 .rule-item b { font-size: 13px; font-weight: 500; display: block; }
 .rule-item small { color: var(--faint); font-size: 11px; }
+.rule-item .rule-summary { display: block; margin-top: 2px; color: var(--muted); }
+.rule-item .rule-error { color: var(--danger); font-style: normal; }
+.rule-item .rule-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.rule-item .rule-actions .mini-btn { white-space: nowrap; }
 .about { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; margin: 0 0 12px; }
 .about div { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
 .about dt { color: var(--muted); }

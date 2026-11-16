@@ -411,3 +411,19 @@ test('每一种终态都只发一次 task/finished：排队中取消、执行中
     saveSettings({ queuePaused: false, maxHops: 6 });
   }
 });
+
+test('主人拍板时自己写「deepseek」：派给 DeepSeek Harness；外部来源不认这个别名', async () => {
+  fakeWorker('dsh', { abilities: ['text', 'code'], cost: 4, keywords: 'deepseek harness|\\bdsh\\b' }, async () => ({ status: 'done', summary: 'dsh 改完了' }));
+  fakeWorker('alias-asker', {}, async (task, ctx) => (ctx.resume
+    ? { status: 'done', summary: 'asker 收尾' }
+    : { status: 'needs_approval', summary: '要改代码', approval: { question: '谁来改？', options: ['我自己改'], custom: true } }));
+
+  const task = scheduler.createTask({ title: '别名改派', prompt: '改一下接口字段', worker: 'alias-asker' });
+  await waitFor(() => status(task.id) === 'waiting_approval', '等待拍板');
+  scheduler.approve(scheduler.getTask(task.id).approval_id, null, { answer: '改用 deepseek 去做这个任务' });
+  await waitFor(() => status(task.id) === 'done', '改派后完成');
+  assert.equal(scheduler.getTask(task.id).worker, 'dsh');
+  assert.equal(scheduler.getTask(task.id).result, 'dsh 改完了');
+  const edited = scheduler.taskEvents(task.id).find((e) => e.type === 'task/edited');
+  assert.deepEqual([edited.data.from.worker, edited.data.to.worker, edited.data.by], ['alias-asker', 'dsh', 'approval']);
+});

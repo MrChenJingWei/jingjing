@@ -594,12 +594,18 @@ export async function learnFromTask(task, events = [], { workerLabel, workspaceN
     })
     .filter(Boolean)
     .join('; ');
+  // 学流程时不把「默认工作区」写死进去：否则以后同类请求都会被拉回默认目录，
+  // 连主人文字里点名的工作区也会被流程覆盖。只有确实用了别的工作区才记下来。
+  const settings = getSettings();
+  const defaultWorkspace = (settings.workspaces || []).find((w) => w.id === settings.defaultWorkspaceId);
+  const learnedWorkspace = workspaceName && defaultWorkspace?.name !== workspaceName ? workspaceName : '';
+
   const file = uniqueFile(LEARNED_DIR, name);
   const header = frontmatter({
     name,
     when,
     worker: task.worker,
-    workspace: workspaceName,
+    workspace: learnedWorkspace,
     auto: answers ? 'false' : '',
     answers,
     status: 'candidate',
