@@ -38,8 +38,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/app" "$APP/Contents/Reso
 echo "==> 编译 App"
 CACHE="$BUILD/modulecache"
 mkdir -p "$CACHE" "$BUILD/tmp"
+# 不指定时 swiftc 按构建机的系统版本编译，装到更老的 macOS 上打不开；最低版本以 Info.plist 为准。
+MIN_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$ROOT/packaging/macos/Info.plist")"
 CLANG_MODULE_CACHE_PATH="$CACHE" SWIFT_MODULE_CACHE_PATH="$CACHE" TMPDIR="$BUILD/tmp" \
-swiftc -O -swift-version 5 -module-cache-path "$CACHE" \
+swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos$MIN_MACOS" -module-cache-path "$CACHE" \
   -framework AppKit -framework WebKit -framework UserNotifications -framework Carbon -framework ServiceManagement \
   -o "$APP/Contents/MacOS/Jingjing" \
   "$ROOT"/packaging/macos/*.swift

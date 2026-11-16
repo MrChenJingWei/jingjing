@@ -290,7 +290,7 @@ git push origin main --tags
 工作流 [.github/workflows/release.yml](.github/workflows/release.yml) 会先跑测试，然后分两个 job 发布：
 
 - `release`（ubuntu）：`dist/jingjing-app-<版本>.zip`、`dist/latest.json`（含 sha256）、`scripts/install.sh`；
-- `macos-app`（macos-14 / arm64）：`jingjing-<版本>-macos-arm64.pkg`、同名 zip、`SHA256SUMS`。
+- `macos-app`（macos-latest / arm64，最低支持的系统版本按 `Info.plist` 编译）：`jingjing-<版本>-macos-arm64.pkg`、同名 zip、`SHA256SUMS`。
 
 本地想验证发布产物：
 

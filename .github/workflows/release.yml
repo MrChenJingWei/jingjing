@@ -44,7 +44,16 @@ jobs:
         run: |
           command -v zip >/dev/null || sudo apt-get update -qq && sudo apt-get install -y zip
           command -v rsync >/dev/null || sudo apt-get install -y rsync
-          JINGJING_UPDATE_NOTES="$(git log -1 --pretty=%s)" bash scripts/package-update.sh
+          # 更新说明（「关于与更新」里给用户看的）：tag 附注写了内容就用它，否则用 tag 指向的那个提交的标题；
+          # 这样从 main 手动重跑、或补发安装包时，说明不会变成最后一个 ci / chore 提交。
+          VERSION="$(node -p "require('./package.json').version")"
+          NOTES="$(git log -1 --pretty=%s)"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            NOTES="$(git log -1 --pretty=%s "v$VERSION^{commit}")"
+            TAG_NOTE="$(git tag -l --format='%(contents:subject)' "v$VERSION")"
+            if [ -n "$TAG_NOTE" ] && [ "$TAG_NOTE" != "v$VERSION" ]; then NOTES="$TAG_NOTE"; fi
+          fi
+          JINGJING_UPDATE_NOTES="$NOTES" bash scripts/package-update.sh
 
       - name: 发布 Release
         env:
@@ -64,9 +73,11 @@ jobs:
           fi
 
   # macOS App 只能在 macOS 上打（swiftc + pkgbuild），单独一个 job。
+  # 用 macos-latest（Apple Silicon）：旧镜像会被 GitHub 下线（macos-14 已经不能用了）；
+  # 最低系统版本由 build.sh 按 Info.plist 指定，和构建机是哪个 macOS 无关。
   macos-app:
     needs: release
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
