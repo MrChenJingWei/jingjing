@@ -7,7 +7,6 @@ const builtins = [
   { id: 'llm', label: '问答', abilities: ['text'], cost: 1, source: 'builtin', available: true },
   { id: 'file', label: '文件生成', abilities: ['write-file'], cost: 1, source: 'builtin', available: true },
   { id: 'shell', label: '文件操作', abilities: ['manage-files'], cost: 1, source: 'builtin', available: true },
-  { id: 'memory', label: '记忆整理', abilities: ['memory'], cost: 1, source: 'builtin', available: true },
   { id: 'claude', label: 'Claude Code', abilities: codeAbilities, cost: 4, keywords: 'claude', source: 'builtin', available: true },
   { id: 'codex', label: 'Codex', abilities: codeAbilities, cost: 4, keywords: 'codex', source: 'builtin', available: false },
   { id: 'dsh', label: 'DeepSeek Harness', abilities: codeAbilities, cost: 4, source: 'builtin', available: false }
@@ -94,4 +93,12 @@ test('handoffWorker：拍板选项是「改用 / 交给 X」才算换人，「�
   assert.equal(handoffWorker('我去TAPD查了贴给你', builtins), null);
   assert.equal(handoffWorker('改用 codex 跑一下', builtins), null, '点名的 Worker 本机不可用');
   assert.equal(handoffWorker('改成先发草稿', builtins), null, '没点名 Worker');
+});
+
+test('兜底 Worker：主人指定的优先；指定的不可用或没指定时用最便宜的文本 Worker；能力和点名照旧优先', () => {
+  assert.equal(pick('帮我写一份本周工作总结', { fallback: 'claude' }), 'claude', '舍得花钱的可以让 Claude Code 兜底');
+  assert.equal(pick('帮我写一份本周工作总结', { fallback: 'codex' }), 'llm', 'codex 本机不可用，回到自动');
+  assert.equal(pick('帮我写一份本周工作总结', { fallback: 'nope' }), 'llm');
+  assert.equal(pick('帮我写一份本周工作总结'), 'llm');
+  assert.equal(pick('帮我生成一个 notes.md 文件', { fallback: 'llm' }), 'file', '需要的能力照旧优先');
 });

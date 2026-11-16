@@ -355,7 +355,8 @@ async function execute(task) {
       signal: controller.signal,
       resume,
       recovery,
-      memories: memory.context(`${task.title} ${task.prompt}`, { limit: 6 }),
+      // Worker 只拿业务记忆；静静的人格记忆不进任务。
+      memories: memory.context(`${task.title} ${task.prompt}`, { limit: 6, domain: 'work' }),
       tasks: listTasks({ limit: 10 }),
       onProgress,
       checkpoint,

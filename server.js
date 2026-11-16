@@ -126,8 +126,9 @@ function bootstrap() {
     messages: router.messages(router.MAIN_SESSION, 120),
     tasks: scheduler.listTasks({ limit: 80 }),
     approvals: scheduler.pendingApprovals(),
-    memories: memory.list({ limit: 100 }),
-    memoryStats: memory.allLayersStats(),
+    memories: memory.list({ limit: 100, domain: 'work' }),
+    memoryStats: memory.allLayersStats({ domain: 'work' }),
+    memoryDomains: memory.domainStats(),
     rules: router.listRules(),
     workerRules: workerRules.listWorkerRules(),
     workers: availability(),
@@ -454,8 +455,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/memories') {
       const q = url.searchParams.get('q');
       const layer = url.searchParams.get('layer') || undefined;
-      const items = q ? memory.search(q, 50) : memory.list({ layer, limit: 200 });
-      return json(res, 200, { memories: items, stats: memory.allLayersStats() });
+      // 记忆页按域看：work 业务（默认）/ persona 人格。
+      const domain = url.searchParams.get('domain') === 'persona' ? 'persona' : 'work';
+      const items = q ? memory.search(q, 50, { domain }) : memory.list({ layer, limit: 200, domain });
+      return json(res, 200, { memories: items, stats: memory.allLayersStats({ domain }), domains: memory.domainStats() });
     }
 
     if (req.method === 'POST' && pathname === '/api/memories') {
@@ -466,7 +469,8 @@ const server = http.createServer(async (req, res) => {
         kind: body.kind || 'note',
         tags: body.tags || [],
         importance: Number(body.importance ?? 0.6),
-        source: 'manual'
+        source: 'manual',
+        domain: body.domain === 'persona' ? 'persona' : 'work'
       });
       bus.emit('memory/created', { memory: item });
       return json(res, 200, { memory: item });
@@ -666,7 +670,7 @@ const server = http.createServer(async (req, res) => {
       const payload = {
         exportedAt: new Date().toISOString(),
         tasks: db.prepare('SELECT * FROM tasks').all(),
-        memories: memory.list({ limit: 5000 }),
+        memories: memory.list({ limit: 5000, domain: 'all' }),
         rules: router.listRules(),
         plugins: plugins.listPlugins(),
         settings: maskSettings(getSettings())

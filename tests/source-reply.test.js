@@ -127,3 +127,77 @@ test('打开自动发回：指令里注明结果会原样发回；完成后自�
   plugins.savePlugin('chat-test', { enabled: false });
   await assert.rejects(discovery.replyToSource(taskId, { text: 'x' }), /已停用/);
 });
+
+test('私聊或 @ 静静、但不是要办的事：不建任务，静静按人格决定回不回；要开自动发回才回', async () => {
+  const { saveSettings } = await import('../src/db.js');
+  assert.equal(discovery.normalizeItem(message(0, { direct: 'yes' })).direct, false, '只认 direct: true');
+
+  // 假模型：人格回复的提示词里有「不是要你办的事」，其余当成判断。
+  const realFetch = globalThis.fetch;
+  const model = { decide: { actionable: false, reason: '闲聊请求，无需行动' }, reply: '今晚不讲，怕你睡不着。', asked: [] };
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body || '{}'));
+    const system = body.messages?.[0]?.content || '';
+    model.asked.push(system);
+    const content = system.includes('不是要你办的事')
+      ? JSON.stringify({ reply: model.reply })
+      : JSON.stringify({ items: [{ index: 0, priority: 2, title: '讲鬼故事', prompt: '无需行动', ...model.decide }] });
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content } }], usage: { total_tokens: 5 } }) };
+  };
+  saveSettings({ provider: 'deepseek', apiKey: 'sk-test', persona: '慵懒、嘴硬心软' });
+  const memory = await import('../src/memory.js');
+  memory.remember({ text: '静静怕黑，不爱讲鬼故事', layer: 'profile', domain: 'persona' });
+  memory.remember({ text: '蓝马 4.5 预计周五提测，鬼故事专项暂停', layer: 'semantic' });
+  globalThis.__replies = [];
+  plugins.savePlugin('chat-test', { enabled: true, autoReply: true });
+  const chat = (n, extra = {}) => message(n, { content: '@静静 给我讲个鬼故事', direct: true, ...extra });
+  try {
+    const { created, details } = await discovery.ingestItems('chat-test', [chat(10)]);
+    assert.equal(created, 0, '闲聊不建任务');
+    assert.equal(details[0].status, 'chat');
+    assert.equal(details[0].replied, true);
+    assert.equal(globalThis.__replies.length, 1);
+    assert.equal(globalThis.__replies[0].text, '今晚不讲，怕你睡不着。');
+    assert.deepEqual(globalThis.__replies[0].to, { chatId: 'group-1', userId: 'zhangsan' });
+    assert.equal(globalThis.__replies[0].task, null, '闲聊回复没有任务');
+    assert.match(model.asked[0], /direct=true/, '判断时告诉模型哪些是直接找静静的');
+    const personaPrompt = model.asked.find((s) => s.includes('不是要你办的事'));
+    assert.match(personaPrompt, /风格：慵懒、嘴硬心软/, '按设置里的人格回');
+    assert.doesNotMatch(personaPrompt, /长期记忆|当前任务/, '不给外人看主人的记忆和任务');
+    assert.match(personaPrompt, /静静怕黑/, '用她自己的人格记忆');
+    assert.doesNotMatch(personaPrompt, /蓝马 4\.5/, '业务记忆不给外人');
+    assert.ok(router.messages(router.MAIN_SESSION, 20).some((m) => /有人找我闲聊，我回了[\s\S]*今晚不讲/.test(m.text)), '替主人说了话，对话里留底');
+
+    // 静静这次不想回：不发。
+    model.reply = '';
+    const quiet = await discovery.ingestItems('chat-test', [chat(11)]);
+    assert.equal(quiet.details[0].status, 'chat');
+    assert.equal(quiet.details[0].replied, false);
+    assert.equal(globalThis.__replies.length, 1);
+
+    // 没开自动发回：不回，也不调模型去想回什么。
+    plugins.savePlugin('chat-test', { autoReply: false });
+    model.reply = '不该发出去';
+    const before = model.asked.length;
+    const off = await discovery.ingestItems('chat-test', [chat(12)]);
+    assert.equal(off.details[0].replied, false);
+    assert.match(off.details[0].reason, /没开「自动发回」/);
+    assert.equal(model.asked.length, before + 1, '只调了判断，没调人格回复');
+    assert.equal(globalThis.__replies.length, 1);
+
+    // 不是直接找静静的闲聊：照旧跳过，不回。
+    plugins.savePlugin('chat-test', { autoReply: true });
+    const plain = await discovery.ingestItems('chat-test', [message(13, { content: '大家周末愉快' })]);
+    assert.equal(plain.details[0].status, 'skipped');
+    assert.equal(globalThis.__replies.length, 1);
+
+    // 直接找静静、而且是要办的事：照常建任务。
+    model.decide = { actionable: true, reason: '问进度', title: '回复进度', prompt: '查进度后回复' };
+    const work = await discovery.ingestItems('chat-test', [chat(14, { content: '@静静 请回复一下蓝马的进度' })]);
+    assert.equal(work.created, 1);
+    assert.equal(work.details[0].status, 'task');
+  } finally {
+    globalThis.fetch = realFetch;
+    saveSettings({ provider: 'demo', apiKey: '' });
+  }
+});

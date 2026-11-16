@@ -357,13 +357,15 @@ Webhook 的 `ctx` 还包含 `rawBody`、`headers`、`query`，方便插件做签
   url: 'https://example.com/item/1',
   occurredAt: '2026-11-13T04:00:00.000Z',
   meta: { from: '...' },
-  replyTo: { chatId: '...' }       // 可选：任务结果发回哪里（配合导出的 reply()）
+  replyTo: { chatId: '...' },      // 可选：任务结果发回哪里（配合导出的 reply()）
+  direct: true                     // 可选：对方直接找过来的消息（私聊、群里 @ 机器人）
 }
 ```
 
 - 一次最多交 10 条，核心会截断。
 - `externalId` 相同就不会重复建任务。
 - `kind=agenda` 会被当作「需要准备」的事项；`email` / `note` 交给判断层；
+- `direct: true` 表示对方直接找过来（私聊、群里 @ 机器人）：要办的事照常建任务；闲聊、打招呼这类不建任务，也不直接丢掉，由静静按设置里的人格决定回不回（要开这个来源的「自动发回」，并且插件导出了 `reply()`，回复时 `task` 为 `null`）。这类条目在 `ingest` 的结果里 `status` 为 `chat`。群里没 @ 的消息、通知、邮件不要标；
 - `url` 和 `occurredAt` 会随条目持久化到 `source_items`，可用来回溯；`meta` 只参与判断，不持久化；
 - 插件**只负责取数据和整形**，不能指定 Worker、优先级、任务模板、是否自动执行或是否需要审批——这些行为全部由静静决定；
 - 插件不要自己建任务、不要写数据库、不要直接改界面；
@@ -434,7 +436,7 @@ tail -f data/logs/server.log
 
 Worker 是执行器：拿到一个任务，跑一轮，返回结果。它和来源插件共用安装/删除机制，manifest 用 `kind: "worker"`。
 
-**内置 Worker 也是这种插件包**：`问答`、`文件生成`、`文件操作`、`记忆整理`、`Claude Code`、`Codex`、`DeepSeek Harness` 都在仓库的 `workers/<id>/` 里，和你写的 Worker 插件走同一个加载器、同一份规范、同一个 `ctx`。想看完整例子直接读它们；新插件可以从 `plugins/.template-worker/` 复制。
+**内置 Worker 也是这种插件包**：`问答`、`文件生成`、`文件操作`、`Claude Code`、`Codex`、`DeepSeek Harness` 都在仓库的 `workers/<id>/` 里，和你写的 Worker 插件走同一个加载器、同一份规范、同一个 `ctx`。想看完整例子直接读它们；新插件可以从 `plugins/.template-worker/` 复制。
 
 | | 内置 Worker | Worker 插件 |
 | --- | --- | --- |
@@ -469,7 +471,7 @@ Worker 是执行器：拿到一个任务，跑一轮，返回结果。它和来�
 
 | 字段 | 默认 | 作用 |
 | --- | --- | --- |
-| `abilities` | `["text"]` | 能做什么，Router 只按能力派活。可选：`text` 文本问答 / `write-file` 在工作区生成文件 / `manage-files` 整理移动文件 / `code` 读写代码仓库、执行命令 / `memory` 整理记忆 |
+| `abilities` | `["text"]` | 能做什么，Router 只按能力派活。可选：`text` 文本问答 / `write-file` 在工作区生成文件 / `manage-files` 整理移动文件 / `code` 读写代码仓库、执行命令。记忆是静静内置的功能，不是 Worker 能力 |
 | `cost` | `3` | 相对开销 1–5。多个 Worker 都具备所需能力时，选开销最低的（同开销内置优先） |
 | `keywords` | `""` | 正则（忽略大小写）。任务文本命中时优先派给它，比如用户说「发到飞书」就交给飞书 Worker |
 | `recovery` | `"ask"` | 服务重启打断执行后怎么还原：`resume` 带着断点（`ctx.checkpoint` 存的）继续，没有断点按 `ask`；`restart` 直接重跑（只读或结果可覆盖时用）；`ask` 先问用户「重新执行 / 放弃」。同一任务连续被打断 3 次会停下 |

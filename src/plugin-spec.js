@@ -36,7 +36,8 @@ const MANIFEST_KEYS = new Set(['$schema', 'id', 'apiVersion', 'kind', 'name', 'v
  * - code：读写代码仓库、执行命令、操作 git
  * - memory：整理静静的记忆库
  */
-export const WORKER_ABILITIES = ['text', 'write-file', 'manage-files', 'code', 'memory'];
+// 记忆不是 Worker 的能力：记住、检索、整理都是静静内置的功能。
+export const WORKER_ABILITIES = ['text', 'write-file', 'manage-files', 'code'];
 export const WORKER_LIMIT_RANGES = {
   timeoutMinutes: { min: 1, max: 1440, label: '超时（分钟）' },
   concurrency: { min: 1, max: 4, label: '最多同时运行' },

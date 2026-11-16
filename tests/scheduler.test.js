@@ -142,10 +142,17 @@ test('内置 Worker 通过同一个加载器注册，并能在演示模式下执
   const errors = await workers.loadBuiltinWorkers();
   assert.deepEqual(errors, []);
   const avail = workers.availability();
-  for (const id of ['llm', 'file', 'shell', 'memory', 'claude', 'codex', 'dsh']) {
+  for (const id of ['llm', 'file', 'shell', 'claude', 'codex', 'dsh']) {
     assert.equal(avail[id]?.source, 'builtin', id);
   }
+  assert.equal(avail.memory, undefined, '记忆是静静内置的功能，不是 Worker');
   assert.equal(workers.defaultWorker(), 'llm');
-  const task = scheduler.createTask({ title: '整理记忆', prompt: '整理一下', worker: 'memory' });
-  await waitFor(() => status(task.id) === 'done', 'memory Worker 完成');
+  // 设置里指定了兜底 Worker：没指定 Worker 的任务（包括外部来源的）都交给它。
+  const { saveSettings } = await import('../src/db.js');
+  saveSettings({ fallbackWorker: 'file' });
+  assert.equal(workers.defaultWorker(), 'file');
+  saveSettings({ fallbackWorker: '' });
+  assert.equal(workers.defaultWorker(), 'llm');
+  const task = scheduler.createTask({ title: '回答问题', prompt: '总结一下', worker: 'llm' });
+  await waitFor(() => status(task.id) === 'done', '问答 Worker 完成');
 });

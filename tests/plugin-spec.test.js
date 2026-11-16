@@ -160,7 +160,7 @@ test('仓库里的内置 Worker 和 Worker 模板都符合规范', () => {
   const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
   const builtinDir = path.join(root, 'workers');
   const ids = fs.readdirSync(builtinDir).filter((name) => !name.startsWith('.')).sort();
-  assert.deepEqual(ids, ['claude', 'codex', 'dsh', 'file', 'llm', 'memory', 'shell']);
+  assert.deepEqual(ids, ['claude', 'codex', 'dsh', 'file', 'llm', 'shell']);
   for (const id of ids) {
     const dir = path.join(builtinDir, id);
     const manifest = validateManifest(JSON.parse(fs.readFileSync(path.join(dir, 'plugin.json'), 'utf8')), { dir, dirName: id });

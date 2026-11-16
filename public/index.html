@@ -113,12 +113,17 @@
           <div>
             <p class="eyebrow">长线记忆</p>
             <h2>记忆库</h2>
-            <p class="view-sub">画像、语义、情景三层，全部存在本机 SQLite。</p>
+            <p class="view-sub">分业务和人格两类，都存在本机 SQLite。业务记忆给任务和 Worker 用；人格记忆是静静自己的，只在她以自己的身份说话时用。</p>
           </div>
           <button class="ghost-btn" id="add-memory-btn">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
             记一条
           </button>
+        </div>
+
+        <div class="filters" id="mem-domains">
+          <button class="filter is-active" data-mem-domain="work">业务记忆</button>
+          <button class="filter" data-mem-domain="persona">人格记忆</button>
         </div>
 
         <div class="mem-stats" id="mem-stats"></div>
@@ -310,6 +315,11 @@
           <section class="panel" data-settings-panel="worker">
             <h3>Worker</h3>
             <p class="panel-hint">Worker 是无状态执行器。内置适配器之外，可以安装 Worker 插件来接入你主机上的其他 Agent/CLI。</p>
+            <label class="field fallback-field">
+              <span>兜底 Worker</span>
+              <select name="fallbackWorker" id="fallback-worker"></select>
+              <small>没有流程、分配规则，也没点名 Worker 时交给它；它不可用时自动退回最便宜的文本 Worker。外部来源（企微、邮件……）的消息也一样：选能执行命令的 Worker（比如 Claude Code），别人发来的消息也可能让它在这台电脑上动手。</small>
+            </label>
             <div class="worker-grid" id="worker-grid"></div>
             <div class="install-actions" style="margin-top:10px">
               <input type="file" id="worker-file" accept=".zip,application/zip" hidden />

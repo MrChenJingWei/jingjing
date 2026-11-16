@@ -170,6 +170,11 @@ ensureColumn('source_plugins', 'label', 'TEXT');
 ensureColumn('source_plugins', 'fail_count', 'INTEGER');
 db.prepare('UPDATE source_plugins SET plugin_id = id WHERE plugin_id IS NULL').run();
 db.prepare('UPDATE source_plugins SET fail_count = 0 WHERE fail_count IS NULL').run();
+// 记忆分两域，存在同一张表里：work 业务（主人的偏好、项目、任务经验）给任务和 Worker 用；
+// persona 人格（静静自己的设定、她在外面认识的人和事）给她以自己的身份说话时用。旧记忆都算业务。
+ensureColumn('memories', 'domain', 'TEXT');
+db.prepare("UPDATE memories SET domain = 'work' WHERE domain IS NULL").run();
+db.exec('CREATE INDEX IF NOT EXISTS idx_memories_domain ON memories(domain, layer, created_at)');
 db.exec(`
   CREATE TABLE IF NOT EXISTS plugin_state (
     instance_id TEXT NOT NULL,

@@ -333,9 +333,12 @@ export function workerCatalog({ onlyAvailable = false } = {}) {
     }));
 }
 
-/** 没有指定 Worker 时的默认选择：最便宜的可用文本 Worker；一个可用的都没有时返回 null。 */
+/**
+ * 没有指定 Worker 时的默认选择：设置里的兜底 Worker（可用时），否则最便宜的可用文本 Worker；
+ * 一个可用的都没有时返回 null。
+ */
 export function defaultWorker() {
-  return pickWorker({ workers: workerCatalog() }).worker || null;
+  return pickWorker({ workers: workerCatalog(), fallback: getSettings().fallbackWorker || null }).worker || null;
 }
 
 /* --------------------------------- 执行 --------------------------------- */

@@ -29,6 +29,8 @@ export const DEFAULT_SETTINGS = {
   ],
   defaultWorkspaceId: 'default',
   autoRemember: true,
+  // 没有流程、规则、点名时交给谁。空 = 自动（最便宜的文本 Worker）；指定的 Worker 不可用时也回到自动。
+  fallbackWorker: '',
   maxHops: 6,
   // 额外读取工作流程（.md）的文件夹；<data>/workflows 总会被读取。
   workflowDirs: [],

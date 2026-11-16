@@ -10,7 +10,7 @@ const STATUS_LABEL = {
   cancelled: '已取消'
 };
 const PLUGIN_TYPE_LABEL = { poll: '轮询', webhook: 'Webhook 推送', stream: '长连接', manual: '手动', watch: '文件监听' };
-const ABILITY_LABEL = { text: '文本', 'write-file': '写文件', 'manage-files': '整理文件', code: '代码', memory: '记忆' };
+const ABILITY_LABEL = { text: '文本', 'write-file': '写文件', 'manage-files': '整理文件', code: '代码' };
 const WORKER_LIMIT_FIELDS = [
   { key: 'timeoutMinutes', label: '超时（分钟）', min: 1, max: 1440, help: '超过这个时长自动停止，且不自动重试' },
   { key: 'concurrency', label: '最多同时运行', min: 1, max: 4, help: '同时还受全局并发上限约束' },
@@ -59,6 +59,9 @@ const state = {
   approvals: [],
   memories: [],
   memoryStats: [],
+  // 记忆页看的是哪个域：work 业务 / persona 人格。
+  memDomain: 'work',
+  memoryDomains: { work: 0, persona: 0 },
   messages: [],
   rules: [],
   plugins: [],
@@ -1018,12 +1021,17 @@ async function cancelTask(taskId) {
 
 /* ------------------------------- memory ------------------------------- */
 
+const MEMORY_DOMAIN_LABEL = { work: '业务记忆', persona: '人格记忆' };
+
 async function loadMemories(q = state.memQuery) {
   state.memQuery = q;
   try {
-    const data = await api(`/api/memories${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+    const params = new URLSearchParams({ domain: state.memDomain });
+    if (q) params.set('q', q);
+    const data = await api(`/api/memories?${params}`);
     state.memories = data.memories;
     state.memoryStats = data.stats;
+    if (data.domains) state.memoryDomains = data.domains;
     renderMemories();
   } catch (err) {
     toast(err.message);
@@ -1031,13 +1039,23 @@ async function loadMemories(q = state.memQuery) {
 }
 
 function renderMemories() {
+  $$('[data-mem-domain]').forEach((btn) => {
+    const domain = btn.dataset.memDomain;
+    btn.classList.toggle('is-active', domain === state.memDomain);
+    btn.textContent = `${MEMORY_DOMAIN_LABEL[domain]} ${state.memoryDomains?.[domain] ?? 0}`;
+  });
   const total = state.memoryStats.reduce((sum, s) => sum + s.count, 0);
   $('#mem-stats').innerHTML = `
     <span class="mem-stat"><b>${total}</b> 条记忆</span>
     ${state.memoryStats.map((s) => `<span class="mem-stat">${LAYER_LABEL[s.layer] || s.layer} <b>${s.count}</b></span>`).join('')}`;
 
   if (!state.memories.length) {
-    $('#memory-list').innerHTML = `<div class="empty"><div class="empty-mark">忆</div><p>${state.memQuery ? '没有搜到相关的记忆。' : '还没有记忆。对静静说「记住……」就会出现在这里。'}</p></div>`;
+    const emptyText = state.memQuery
+      ? '没有搜到相关的记忆。'
+      : state.memDomain === 'persona'
+        ? '还没有人格记忆。这里记静静自己的设定、她在外面认识的人和聊过的事；任务和 Worker 看不到这些。'
+        : '还没有记忆。对静静说「记住……」就会出现在这里。';
+    $('#memory-list').innerHTML = `<div class="empty"><div class="empty-mark">忆</div><p>${emptyText}</p></div>`;
     return;
   }
   $('#memory-list').innerHTML = state.memories.map((m) => `
@@ -1054,6 +1072,22 @@ function renderMemories() {
         </div>
       </div>
     </div>`).join('');
+}
+
+$('#mem-domains')?.addEventListener('click', (event) => {
+  const btn = event.target.closest('[data-mem-domain]');
+  if (!btn || btn.dataset.memDomain === state.memDomain) return;
+  state.memDomain = btn.dataset.memDomain;
+  loadMemories();
+});
+
+function memoryDomainField(current) {
+  return `<label class="field"><span>归到哪类</span>
+        <select name="domain">
+          <option value="work" ${current !== 'persona' ? 'selected' : ''}>业务记忆（任务和 Worker 会用到）</option>
+          <option value="persona" ${current === 'persona' ? 'selected' : ''}>人格记忆（静静自己的，任务里不出现）</option>
+        </select>
+      </label>`;
 }
 
 let memTimer = null;
@@ -1377,6 +1411,8 @@ $('#update-rollback')?.addEventListener('click', () => runUpdate('/api/update/ro
 function fillSettings() {
   if (!state.settings) return;
   const form = $('#settings-form');
+  // 下拉框要先有选项，下面按设置填值才填得进去。
+  renderFallbackSelect();
   // 正在编辑、还没保存时，后台同步过来的数据不覆盖表单。
   if (!settingsDirty()) {
     $$('[name]', form).forEach((input) => {
@@ -1428,7 +1464,20 @@ function workerLimitFields(w) {
   }).join('');
 }
 
+// 兜底 Worker 的选项跟着 Worker 列表变；正在编辑没保存时保留用户刚选的。
+function renderFallbackSelect() {
+  const select = $('#fallback-worker');
+  if (!select) return;
+  const keep = settingsDirty() ? select.value : state.settings?.fallbackWorker || '';
+  const entries = Object.entries(state.workers || {}).filter(([, w]) => w.enabled);
+  const options = [['', '自动（最便宜的文本 Worker）'], ...entries.map(([id, w]) => [id, `${w.label || id}${w.available ? '' : '（现在用不了）'}`])];
+  if (keep && !entries.some(([id]) => id === keep)) options.push([keep, `${workerLabel(keep)}（已停用，会按自动选）`]);
+  select.innerHTML = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
+  select.value = keep;
+}
+
 function renderWorkerGrid() {
+  renderFallbackSelect();
   const entries = Object.entries(state.workers || {});
   $('#worker-grid').innerHTML = entries.map(([key, w]) => {
     const abilities = (w.abilities || []).map((a) => ABILITY_LABEL[a] || a).join(' · ');
@@ -1989,7 +2038,7 @@ async function loadPluginRecent(id) {
     const box = $('#plugin-recent');
     if (!box) return;
     const items = data.items || [];
-    const label = { task: '已建任务', merged: '已合并', skipped: '跳过', new: '待处理', pending: '判断中' };
+    const label = { task: '已建任务', merged: '已合并', skipped: '跳过', chat: '闲聊', new: '待处理', pending: '判断中' };
     box.innerHTML = `
       <div class="plugin-recent-head"><h4>最近处理</h4><span>消息进来后，静静判断了什么</span></div>
       ${items.length ? items.map((item) => `
@@ -2481,7 +2530,7 @@ $('#new-task-btn')?.addEventListener('click', () => {
 $('#add-memory-btn')?.addEventListener('click', () => {
   openDialog({
     title: '记一条',
-    desc: '它会成为以后 Router 判断和 Worker 执行时的上下文。',
+    desc: '业务记忆会成为以后 Router 判断和 Worker 执行时的上下文；人格记忆只在静静以自己的身份说话时用。',
     body: `
       <label class="field"><span>内容</span><textarea name="text" placeholder="例如：每周三下午要做周报"></textarea></label>
       <label class="field"><span>放在哪一层</span>
@@ -2491,12 +2540,13 @@ $('#add-memory-btn')?.addEventListener('click', () => {
           <option value="episodic">情景（发生过的事）</option>
         </select>
       </label>
-      <label class="field"><span>标签（逗号分隔）</span><input name="tags" placeholder="偏好, 时间" /></label>`,
-    onSubmit: async ({ text, layer, tags }) => {
+      <label class="field"><span>标签（逗号分隔）</span><input name="tags" placeholder="偏好, 时间" /></label>
+      ${memoryDomainField(state.memDomain)}`,
+    onSubmit: async ({ text, layer, tags, domain }) => {
       if (!text.trim()) throw new Error('内容不能为空');
       await api('/api/memories', {
         method: 'POST',
-        body: { text: text.trim(), layer, tags: tags.split(/[,，]/).map((s) => s.trim()).filter(Boolean) }
+        body: { text: text.trim(), layer, domain, tags: tags.split(/[,，]/).map((s) => s.trim()).filter(Boolean) }
       });
       await loadMemories();
       toast('记住了。');
@@ -2820,7 +2870,7 @@ function editMemory(id) {
   if (!item) return;
   openDialog({
     title: '编辑记忆',
-    desc: '改完会立即影响 Router 和 Worker 拿到的上下文。',
+    desc: '改完立即生效。改成人格记忆后，任务和 Worker 就看不到它了。',
     body: `
       <label class="field"><span>内容</span><textarea name="text" rows="4">${esc(item.text)}</textarea></label>
       <label class="field"><span>层级</span>
@@ -2828,11 +2878,12 @@ function editMemory(id) {
           ${['profile', 'semantic', 'episodic', 'working'].map((l) => `<option value="${l}" ${item.layer === l ? 'selected' : ''}>${LAYER_LABEL[l]}</option>`).join('')}
         </select>
       </label>
-      <label class="field"><span>重要度（0–1）</span><input name="importance" type="number" min="0" max="1" step="0.05" value="${item.importance}" /></label>`,
+      <label class="field"><span>重要度（0–1）</span><input name="importance" type="number" min="0" max="1" step="0.05" value="${item.importance}" /></label>
+      ${memoryDomainField(item.domain)}`,
     onSubmit: async (values) => {
       await api(`/api/memories/${id}`, {
         method: 'PATCH',
-        body: { text: values.text, layer: values.layer, importance: Number(values.importance) }
+        body: { text: values.text, layer: values.layer, domain: values.domain, importance: Number(values.importance) }
       });
       await loadMemories();
       toast('记忆已更新。');
@@ -3278,6 +3329,7 @@ function applySnapshot(data, { initial = false } = {}) {
     approvals: data.approvals,
     memories: data.memories,
     memoryStats: data.memoryStats,
+    memoryDomains: data.memoryDomains || state.memoryDomains,
     messages: data.messages,
     rules: data.rules,
     workerRules: data.workerRules || [],

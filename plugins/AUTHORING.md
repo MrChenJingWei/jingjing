@@ -82,7 +82,8 @@ export async function start(config, ctx) {
   occurredAt: '2026-11-13T04:00:00.000Z', // 可选
   kind: 'email' | 'agenda' | 'note',      // 可选
   meta: { },                               // 可选，只参与判断
-  replyTo: { }                             // 可选，「发回哪里」，配合 reply()
+  replyTo: { },                            // 可选，「发回哪里」，配合 reply()
+  direct: true                             // 可选，对方直接找过来（私聊、@ 机器人）：闲聊由静静按人格决定回不回
 }
 ```
 

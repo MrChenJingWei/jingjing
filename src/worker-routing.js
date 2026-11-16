@@ -118,9 +118,10 @@ export function namedWorker(text, workers = []) {
  * @param {string|null} input.requested  模型或调用方建议的 Worker id
  * @param {boolean} input.decided   requested 是否来自模型判断
  * @param {Array} input.workers     [{ id, label, available, abilities, cost, keywords, source }]
+ * @param {string|null} input.fallback  主人在设置里指定的兜底 Worker；不可用或没指定时用最便宜的文本 Worker
  * @returns {{ worker: string|null, need: string|null, reason: string, note: string }}
  */
-export function pickWorker({ text = '', requested = null, decided = false, workers = [] } = {}) {
+export function pickWorker({ text = '', requested = null, decided = false, workers = [], fallback: preferred = null } = {}) {
   const usable = workers.filter((w) => w.available !== false);
   const byId = new Map(workers.map((w) => [w.id, w]));
   // 用户点名了一个本机不可用的 Worker（比如「用 codex 跑」但没装 codex）：按它被请求处理，好在回复里说明改派。
@@ -151,8 +152,9 @@ export function pickWorker({ text = '', requested = null, decided = false, worke
     if (picked) return { worker: picked.id, need, reason: 'ability', note: unavailableNote(picked) };
   }
 
-  // 3. 兜底：最便宜的文本 Worker。
-  const fallback = cheapest(usable, (w) => can(w, 'text')) || usable.slice().sort(byPreference)[0] || null;
+  // 3. 兜底：主人指定的兜底 Worker（比如舍得花钱的用 Claude Code），否则最便宜的文本 Worker。
+  const fallback = (preferred ? usable.find((w) => w.id === preferred) : null)
+    || cheapest(usable, (w) => can(w, 'text')) || usable.slice().sort(byPreference)[0] || null;
   if (fallback) {
     const note = unavailableNote(fallback)
       || (need ? `（本机没有具备「${need}」能力的 Worker，先交给「${label(fallback)}」）` : '');

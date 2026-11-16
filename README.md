@@ -116,7 +116,6 @@ npm run plugin:check
 | `claude` | code / write-file / manage-files / text | 调用本机 `claude -p`，支持 `--resume` 续跑 |
 | `codex` | 同上 | 调用本机 `codex exec`（需自行安装） |
 | `dsh` | 同上 | 以 `dsh headless` 运行；自动找 PATH 里的 `dsh` 或「应用程序」里的 DeepSeek Harness.app，需要在设置里填 DeepSeek API Key |
-| `memory` | memory | 本地统计与归档 |
 
 Router 不认具体的 Worker id，只按能力派活（`src/worker-routing.js`）：文本需要什么能力，就在可用的 Worker 里挑具备该能力、开销（`cost`）最低的一个；插件还可以声明 `keywords`，被点名时优先。所以装上一个新的 Worker 插件，不用改任何核心代码就能被自动派到活。
 
@@ -136,7 +135,12 @@ Router 不认具体的 Worker id，只按能力派活（`src/worker-routing.js`�
 - `semantic`：事实、项目、常用信息。
 - `episodic`：发生过的决定和任务结果。
 
-对话时 Router 会注入相关记忆；任务完成后自动写回一条情景记忆；你可以在「记忆」页搜索、补充、删除。**没有任何一条记忆会离开这台机器**，除非你主动接入了云端模型或通知通道。
+记忆分两类，存在同一张表里（`memories.domain`）：
+
+- **业务记忆**（`work`）：你的偏好、项目、做事经验。Router 派活、Worker 执行时用；「记住……」和任务结果都写在这里。
+- **人格记忆**（`persona`）：静静自己的设定、她在外面认识的人和聊过的事。只在她以自己的身份说话时用（比如群里有人找她闲聊）；任务和 Worker 拿不到，外面的人也拿不到业务记忆。
+
+对话时 Router 会注入相关记忆（两类分开写）；任务完成后自动写回一条情景记忆；你可以在「记忆」页切换两类，搜索、补充、删除，或把一条改到另一类。**没有任何一条记忆会离开这台机器**，除非你主动接入了云端模型或通知通道。
 
 ### 5. 来源插件：把「发现」做成可插拔的
 
@@ -260,7 +264,7 @@ npm start
 
 ## Worker 插件
 
-Worker 是执行器，不是任务来源。内置 Worker 包括：问答、文件操作、文件生成、Claude Code、Codex、DeepSeek Harness、记忆整理。
+Worker 是执行器，不是任务来源。内置 Worker 包括：问答、文件操作、文件生成、Claude Code、Codex、DeepSeek Harness。记忆（记住、检索、整理）是静静内置的功能，不是 Worker。
 
 - 每个 Worker 右侧都有启用开关：关掉后它不再接任务，但仍留在列表里，随时能打开；自己装的 Worker 插件还可以删除；
 - 也可以安装 `kind: "worker"` 的插件，接入自己主机上的 Agent/CLI；manifest 里用 `worker` 段声明能力、开销、关键词和运行限制，写法见 [docs/PLUGIN.md](docs/PLUGIN.md#worker-插件)，模板在 `plugins/.template-worker/`；

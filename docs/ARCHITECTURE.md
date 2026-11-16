@@ -45,7 +45,6 @@ flowchart TB
     W1["llm 问答 · file 文件生成"]
     W2["shell 文件操作<br/>按主机权限"]
     W3["claude / codex / dsh 编码"]
-    W4["memory 记忆整理"]
   end
 
   subgraph Store["本地存储 · SQLite"]
@@ -63,8 +62,8 @@ flowchart TB
   Discovery -->|createTask| Q
   Discovery -.->|写状态| P2
   Router --> Q
-  Q --> W1 & W2 & W3 & W4
-  W1 & W2 & W3 & W4 -- "needs_approval" --> P
+  Q --> W1 & W2 & W3
+  W1 & W2 & W3 -- "needs_approval" --> P
   P -- "用户拍板" --> Q
   Q --> E
   Router <--> M
@@ -167,14 +166,14 @@ export async function test(config) { return { ok: true, detail: '...' }; }
   → 截断到 10 条 → 占位 source_items(status=pending)，占不到的算已见
   → 批量问模型：要行动吗？标题？执行提示？属于哪个工作流程？
   → 读取该来源绑定的工作区
-  → createTask(worker=流程指定 > 分配规则 > 最便宜的文本 Worker, cwd=工作区路径, origin=plugin:<id>)
+  → createTask(worker=流程指定 > 分配规则 > 兜底 Worker（设置里指定，默认最便宜的文本 Worker）, cwd=工作区路径, origin=plugin:<id>)
   → source_items 记 task / merged / skipped（出错就放掉占位，下次重来）
   → 主对话一条汇总 + 插件状态更新
 ```
 
 先占位再判断：判断要等模型，同一条在这期间再进来（发送方重发、长连接重放）也不会建出两个任务。进程在判断途中退出留下的 pending 占位，下次启动时清掉。
 
-**外部内容不能决定交给谁**：条目是外人写的（邮件、群消息、Webhook），所以派 Worker 只认主人的配置——工作流程指定的 Worker、分配规则，都没命中就交给最便宜的文本 Worker。消息里点名的 Worker、模型挑的 Worker、按文字推断出的能力都不算；模型只能在主人配好的工作流程里判断属于哪个。只有主人在对话里（Web、配对的 Telegram）才能点名 Worker。
+**外部内容不能决定交给谁**：条目是外人写的（邮件、群消息、Webhook），所以派 Worker 只认主人的配置——工作流程指定的 Worker、分配规则，都没命中就交给兜底 Worker（设置 → Worker 里指定，默认最便宜的文本 Worker）。消息里点名的 Worker、模型挑的 Worker、按文字推断出的能力都不算；模型只能在主人配好的工作流程里判断属于哪个。只有主人在对话里（Web、配对的 Telegram）才能点名 Worker。
 
 外部消息点名了本机可用的 Worker、或含有默认 Worker 做不了的强能力信号（代码、仓库、生成文件、MCP / 命令行工具；命中的流程没指定 Worker 时也看流程步骤），而流程和规则都没指定 Worker 时，不直接降级成文字回复：`createTask({ hold })` 建好任务就停在一条 `kind = 'routing'` 的审批上（`approvals.meta.choices` 记着每个选项交给谁、要不要顺手建规则）。主人选了才改派并入队；选「以后这类都交给它」由 `ensureWorkerRule()` 建一条限定这个来源的分配规则（同样的规则已存在就复用）。这类审批选的是 Worker，不是给 Worker 的答复，所以不传给 Worker、不算拍板次数，也不会被记进习惯。
 
@@ -197,6 +196,15 @@ export async function test(config) { return { ok: true, detail: '...' }; }
 | Router 回答前 | — | 按当前问题检索，拼进 system prompt |
 | 任务完成 | episodic | `任务「…」的结果：…`，截断 400 字 |
 | 手动添加 / 删除 | 任意 | 记忆页 |
+
+记忆分两个域，同一张 `memories` 表，用 `domain` 列区分。不写 `domain` 的读写都按业务处理：
+
+| 域 | 内容 | 谁读 |
+| --- | --- | --- |
+| `work` 业务 | 主人的偏好、项目、任务经验 | Router 派活、Worker 执行（`ctx.memories`）、主人的对话 |
+| `persona` 人格 | 静静自己的设定、她在外面认识的人和聊过的事 | `persona.chatReply()`（外面有人找她闲聊）、主人的对话（单独一节） |
+
+外面的人只碰得到人格记忆；任务和 Worker 只碰得到业务记忆。
 
 检索优先用 FTS5 trigram；查询少于 3 个字符时退回 `LIKE`，保证中文两字词（如「周报」）也能命中。
 

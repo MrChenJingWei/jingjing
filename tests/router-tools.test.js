@@ -19,7 +19,7 @@ await workers.loadBuiltinWorkers();
 // 建出来的任务交给一个不调模型的假 Worker，避免它的请求混进计数。
 const manifest = validateManifest({ id: 'quiet', kind: 'worker', name: '安静', entry: 'index.js', worker: { abilities: ['text'], cost: 1 } });
 workers.registerWorkerPlugin({ manifest, module: { execute: () => new Promise(() => {}) }, dir: path.join(dataDir, 'quiet'), isolate: false });
-for (const id of ['llm', 'file', 'shell', 'memory', 'claude', 'codex', 'dsh']) workers.deleteBuiltinWorker(id);
+for (const id of ['llm', 'file', 'shell', 'claude', 'codex', 'dsh']) workers.deleteBuiltinWorker(id);
 
 saveSettings({ provider: 'deepseek', apiKey: 'sk-test', model: 'deepseek-chat' });
 

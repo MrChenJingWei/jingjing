@@ -12,6 +12,7 @@ import { matchWorkerRule } from './worker-rules.js';
 import { classify, heuristicClassify, chat as llmChat, chatWithTools, toolsSupported, demoReply, makeTitle, llmMode } from './llm.js';
 import * as workflows from './workflows.js';
 import * as forge from './plugin-forge.js';
+import { personaStyle } from './persona.js';
 
 const MAIN_SESSION = 'main';
 
@@ -88,9 +89,10 @@ function statusReply() {
 }
 
 function recallReply(text) {
-  const hits = memory.search(text, 6);
+  // 主人问的：两个域都找，人格记忆标出来。
+  const hits = memory.search(text, 6, { domain: 'all' });
   if (!hits.length) return '我这儿还没有相关的记忆。你告诉我一句「记住……」，我就能把它留下。';
-  return ['我在记忆里找到这些：', '', ...hits.map((m) => `- ${m.text}`)].join('\n');
+  return ['我在记忆里找到这些：', '', ...hits.map((m) => `- ${m.text}${m.domain === 'persona' ? '（人格）' : ''}`)].join('\n');
 }
 
 function resolveFolderCwd(text, base) {
@@ -128,19 +130,22 @@ function defaultWorkspacePath(settings) {
 }
 
 function chatSystemPrompt(clean, priorMessages, settings) {
-  const mem = memory.context(clean, { limit: 6 });
+  // 主人自己的对话：业务记忆和人格记忆都给，但分开写，模型分得清哪些是主人的事、哪些是静静自己的。
+  const mem = memory.context(clean, { limit: 6, domain: 'work' });
+  const self = memory.context(clean, { limit: 4, domain: 'persona' });
   const tasks = scheduler.listTasks({ limit: 8 });
   const recent = priorMessages.map((m) => `${m.role === 'user' ? '用户' : '静静'}：${String(m.text || '').slice(0, 500)}`).join('\n');
   return [
     '你是「静静」，用户的本地个人 AI 管家。回答简洁、具体、平静，不要客套和空话。',
-    `风格：${settings.persona || '平静、具体、不奉承，像一个可靠的同事。'}`,
+    personaStyle(settings),
     '你熟悉用户的任务板和长期记忆。需要时主动提议把某件事变成任务，但不要编造已经完成的事。',
     '',
     '最近对话：',
     recent || '（这是第一轮）',
     '',
-    '长期记忆：',
+    '长期记忆（主人的偏好、项目和做事经验）：',
     memory.serializeForPrompt(mem) || '（暂无）',
+    ...(self.length ? ['', '关于你自己（人格记忆）：', memory.serializeForPrompt(self)] : []),
     '',
     '当前任务：',
     tasks.map((t) => `- [${t.status}] ${t.title}`).join('\n') || '（暂无）'
@@ -309,7 +314,8 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
         text: clean,
         requested: workflow?.worker || decision.worker || null,
         decided: Boolean(workflow?.worker) || (decision.reason === 'model' && Boolean(decision.worker)),
-        workers: catalog
+        workers: catalog,
+        fallback: settings.fallbackWorker || null
       }));
     }
     if (!worker) {
