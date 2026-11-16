@@ -38,6 +38,15 @@ export const DEFAULT_SETTINGS = {
   archive: { enabled: true, afterDays: 90 },
   queuePaused: false,
   persona: '平静、具体、不奉承，像一个可靠的同事。',
+  // 静静的心智：记住聊过的事、有心情、认得人、每天反思一次。
+  mind: {
+    // 人设怎么进化：auto 她反思后自己改（留历史可回退）；propose 先在对话里提议，你点头才改；off 只有你能改。
+    evolve: 'auto',
+    // 每天几点反思：把这一天的经历整理成长期记忆、更新对人的印象、决定要不要调整自己。
+    reflectAt: '03:30',
+    // 有心情：心情随对话和任务变化，自然地影响语气；关掉后始终平静。
+    moods: true
+  },
   channels: {
     telegram: { enabled: false, token: '', chatId: '' },
     feishu: { enabled: false, webhook: '' },

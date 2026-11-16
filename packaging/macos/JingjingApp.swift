@@ -164,6 +164,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             entry("粘贴", #selector(NSText.paste(_:)), "v"),
             entry("全选", #selector(NSText.selectAll(_:)), "a")
         ])
+        submenu("前往", [
+            entry("对话", #selector(goChat), "1", target: self),
+            entry("任务", #selector(goTasks), "2", target: self),
+            entry("记忆", #selector(goMemory), "3", target: self),
+            entry("设置", #selector(openSettings), "4", target: self)
+        ])
         submenu("显示", [
             entry("重新加载", #selector(reloadWindow), "r", target: self),
             .separator(),
@@ -179,6 +185,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSettings() { mainWindow.openView("settings") }
+    @objc private func goChat() { mainWindow.openView("chat") }
+    @objc private func goTasks() { mainWindow.openView("tasks") }
+    @objc private func goMemory() { mainWindow.openView("memory") }
     @objc private func reloadWindow() { mainWindow.reload() }
     @objc private func zoomReset() { mainWindow.zoom(nil) }
     @objc private func zoomIn() { mainWindow.zoom(0.1) }

@@ -1,10 +1,29 @@
 import AppKit
 import WebKit
 
+/// 标题栏做成透明、网页铺满整个窗口后，WKWebView 会吃掉顶部的鼠标事件，窗口就拖不动了。
+/// 这一条透明视图盖在网页最上面（红绿灯那一条，网页里对应留空），负责拖动窗口和双击缩放。
+final class TitlebarDragView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            // 跟随「系统设置 → 桌面与程序坞 → 连按窗口标题栏」的选项。
+            let action = UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") ?? "Maximize"
+            if action == "Minimize" { window?.performMiniaturize(nil) }
+            else if action != "None" { window?.performZoom(nil) }
+            return
+        }
+        window?.performDrag(with: event)
+    }
+}
+
 /// 静静的原生主窗口：WKWebView 加载本机界面（和手机 PWA 是同一套前端）。
 /// 补齐 WKWebView 默认不处理的东西：confirm / alert / prompt、文件选择、下载、外部链接。
 final class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     private var webView: WKWebView!
+    private var dragStrip: TitlebarDragView!
+    private var isFullScreen = false
     private let baseURL: URL
     private let keyProvider: () -> String?
     private var loaded = false
@@ -19,12 +38,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
         self.baseURL = baseURL
         self.keyProvider = keyProvider
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            // 标题栏透明、内容铺到顶部：侧栏一直延伸到红绿灯下面，和系统自带 App 一样。
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "静静"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.minSize = NSSize(width: 420, height: 560)
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
@@ -32,16 +54,51 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
         super.init(window: window)
         window.delegate = self
 
+        let measured = window.frame.height - window.contentLayoutRect.height
+        let titlebarHeight = measured > 0 ? measured : 28
+
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
         // 前端据此判断自己跑在桌面 App 里。
         config.applicationNameForUserAgent = "JingjingDesktop/\(version)"
+        // 告诉网页顶部有多高一条要留给红绿灯（native-inset）；旧版 App 不注入，网页就按普通窗口排版。
+        let inset = """
+        (function () {
+          var apply = function () {
+            var root = document.documentElement;
+            if (!root) return false;
+            root.classList.add('native-inset');
+            root.style.setProperty('--titlebar-h', '\(Int(titlebarHeight.rounded()))px');
+            return true;
+          };
+          if (!apply()) document.addEventListener('readystatechange', apply, { once: true });
+        })();
+        """
+        config.userContentController.addUserScript(WKUserScript(source: inset, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.underPageBackgroundColor = .windowBackgroundColor
-        window.contentView = webView
+        webView.translatesAutoresizingMaskIntoConstraints = false
+
+        dragStrip = TitlebarDragView()
+        dragStrip.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView()
+        container.addSubview(webView)
+        container.addSubview(dragStrip)
+        NSLayoutConstraint.activate([
+            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            webView.topAnchor.constraint(equalTo: container.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            dragStrip.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            dragStrip.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            dragStrip.topAnchor.constraint(equalTo: container.topAnchor),
+            dragStrip.heightAnchor.constraint(equalToConstant: titlebarHeight)
+        ])
+        window.contentView = container
 
         if !window.setFrameUsingName("JingjingMain") { window.center() }
         window.setFrameAutosaveName("JingjingMain")
@@ -143,6 +200,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
         onVisibilityChange?(false)
     }
 
+    // 全屏时系统把标题栏收起来了，顶部那条留白和拖动条都不需要。
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        isFullScreen = true
+        applyTitlebarInset()
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        isFullScreen = false
+        applyTitlebarInset()
+    }
+
+    private func applyTitlebarInset() {
+        dragStrip.isHidden = isFullScreen
+        webView.evaluateJavaScript("document.documentElement.classList.toggle('native-inset', \(isFullScreen ? "false" : "true"))", completionHandler: nil)
+    }
+
     // MARK: - WKNavigationDelegate
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
@@ -177,6 +250,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if isFullScreen { applyTitlebarInset() }
         if let script = pendingScript, loaded {
             pendingScript = nil
             webView.evaluateJavaScript(script, completionHandler: nil)

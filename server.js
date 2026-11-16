@@ -3,9 +3,12 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { HOST, PORT, PUBLIC_DIR, DATA_DIR, DB_PATH } from './src/config.js';
-import { db, getSettings, getSetting, saveSettings, seedIfEmpty } from './src/db.js';
+import { db, getSettings, getSetting, saveSettings, seedIfEmpty, maskSettings } from './src/db.js';
 import { bus } from './src/events.js';
 import * as memory from './src/memory.js';
+import * as mind from './src/mind.js';
+import * as persona from './src/persona.js';
+import * as people from './src/people.js';
 import * as scheduler from './src/scheduler.js';
 import * as router from './src/router.js';
 import * as channels from './src/channels.js';
@@ -111,13 +114,6 @@ async function readBody(req, limit = 1024 * 1024) {
   try { return JSON.parse(text); } catch { throw new Error('请求体不是合法 JSON'); }
 }
 
-function maskSettings(settings) {
-  const copy = structuredClone(settings);
-  copy.apiKey = settings.apiKey ? '••••••••' : '';
-  if (copy.channels?.telegram?.token) copy.channels.telegram.token = '••••••••';
-  return copy;
-}
-
 function bootstrap() {
   const settings = getSettings();
   return {
@@ -138,6 +134,7 @@ function bootstrap() {
     plugins: plugins.listPlugins(),
     pluginErrors: plugins.pluginErrors(),
     channels: channels.channelStatus(),
+    mind: mind.overview(),
     server: {
       now: new Date().toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -458,8 +455,15 @@ const server = http.createServer(async (req, res) => {
       const layer = url.searchParams.get('layer') || undefined;
       // 记忆页按域看：work 业务（默认）/ persona 人格。
       const domain = url.searchParams.get('domain') === 'persona' ? 'persona' : 'work';
-      const items = q ? memory.search(q, 50, { domain }) : memory.list({ layer, limit: 200, domain });
-      return json(res, 200, { memories: items, stats: memory.allLayersStats({ domain }), domains: memory.domainStats() });
+      // archived=1：看已经淡忘的。
+      const archived = url.searchParams.get('archived') === '1';
+      const items = q ? memory.search(q, 50, { domain, archived }) : memory.list({ layer, limit: 300, domain, archived });
+      return json(res, 200, {
+        memories: items,
+        stats: memory.allLayersStats({ domain }),
+        domains: memory.domainStats(),
+        archived: memory.archivedCount({ domain })
+      });
     }
 
     if (req.method === 'POST' && pathname === '/api/memories') {
@@ -490,6 +494,52 @@ const server = http.createServer(async (req, res) => {
       if (!item) return fail(res, 404, '记忆不存在');
       bus.emit('memory/updated', { memory: item });
       return json(res, 200, { memory: item });
+    }
+
+    // 静静的心智：心情、认识的人、反思、人设的历史。
+    if (req.method === 'GET' && pathname === '/api/mind') {
+      return json(res, 200, mind.overview());
+    }
+
+    if (req.method === 'POST' && pathname === '/api/mind/reflect') {
+      const result = await mind.reflect({ manual: true });
+      return json(res, 200, { result, mind: mind.overview() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/mind/mood/reset') {
+      const { resetMood } = await import('./src/affect.js');
+      resetMood();
+      return json(res, 200, mind.overview());
+    }
+
+    const personMatch = pathname.match(/^\/api\/people\/([^/]+)$/);
+    if (personMatch && req.method === 'PATCH') {
+      const body = await readBody(req);
+      const person = people.update(decodeURIComponent(personMatch[1]), body);
+      if (!person) return fail(res, 404, '没有这个人');
+      bus.emit('mind/updated', { people: true });
+      return json(res, 200, { person, mind: mind.overview() });
+    }
+    if (personMatch && req.method === 'DELETE') {
+      try {
+        people.remove(decodeURIComponent(personMatch[1]));
+      } catch (err) {
+        return fail(res, 400, err.message);
+      }
+      bus.emit('mind/updated', { people: true });
+      return json(res, 200, mind.overview());
+    }
+
+    if (req.method === 'POST' && pathname === '/api/persona/rollback') {
+      const body = await readBody(req);
+      persona.rollbackPersona(String(body.id || ''));
+      return json(res, 200, { settings: maskSettings(getSettings()), mind: mind.overview() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/persona/proposal') {
+      const body = await readBody(req);
+      const result = mind.resolveProposal(Boolean(body.accept));
+      return json(res, 200, { ...result, settings: maskSettings(getSettings()), mind: mind.overview() });
     }
 
     if (req.method === 'POST' && pathname === '/api/model/test') {
@@ -528,8 +578,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'PUT' && pathname === '/api/settings') {
       const body = await readBody(req);
       const current = getSettings();
+      // 主人手动改了人设：先把改之前的那版留底（第一次用历史时），再记新的一版，和她自己改的放在一起，都能回退。
+      const personaChanged = typeof body.persona === 'string' && body.persona.trim() && body.persona.trim() !== current.persona;
+      if (personaChanged) persona.ensureInitialVersion();
       saveSettings(mergeSettingsPatch(body, current));
       const next = getSettings();
+      if (personaChanged) {
+        persona.recordPersonaVersion(next.persona, { source: 'manual' });
+        bus.emit('mind/updated', { persona: next.persona });
+      }
       const workspaceIds = new Set(next.workspaces.map((workspace) => workspace.id));
       for (const row of db.prepare('SELECT id, workspace_id FROM source_plugins').all()) {
         if (row.workspace_id && !workspaceIds.has(row.workspace_id)) {

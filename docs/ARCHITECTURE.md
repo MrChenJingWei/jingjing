@@ -115,6 +115,8 @@ flowchart TB
 | `rules` | 内置发现规则（interval / daily） |
 | `source_plugins` | 插件的启用状态、配置、上次运行结果 |
 | `source_items` | 插件交回的条目，按 `(source, external_id)` 去重；保存标题、摘要、链接、发生时间 |
+| `people` | 静静认识的人（主人 id = `owner`）：熟悉度、好感、印象、来往次数 |
+| `persona_versions` | 人设的每一版：最初、主人改的、她反思后改的、回退的 |
 
 事件类型：
 
@@ -208,6 +210,27 @@ export async function test(config) { return { ok: true, detail: '...' }; }
 
 检索优先用 FTS5 trigram；查询少于 3 个字符时退回 `LIKE`，保证中文两字词（如「周报」）也能命中。
 
+## 心智：记忆的生命周期、情绪和成长
+
+模块：`memory.js`（遗忘与回想）、`conversation.js`（工作记忆）、`affect.js`（心情）、`people.js`（社交记忆）、`mind.js`（编码、反思、进化）、`persona.js`（拼出说话时的「自我」）。
+
+```
+主人 / 外人说一句话
+  → affect.hear()  词表评估情绪，推动心情（PAD，半衰期 4 小时）
+  → people.touch() 熟悉度、好感
+  → 回答：ownerSelf() / chatReply() 拼人设 + 自我认知 + 心情 + 关系 + recall() 选出的记忆 + 摘要 + 最近 12 句原话
+每分钟 mind.tick()（不在回复请求里，回复不变慢）
+  → encodePending()  停了 5 分钟或攒够 6 句：模型（或规则）把对话整理成经历 / 事实，更新摘要
+  → 到 mind.reflectAt：reflect()
+       maintain()  归档快忘光的经历、复述 ≥3 次的经历转成事实；people.drift()
+       模型反思  → 事实、自我认知（persona/profile/self）、对主人的认识（work/profile/owner）、印象、日记
+       evolve()   按 mind.evolve：auto 直接改（和原来相似度 ≥ 0.25、72 小时冷却）/ propose 对话里提议 / off
+```
+
+`memories` 新增列：`stability`（稳定度，天）、`valence` / `arousal`（记下时的情绪）、`subject`（关于谁：`owner`、`self` 或某个人的 id）、`archived`（已淡忘）。保持率 `R = e^(−t/S)`，t 从上次想起算；刚记下的 `S = 基数(层) × (0.5 + 重要度) × (1 + 1.5 × 激动程度)`，被想起时 `S ← S × (1.1 + 0.8 × (1 − R))`。`recall()` 的打分：`1.2·相关 + 0.5·R + 0.4·重要 + 0.25·激动 + 0.4·(关于眼前这个人) + 0.15·(画像)`。
+
+隔离：外人的对话存在 `ext:<人的 id>` 会话里，不广播、不进主人的对话；给外人的提示词只用人格记忆里 `subject` 为空、`self` 或这个人的条目。
+
 ## Router 的边界
 
 Router **不碰** `approvals` 表，也**不启动** Worker。插件发现走的是 `discovery.js`，同样只通过 `scheduler.createTask` 进入执行层。Router 只做：
@@ -236,9 +259,9 @@ Router **不碰** `approvals` 表，也**不启动** Worker。插件发现走的
 
 工作区只决定任务的 `cwd`，不是权限边界：Worker 以当前 macOS 账户运行，文件权限和工具权限由系统、Claude Code/Codex 自身配置决定，静静不注入工具白名单或权限模式。
 
-## 管理控制台
+## 运维接口
 
-桌面端的「管理」页只走受保护的 HTTP API，不直接碰数据库：
+任务页的管理操作和「设置 → 运行状态 / 数据与归档」只走受保护的 HTTP API，不直接碰数据库：
 
 - `GET /api/admin/overview`：运行时长、队列、数据库大小、插件/通道状态；
 - `POST /api/admin/queue`：暂停/恢复调度（写 `settings.queuePaused`，`pump()` 会检查）；

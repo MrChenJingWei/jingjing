@@ -12,7 +12,9 @@ import { matchWorkerRule } from './worker-rules.js';
 import { classify, heuristicClassify, chat as llmChat, chatWithTools, toolsSupported, demoReply, makeTitle, llmMode } from './llm.js';
 import * as workflows from './workflows.js';
 import * as forge from './plugin-forge.js';
-import { personaStyle } from './persona.js';
+import { ownerSelf } from './persona.js';
+import * as mind from './mind.js';
+import * as conversation from './conversation.js';
 
 const MAIN_SESSION = 'main';
 
@@ -89,10 +91,16 @@ function statusReply() {
 }
 
 function recallReply(text) {
-  // 主人问的：两个域都找，人格记忆标出来。
-  const hits = memory.search(text, 6, { domain: 'all' });
+  // 主人在问「你还记得……吗」：两个域都按相关度回想（整句当关键词去搜几乎搜不到），人格记忆标出来；
+  // 想起来的会记得更牢。
+  const candidates = [
+    ...memory.recall(text, { domain: 'work', limit: 8, reinforceHits: false }),
+    ...memory.recall(text, { domain: 'persona', limit: 4, subjects: [null, 'self'], reinforceHits: false })
+  ];
+  const hits = candidates.filter((m) => memory.relevance(text, m.text) >= 0.2).slice(0, 6);
+  for (const m of hits) memory.reinforce(m.id);
   if (!hits.length) return '我这儿还没有相关的记忆。你告诉我一句「记住……」，我就能把它留下。';
-  return ['我在记忆里找到这些：', '', ...hits.map((m) => `- ${m.text}${m.domain === 'persona' ? '（人格）' : ''}`)].join('\n');
+  return ['我记得这些：', '', ...hits.map((m) => `- ${m.text}${m.domain === 'persona' ? '（人格）' : ''}`)].join('\n');
 }
 
 function resolveFolderCwd(text, base) {
@@ -140,27 +148,34 @@ function defaultWorkspacePath(settings) {
   return pickWorkspace('', settings).path || settings.defaultCwd;
 }
 
-function chatSystemPrompt(clean, priorMessages, settings) {
-  // 主人自己的对话：业务记忆和人格记忆都给，但分开写，模型分得清哪些是主人的事、哪些是静静自己的。
-  const mem = memory.context(clean, { limit: 6, domain: 'work' });
-  const self = memory.context(clean, { limit: 4, domain: 'persona' });
+/** 记忆里怎么称呼主人：设置里还是默认的「你」时写「主人」，和心智整理时的写法一致，才认得出是同一件事。 */
+function ownerName(settings) {
+  const name = String(settings.userName || '').trim();
+  return name && name !== '你' ? name : '主人';
+}
+
+// 每次带给模型的原话轮数（更早的在对话摘要里）。小模型上下文有限，不要太多。
+const HISTORY_MESSAGES = 12;
+
+function chatSystemPrompt(clean, sessionId, settings) {
+  // 主人自己的对话：人设、心情、和主人的关系、业务记忆和人格记忆（分开写），再加上更早对话的摘要和任务板。
   const tasks = scheduler.listTasks({ limit: 8 });
-  const recent = priorMessages.map((m) => `${m.role === 'user' ? '用户' : '静静'}：${String(m.text || '').slice(0, 500)}`).join('\n');
+  const summary = conversation.summaryOf(sessionId);
   return [
-    '你是「静静」，用户的本地个人 AI 管家。回答简洁、具体、平静，不要客套和空话。',
-    personaStyle(settings),
-    '你熟悉用户的任务板和长期记忆。需要时主动提议把某件事变成任务，但不要编造已经完成的事。',
+    '你是「静静」，用户的本地个人 AI 管家。回答简洁、具体，不要客套和空话。',
+    ...ownerSelf(clean, settings),
     '',
-    '最近对话：',
-    recent || '（这是第一轮）',
-    '',
-    '长期记忆（主人的偏好、项目和做事经验）：',
-    memory.serializeForPrompt(mem) || '（暂无）',
-    ...(self.length ? ['', '关于你自己（人格记忆）：', memory.serializeForPrompt(self)] : []),
+    '你熟悉用户的任务板和长期记忆，也记得你们聊过的事。需要时主动提议把某件事变成任务，但不要编造已经完成的事；记得不清楚的就说记不太清，不要编。',
+    ...(summary ? ['', '你们更早聊过（摘要）：', summary] : []),
     '',
     '当前任务：',
     tasks.map((t) => `- [${t.status}] ${t.title}`).join('\n') || '（暂无）'
   ].join('\n');
+}
+
+/** 最近几轮原话 + 这句话，作为多轮消息交给模型。 */
+function chatTurns(history, clean) {
+  return conversation.asTurns([...history, { role: 'user', text: clean }], { maxChars: 600 });
 }
 
 function routerTools(workers, flows) {
@@ -189,18 +204,18 @@ function routerTools(workers, flows) {
  * 一次模型调用完成「判断 + 回答」：闲聊直接拿到回复，要做事则拿到 create_task 的参数。
  * 返回 { decision, reply }；模型不支持工具调用时抛错，由调用方退回两步判断。
  */
-async function routeWithTools(clean, { priorMessages, settings }) {
+async function routeWithTools(clean, { sessionId, history, settings }) {
   const workers = workerCatalog({ onlyAvailable: true });
   const flows = workflows.catalog();
   const system = [
-    chatSystemPrompt(clean, priorMessages, settings),
+    chatSystemPrompt(clean, sessionId, settings),
     '',
     '你可以直接用文字回答，也可以调用一个工具。只有用户明确要你去做一件事时才调用 create_task。',
     '可用的 Worker：',
     ...workers.map(describeWorker),
     ...(flows.length ? ['用户配置的工作流程：', ...flows.map((f) => `- ${f.id}：${f.name}${f.when ? `（触发词：${f.when}）` : ''}`)] : [])
   ].join('\n');
-  const res = await chatWithTools({ system, messages: [{ role: 'user', content: clean }], tools: routerTools(workers, flows) });
+  const res = await chatWithTools({ system, messages: chatTurns(history, clean), tools: routerTools(workers, flows) });
   const call = res.toolCall;
   if (!call) return { decision: { intent: 'chat', reason: 'model' }, reply: res.text || '' };
   const args = call.arguments || {};
@@ -230,7 +245,11 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
 
   const settings = getSettings();
   const priorMessages = messages(sessionId, 8);
+  const history = conversation.recentMessages(sessionId, HISTORY_MESSAGES);
+  const previousAt = [...history].reverse().find((m) => m.role === 'user')?.created_at || null;
   const userMsg = addMessage({ sessionId, role: 'user', text: clean });
+  // 听到这句话：心情动一下，和主人又熟一点（规则计算，不调模型）。
+  try { mind.onOwnerMessage(clean, { previousAt }); } catch (err) { console.warn('[mind]', err.message); }
   // 命中用户配置的工作流程（或确认过的习惯）就直接按流程派活，不用再让模型猜。
   // 明显是在提问、要记东西或问进度的消息不套流程。
   const quick = heuristicClassify(clean);
@@ -243,7 +262,7 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
   } else {
     if (toolsSupported(settings)) {
       try {
-        ({ decision, reply: directReply } = await routeWithTools(clean, { priorMessages, settings }));
+        ({ decision, reply: directReply } = await routeWithTools(clean, { sessionId, history, settings }));
       } catch (err) {
         console.warn('[router] 工具调用不可用，改用两步判断：', err.message);
       }
@@ -258,7 +277,7 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
   let task = null;
 
   if (decision.intent === 'remember') {
-    const facts = memory.extractFacts(clean, settings.userName);
+    const facts = memory.extractFacts(clean, ownerName(settings));
     if (!facts.length) {
       memory.remember({
         text: clean.replace(/^(记住|记一下|记下)[：:，,\s]*/, ''),
@@ -276,7 +295,9 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
           kind: f.kind,
           importance: f.importance,
           tags: [source],
-          source
+          source,
+          // 从主人的话里抽出来的，都是关于主人的事。
+          subject: 'owner'
         });
       }
       reply = `记住了 ${facts.length} 条：\n` + facts.map((f) => `- ${f.text}`).join('\n');
@@ -284,14 +305,15 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     bus.emit('memory/created', { count: facts.length || 1 });
   } else if (decision.intent === 'status') {
     reply = statusReply();
-  } else if (decision.intent === 'recall') {
+  } else if (decision.intent === 'recall' && llmMode(settings) === 'demo') {
+    // 没有模型：把想起来的记忆列出来。有模型时走下面的闲聊分支，让她带着记忆自然地回答。
     reply = recallReply(clean);
   } else if (decision.intent === 'plugin') {
     const kind = decision.pluginKind || forge.inferKind(clean);
     // 官方已经有类似插件时先提示，免得重复造轮子；用户明确要另写时再动手。
     const official = /(另写|重新写|自己写|不用官方|新写一个)/.test(clean) ? null : forge.findSimilarOfficial(clean, kind);
     if (official) {
-      const where = kind === 'worker' ? '设置 → Worker' : '设置 → 任务来源插件 → 官方';
+      const where = kind === 'worker' ? '设置 → Worker' : '设置 → 任务来源 → 官方';
       reply = `官方已经有「${official.name}」${official.description ? `：${official.description}` : ''}\n\n在${where}里启用、填好配置就能用。如果它不合适，跟我说「还是帮我另写一个」，我再动手写。`;
     } else {
       try {
@@ -370,8 +392,8 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     } else {
       try {
         const res = await llmChat({
-          system: chatSystemPrompt(clean, priorMessages, settings),
-          messages: [{ role: 'user', content: clean }],
+          system: chatSystemPrompt(clean, sessionId, settings),
+          messages: chatTurns(history, clean),
           maxTokens: 900
         });
         answer = res.text;
@@ -382,7 +404,7 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     reply = answer;
 
     // 即使是在闲聊，也顺手捕捉明确的偏好
-    const facts = memory.extractFacts(clean, settings.userName);
+    const facts = memory.extractFacts(clean, ownerName(settings));
     for (const f of facts) {
       if (f.kind !== 'fact' || clean.length < 40) {
         memory.remember({
@@ -391,7 +413,9 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
           kind: f.kind,
           importance: f.importance,
           tags: [source],
-          source
+          source,
+          // 从主人的话里抽出来的，都是关于主人的事。
+          subject: 'owner'
         });
       }
     }
@@ -623,6 +647,8 @@ export function setRuleEnabled(id, enabled) {
 export function startProactiveLoop() {
   setInterval(() => {
     proactiveScan().catch((err) => console.warn('[automation]', err.message));
+    // 静静的心智：整理停下来的对话、到点反思。
+    mind.tick().catch((err) => console.warn('[mind]', err.message));
   }, 60 * 1000).unref();
 }
 
@@ -675,6 +701,11 @@ async function onTaskFinished(task) {
 }
 
 bus.on(({ type, payload }) => {
+  // 静静自己想说的话（人设调整、提议）：发到主人的对话里。
+  if (type === 'mind/say') {
+    addMessage({ sessionId: MAIN_SESSION, role: 'assistant', kind: payload.kind || 'text', meta: payload.meta || null, text: payload.text });
+    return;
+  }
   if (type === 'approval/auto') {
     const { task, workflow, question, option } = payload;
     addMessage({

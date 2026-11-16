@@ -263,6 +263,52 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, started_at);
 `);
 
+// 静静的心智（src/mind.js / affect.js / people.js）：
+// - 记忆按艾宾浩斯遗忘曲线衰减：stability 是「记忆稳定度」（天），越大忘得越慢；每次被想起会变大。
+// - valence / arousal：记下这件事时的情绪（-1 难过 … 1 开心；0 平静 … 1 激动），情绪强烈的记得更牢。
+// - subject：这条记忆是关于谁的（owner 主人、self 她自己、外面某个人的 key）；archived：已经淡忘（不删，记忆页能看到）。
+ensureColumn('memories', 'stability', 'REAL');
+ensureColumn('memories', 'valence', 'REAL');
+ensureColumn('memories', 'arousal', 'REAL');
+ensureColumn('memories', 'subject', 'TEXT');
+ensureColumn('memories', 'archived', 'INTEGER');
+db.exec(`
+  UPDATE memories SET stability = CASE layer
+    WHEN 'profile' THEN 365 WHEN 'semantic' THEN 90 WHEN 'episodic' THEN 14 ELSE 2 END * (0.5 + importance)
+  WHERE stability IS NULL;
+  UPDATE memories SET archived = 0 WHERE archived IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(subject, created_at);
+`);
+// 工作记忆：每段对话有一份滚动摘要（更早的对话压缩在这里），encoded_upto 记到哪条消息已经整理进长期记忆。
+// kind：main 主人的对话 / external 外面某个人；person_id 指向 people。
+ensureColumn('sessions', 'summary', 'TEXT');
+ensureColumn('sessions', 'encoded_upto', 'TEXT');
+ensureColumn('sessions', 'kind', 'TEXT');
+ensureColumn('sessions', 'person_id', 'TEXT');
+db.exec(`
+  -- 社交记忆：静静认识的人（主人也在里面，id = owner）。熟悉度随来往变高、久不联系慢慢变低；好感随聊天的情绪变化。
+  CREATE TABLE IF NOT EXISTS people (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    source       TEXT,
+    first_seen   TEXT NOT NULL,
+    last_seen    TEXT NOT NULL,
+    interactions INTEGER NOT NULL DEFAULT 0,
+    familiarity  REAL NOT NULL DEFAULT 0,
+    affinity     REAL NOT NULL DEFAULT 0,
+    impression   TEXT,
+    updated_at   TEXT NOT NULL
+  );
+  -- 人设的每一个版本：她自己反思后改的、主人手动改的、回退的，都留底，可以回到任何一版。
+  CREATE TABLE IF NOT EXISTS persona_versions (
+    id         TEXT PRIMARY KEY,
+    text       TEXT NOT NULL,
+    reason     TEXT,
+    source     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+`);
+
 export const now = () => new Date().toISOString();
 export const uid = (prefix = '') => prefix + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
@@ -324,6 +370,14 @@ export function deepMerge(base, patch) {
 export function getSettings() {
   const stored = getSetting('config', {});
   return normalizeWorkspaces(deepMerge(DEFAULT_SETTINGS, stored || {}));
+}
+
+/** 给界面看的设置：密钥只告诉有没有填。 */
+export function maskSettings(settings) {
+  const copy = structuredClone(settings);
+  copy.apiKey = settings.apiKey ? '••••••••' : '';
+  if (copy.channels?.telegram?.token) copy.channels.telegram.token = '••••••••';
+  return copy;
 }
 
 /**

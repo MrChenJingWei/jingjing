@@ -1,11 +1,23 @@
-const CACHE = 'jingjing-shell-v19';
-const ASSET_VERSION = '20261116-2';
+const CACHE = 'jingjing-shell-v21';
+const ASSET_VERSION = '20261116-4';
 const ASSETS = [
   '/',
   '/index.html',
   '/offline.html',
   `/style.css?v=${ASSET_VERSION}`,
   `/app.js?v=${ASSET_VERSION}`,
+  '/js/core.js',
+  '/js/ui.js',
+  '/js/shell.js',
+  '/js/chat.js',
+  '/js/tasks.js',
+  '/js/memory.js',
+  '/js/settings.js',
+  '/js/workers.js',
+  '/js/plugins.js',
+  '/js/automation.js',
+  '/js/system.js',
+  '/js/sync.js',
   '/manifest.webmanifest',
   '/icon.svg',
   '/icon-192.png',

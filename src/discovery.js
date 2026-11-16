@@ -860,12 +860,29 @@ function sendReply(instanceId, plugin, to, text, task = null) {
  * 有人私聊或 @ 静静、但说的不是要办的事：不建任务，由静静按人格决定回不回（爱回不回）。
  * 往外发消息要主人打开这个来源的「自动发回」；没开就不回，也不调模型。
  */
+/** 说话的人是谁：来源插件给的用户 id（企微的 userid 等），认不出来时按会话分组。用来让静静认人、接上之前的聊天。 */
+function speakerOf(instanceId, plugin, item) {
+  const meta = item.meta || {};
+  const to = item.replyTo && typeof item.replyTo === 'object' ? item.replyTo : {};
+  const key = meta.userid || meta.userId || meta.sender || to.userId || to.userid || item.groupKey || '';
+  if (!key) return null;
+  return {
+    id: `${instanceId}:${String(key).slice(0, 80)}`,
+    name: String(meta.name || meta.userName || meta.nickname || '').slice(0, 40),
+    source: plugin.label || plugin.manifest.name
+  };
+}
+
 async function chatBack(instanceId, plugin, item, { canReply, autoReply }) {
   if (!canReply || !item.replyTo) return { replied: false, reason: '闲聊；这个来源不能回消息' };
   if (!autoReply) return { replied: false, reason: '闲聊；没开「自动发回」，静静不回' };
   let reply = '';
   try {
-    ({ reply } = await persona.chatReply({ text: item.content || item.title, where: plugin.label || plugin.manifest.name }));
+    ({ reply } = await persona.chatReply({
+      text: item.content || item.title,
+      where: plugin.label || plugin.manifest.name,
+      person: speakerOf(instanceId, plugin, item)
+    }));
   } catch (err) {
     return { replied: false, reason: `闲聊；没回成：${truncate(err.message, 80)}` };
   }

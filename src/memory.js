@@ -1,13 +1,23 @@
 /**
  * 记忆库。同一张 memories 表，分两个域：
- * - work 业务：主人的偏好、项目、任务经验。Router 派活、Worker 执行时用；
- * - persona 人格：静静自己的设定、她在外面认识的人和聊过的事。她以自己的身份说话时用。
+ * - work 业务：主人的偏好、项目、任务经验、和主人聊过的事。Router 派活、Worker 执行时用；
+ * - persona 人格：静静自己的设定和自我认知、她在外面认识的人和聊过的事。她以自己的身份说话时用。
  * 两边互不混用：任务拿不到人格记忆，外面的人更拿不到业务记忆。所有读写不写 domain 时都按业务处理。
+ *
+ * 记忆会遗忘，也会因为反复想起而记得更牢（全部是确定的计算，不依赖模型）：
+ * - 保持率 R = e^(-t / S)：t 是距离上次想起的天数，S 是稳定度（天）。这是艾宾浩斯遗忘曲线的常用近似。
+ * - 刚记下时 S 由层级、重要度和情绪强度决定：画像几乎不忘，情景记忆几周就淡；情绪越强烈记得越牢。
+ * - 每次被想起（放进提示词）S 变大，间隔越久、当时越模糊，涨得越多（间隔效应）。
+ * - 检索打分 = 相关 + 新近（保持率）+ 重要 + 情绪强度，参考 Generative Agents 的记忆流检索。
+ * - 每天整理：快忘光的情景记忆归档（不删）；被反复想起的情景记忆转成语义记忆（复述巩固）。
  */
 import { db, now, uid } from './db.js';
 
 const LAYERS = new Set(['working', 'episodic', 'semantic', 'profile']);
 export const DOMAINS = ['work', 'persona'];
+const DAY = 86400000;
+const BASE_STABILITY = { profile: 365, semantic: 90, episodic: 14, working: 2 };
+const MAX_STABILITY = 3650;
 
 /** 规整 domain：认识的原样返回；all / null 表示两个域都要（只给记忆页和导出用）；其它按业务处理。 */
 function domainOf(value, { allowAll = false } = {}) {
@@ -15,11 +25,39 @@ function domainOf(value, { allowAll = false } = {}) {
   return DOMAINS.includes(value) ? value : 'work';
 }
 
+const clamp = (value, min, max) => Math.min(max, Math.max(min, Number.isFinite(Number(value)) ? Number(value) : min));
+
+/** 刚记下时的稳定度（天）。 */
+export function initialStability(layer, importance = 0.5, arousal = 0) {
+  return (BASE_STABILITY[layer] ?? BASE_STABILITY.episodic) * (0.5 + clamp(importance, 0, 1)) * (1 + 1.5 * clamp(arousal, 0, 1));
+}
+
+function stabilityOf(m) {
+  return m.stability || initialStability(m.layer, m.importance, m.arousal || 0);
+}
+
+/** 现在还记得多少（0–1）。 */
+export function retention(m, at = Date.now()) {
+  const since = Date.parse(m.last_used_at || m.created_at);
+  const days = Number.isFinite(since) ? Math.max(0, (at - since) / DAY) : 0;
+  return Math.exp(-days / stabilityOf(m));
+}
+
+/** 给人看的「记得多清楚」。 */
+export function retentionLabel(r) {
+  if (r >= 0.8) return '清楚';
+  if (r >= 0.5) return '记得';
+  if (r >= 0.2) return '模糊';
+  return '快忘了';
+}
+
 function hydrate(row) {
   if (!row) return null;
   let tags = [];
   try { tags = JSON.parse(row.tags || '[]'); } catch { /* ignore */ }
-  return { ...row, tags };
+  const item = { ...row, tags, archived: Boolean(row.archived) };
+  item.retention = Number(retention(item).toFixed(3));
+  return item;
 }
 
 export function remember({
@@ -29,25 +67,34 @@ export function remember({
   tags = [],
   importance = 0.5,
   source = 'chat',
-  domain = 'work'
+  domain = 'work',
+  subject = null,
+  valence = null,
+  arousal = null
 }) {
   const clean = String(text || '').trim();
   if (!clean) return null;
   if (!LAYERS.has(layer)) layer = 'semantic';
   domain = domainOf(domain);
+  importance = clamp(importance, 0, 1);
+  const feel = { valence: valence == null ? null : clamp(valence, -1, 1), arousal: arousal == null ? null : clamp(arousal, 0, 1) };
 
-  const dup = db.prepare('SELECT id FROM memories WHERE text = ? AND layer = ? AND domain = ?').get(clean, layer, domain);
+  const dup = findSame(clean, layer, domain);
   if (dup) {
-    db.prepare('UPDATE memories SET importance = MAX(importance, ?), created_at = ? WHERE id = ?')
-      .run(importance, now(), dup.id);
+    // 同一件事又被提起（原话一样，或者只是说法稍有不同）：不重复记，而是更重要一点、记得更牢，淡忘的重新想起来。
+    db.prepare('UPDATE memories SET importance = MAX(importance, ?), subject = COALESCE(subject, ?), archived = 0 WHERE id = ?').run(importance, subject, dup.id);
+    reinforce(dup.id);
     return get(dup.id);
   }
 
   const id = uid('m_');
   db.prepare(`
-    INSERT INTO memories(id, layer, kind, text, tags, importance, source, created_at, use_count, domain)
-    VALUES(?,?,?,?,?,?,?,?,0,?)
-  `).run(id, layer, kind, clean, JSON.stringify(tags), importance, source, now(), domain);
+    INSERT INTO memories(id, layer, kind, text, tags, importance, source, created_at, use_count, domain, stability, valence, arousal, subject, archived)
+    VALUES(?,?,?,?,?,?,?,?,0,?,?,?,?,?,0)
+  `).run(
+    id, layer, kind, clean, JSON.stringify(tags), importance, source, now(), domain,
+    initialStability(layer, importance, feel.arousal || 0), feel.valence, feel.arousal, subject
+  );
   return get(id);
 }
 
@@ -55,13 +102,51 @@ export function get(id) {
   return hydrate(db.prepare('SELECT * FROM memories WHERE id = ?').get(id));
 }
 
-/** domain 默认业务；传 'all' 或 null 两个域都列（记忆页、导出）。 */
-export function list({ layer, limit = 100, domain = 'work' } = {}) {
+// 说法不同、意思一样的两条记忆：二元组 Dice 相似度到这个程度就算同一件事。
+// 「下周三要交季度报告」和「下周四要交季度报告」大约 0.75，不会被并掉。
+const SAME_MEMORY = 0.85;
+
+/** 找一条和它是同一件事的记忆：事实和画像互相比，经历只和经历比。 */
+function findSame(text, layer, domain) {
+  const exact = db.prepare('SELECT * FROM memories WHERE text = ? AND layer = ? AND domain = ?').get(text, layer, domain);
+  if (exact) return exact;
+  const group = layer === 'profile' || layer === 'semantic' ? ['profile', 'semantic'] : [layer];
+  const peers = db.prepare(`
+    SELECT * FROM memories WHERE domain = ? AND layer IN (${group.map(() => '?').join(',')})
+    ORDER BY COALESCE(last_used_at, created_at) DESC LIMIT 400
+  `).all(domain, ...group);
+  let best = null;
+  let bestScore = 0;
+  for (const row of peers) {
+    const score = similarity(text, row.text);
+    if (score > bestScore) { best = row; bestScore = score; }
+  }
+  return bestScore >= SAME_MEMORY ? best : null;
+}
+
+/** 想起一次：间隔越久、当时越模糊，巩固得越多。 */
+export function reinforce(id, at = Date.now()) {
+  const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id);
+  if (!row) return null;
+  const r = retention(row, at);
+  const next = Math.min(MAX_STABILITY, stabilityOf(row) * (1.1 + 0.8 * (1 - r)));
+  db.prepare('UPDATE memories SET stability = ?, last_used_at = ?, use_count = use_count + 1, archived = 0 WHERE id = ?')
+    .run(next, new Date(at).toISOString(), id);
+  return next;
+}
+
+/**
+ * 列出记忆。domain 默认业务；传 'all' 或 null 两个域都列（记忆页、导出）。
+ * archived：false 只要还记得的（默认），true 只要已淡忘的，'all' 都要。
+ */
+export function list({ layer, limit = 100, domain = 'work', archived = false, subject } = {}) {
   const scope = domainOf(domain, { allowAll: true });
   const where = [];
   const args = [];
   if (layer) { where.push('layer = ?'); args.push(layer); }
   if (scope) { where.push('domain = ?'); args.push(scope); }
+  if (archived !== 'all') { where.push('COALESCE(archived, 0) = ?'); args.push(archived ? 1 : 0); }
+  if (subject !== undefined) { where.push('subject IS ?'); args.push(subject); }
   const rows = db.prepare(`
     SELECT * FROM memories ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
     ORDER BY importance DESC, created_at DESC LIMIT ?
@@ -74,17 +159,18 @@ export function update(id, patch = {}) {
   if (!current) return null;
   const next = {
     text: patch.text === undefined ? current.text : String(patch.text || '').trim(),
-    layer: ['working', 'episodic', 'semantic', 'profile'].includes(patch.layer) ? patch.layer : current.layer,
+    layer: LAYERS.has(patch.layer) ? patch.layer : current.layer,
     domain: DOMAINS.includes(patch.domain) ? patch.domain : current.domain || 'work',
     kind: patch.kind === undefined ? current.kind : String(patch.kind || current.kind),
     tags: Array.isArray(patch.tags) ? patch.tags.map(String) : current.tags,
-    importance: patch.importance === undefined
-      ? current.importance
-      : Math.min(1, Math.max(0, Number(patch.importance) || 0))
+    importance: patch.importance === undefined ? current.importance : clamp(patch.importance, 0, 1),
+    archived: patch.archived === undefined ? current.archived : Boolean(patch.archived)
   };
   if (!next.text) throw new Error('记忆内容不能为空');
-  db.prepare('UPDATE memories SET text = ?, layer = ?, domain = ?, kind = ?, tags = ?, importance = ? WHERE id = ?')
-    .run(next.text, next.layer, next.domain, next.kind, JSON.stringify(next.tags), next.importance, id);
+  db.prepare('UPDATE memories SET text = ?, layer = ?, domain = ?, kind = ?, tags = ?, importance = ?, archived = ? WHERE id = ?')
+    .run(next.text, next.layer, next.domain, next.kind, JSON.stringify(next.tags), next.importance, next.archived ? 1 : 0, id);
+  // 从淡忘里找回来：当作刚想起一次。
+  if (current.archived && !next.archived) reinforce(id);
   return get(id);
 }
 
@@ -96,65 +182,170 @@ function likeEscape(q) {
   return q.replace(/[\\%_]/g, (c) => '\\' + c);
 }
 
-/** 按内容搜。domain 默认业务；传 'all' 或 null 两个域都搜（记忆页）。 */
-export function search(query, limit = 12, { domain = 'work' } = {}) {
+/**
+ * 按内容搜。domain 默认业务；传 'all' 或 null 两个域都搜（记忆页）。
+ * touch=true 表示这是静静在「回想」（会巩固记忆）；记忆页里翻看不算。
+ */
+export function search(query, limit = 12, { domain = 'work', touch = false, archived = false } = {}) {
   const q = String(query || '').trim();
-  if (!q) return list({ limit, domain });
+  if (!q) return list({ limit, domain, archived });
   const scope = domainOf(domain, { allowAll: true });
-  const inScope = scope ? ' AND m.domain = ?' : '';
-  const scopeArgs = scope ? [scope] : [];
+  const filters = [];
+  const filterArgs = [];
+  if (scope) { filters.push('m.domain = ?'); filterArgs.push(scope); }
+  if (archived !== 'all') { filters.push('COALESCE(m.archived, 0) = ?'); filterArgs.push(archived ? 1 : 0); }
+  const extra = filters.length ? ` AND ${filters.join(' AND ')}` : '';
   const rows = [];
   if ([...q].length >= 3) {
     try {
       const match = '"' + q.replace(/"/g, '""') + '"';
       rows.push(...db.prepare(`
         SELECT m.* FROM memories_fts f JOIN memories m ON m.rowid = f.rowid
-        WHERE memories_fts MATCH ?${inScope} ORDER BY rank LIMIT ?
-      `).all(match, ...scopeArgs, limit));
+        WHERE memories_fts MATCH ?${extra} ORDER BY rank LIMIT ?
+      `).all(match, ...filterArgs, limit));
     } catch { /* fall back to LIKE */ }
   }
   if (rows.length < limit) {
     const pattern = '%' + likeEscape(q) + '%';
     rows.push(...db.prepare(`
-      SELECT m.* FROM memories m WHERE (m.text LIKE ? ESCAPE '\\' OR m.tags LIKE ? ESCAPE '\\')${inScope}
+      SELECT m.* FROM memories m WHERE (m.text LIKE ? ESCAPE '\\' OR m.tags LIKE ? ESCAPE '\\')${extra}
       ORDER BY m.importance DESC, m.created_at DESC LIMIT ?
-    `).all(pattern, pattern, ...scopeArgs, limit));
+    `).all(pattern, pattern, ...filterArgs, limit));
   }
   const seen = new Set();
   const out = [];
   for (const row of rows) {
     if (seen.has(row.id)) continue;
     seen.add(row.id);
-    out.push(hydrate(row));
+    out.push(row);
     if (out.length >= limit) break;
   }
-  if (out.length) {
-    const touch = db.prepare('UPDATE memories SET use_count = use_count + 1, last_used_at = ? WHERE id = ?');
-    for (const m of out) touch.run(now(), m.id);
+  if (touch) for (const m of out) reinforce(m.id);
+  return out.map((row) => get(row.id));
+}
+
+/* ------------------------------- 相关度 -------------------------------- */
+
+// 只由这些字组成的二元组不算关键词（「你还」「我的」「了吗」……），免得问句本身把无关记忆拉上来。
+const STOP_CHARS = new Set([...'的了吗呢吧啊呀哦嗯是在我你他她它们这那个一不也就都还有和与及或很太再又把被给让对向从到为着过么什怎样吗嘛呗啦哈得地之其而且但如果所以因此可以要会能想说问记']);
+
+function grams(text) {
+  const clean = String(text || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, ' ');
+  const out = new Set();
+  for (const word of clean.match(/[a-z0-9]{2,}/g) || []) out.add(word);
+  const han = clean.replace(/[a-z0-9 ]+/g, ' ');
+  for (const chunk of han.split(' ')) {
+    const chars = [...chunk];
+    for (let i = 0; i < chars.length - 1; i += 1) {
+      if (STOP_CHARS.has(chars[i]) && STOP_CHARS.has(chars[i + 1])) continue;
+      out.add(chars[i] + chars[i + 1]);
+    }
+    if (chars.length === 1 && !STOP_CHARS.has(chars[0])) out.add(chars[0]);
   }
   return out;
 }
 
-/** 拼装可注入提示词的记忆上下文。Router / Worker 用业务域（默认）；静静以自己身份说话时用 persona。 */
-export function context(query, { limit = 6, domain = 'work' } = {}) {
-  domain = domainOf(domain);
-  const relevant = query ? search(query, limit, { domain }) : list({ limit, domain });
-  const profile = list({ layer: 'profile', limit: 6, domain });
-  const semantic = list({ layer: 'semantic', limit: 6, domain });
-  const seen = new Set();
-  const merged = [];
-  for (const m of [...profile, ...relevant, ...semantic]) {
-    if (seen.has(m.id)) continue;
-    seen.add(m.id);
-    merged.push(m);
-  }
-  return merged.slice(0, limit + 6);
+/** 两段文字有多相关（0–1）：共有关键词占较短一方的比例。中文按二元组切，不需要分词。 */
+export function relevance(query, text) {
+  const a = grams(query);
+  const b = grams(text);
+  if (!a.size || !b.size) return 0;
+  let hit = 0;
+  for (const g of a) if (b.has(g)) hit += 1;
+  return hit / Math.min(a.size, b.size);
 }
+
+/** 两段文字整体上有多像（0–1，Dice 系数）：人设改动幅度用。 */
+export function similarity(a, b) {
+  const x = grams(a);
+  const y = grams(b);
+  if (!x.size && !y.size) return 1;
+  if (!x.size || !y.size) return 0;
+  let hit = 0;
+  for (const g of x) if (y.has(g)) hit += 1;
+  return (2 * hit) / (x.size + y.size);
+}
+
+/**
+ * 回想：从记忆里挑出和眼下最相关的几条，并巩固它们。
+ * subjects：只看关于这些人的记忆（null 表示不限；给外人用时传 [null, 'self', 对方]，别人的事不往外说）。
+ */
+export function recall(query, { limit = 8, domain = 'work', subjects = null, focus = null, reinforceHits = true, at = Date.now() } = {}) {
+  const scope = domainOf(domain);
+  const pool = new Map();
+  const add = (rows) => { for (const row of rows) if (!pool.has(row.id)) pool.set(row.id, row); };
+  const base = 'SELECT * FROM memories WHERE domain = ? AND COALESCE(archived, 0) = 0';
+  add(db.prepare(`${base} ORDER BY COALESCE(last_used_at, created_at) DESC LIMIT 200`).all(scope));
+  add(db.prepare(`${base} ORDER BY importance DESC LIMIT 60`).all(scope));
+  if (query) add(search(query, 30, { domain: scope }));
+  const allowed = subjects ? new Set(subjects) : null;
+  const scored = [];
+  for (const m of pool.values()) {
+    if (allowed && !allowed.has(m.subject ?? null)) continue;
+    const r = retention(m, at);
+    const rel = query ? relevance(query, `${m.text} ${m.tags || ''}`) : 0;
+    const score = 1.2 * rel
+      + 0.5 * r
+      + 0.4 * (m.importance ?? 0.5)
+      + 0.25 * (m.arousal || 0)
+      + (focus && m.subject === focus ? 0.4 : 0)
+      + (m.layer === 'profile' ? 0.15 : 0);
+    scored.push({ m, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const picked = scored.slice(0, limit).map((item) => item.m);
+  if (reinforceHits) for (const m of picked) reinforce(m.id, at);
+  return picked.map((m) => get(m.id));
+}
+
+/** 拼装可注入提示词的记忆上下文。Router / Worker 用业务域（默认）；静静以自己身份说话时用 persona。 */
+export function context(query, { limit = 6, domain = 'work', subjects = null, focus = null } = {}) {
+  return recall(query, { limit: limit + 4, domain, subjects, focus });
+}
+
+function agoText(iso, at = Date.now()) {
+  const days = Math.floor((at - Date.parse(iso)) / DAY);
+  if (!Number.isFinite(days) || days < 1) return '今天';
+  if (days === 1) return '昨天';
+  if (days < 30) return `${days} 天前`;
+  return `${Math.floor(days / 30)} 个月前`;
+}
+
+const LAYER_NAME = { profile: '画像', semantic: '事实', episodic: '经历', working: '眼下' };
 
 export function serializeForPrompt(items) {
   return items
-    .map((m) => `- [${m.layer}/${m.kind}] ${m.text}${m.tags?.length ? `（标签：${m.tags.join('、')}）` : ''}`)
+    .map((m) => {
+      const when = m.layer === 'episodic' ? `·${agoText(m.created_at)}` : '';
+      const fuzzy = m.retention !== undefined && m.retention < 0.3 ? '（记得不太清了）' : '';
+      return `- [${LAYER_NAME[m.layer] || m.layer}${when}] ${m.text}${fuzzy}${m.tags?.length ? `（标签：${m.tags.join('、')}）` : ''}`;
+    })
     .join('\n');
+}
+
+/* ------------------------------- 整理 -------------------------------- */
+
+/**
+ * 每天整理一次（反思之前做）：
+ * - 快忘光（保持率 < 5%）、又不太重要的情景 / 工作记忆归档（不删，记忆页「已淡忘」里能看到，想起时会回来）；
+ * - 被想起过 3 次以上的情景记忆转成语义记忆：反复用到的经历变成了「知道的事」。
+ */
+export function maintain(at = Date.now()) {
+  let faded = 0;
+  let consolidated = 0;
+  const rows = db.prepare("SELECT * FROM memories WHERE COALESCE(archived, 0) = 0 AND layer IN ('episodic', 'working')").all();
+  const fade = db.prepare('UPDATE memories SET archived = 1 WHERE id = ?');
+  const promote = db.prepare("UPDATE memories SET layer = 'semantic', stability = MAX(COALESCE(stability, 0), ?) WHERE id = ?");
+  for (const m of rows) {
+    if (m.use_count >= 3 && m.layer === 'episodic') {
+      promote.run(initialStability('semantic', m.importance, m.arousal || 0), m.id);
+      consolidated += 1;
+    } else if (retention(m, at) < 0.05 && (m.importance ?? 0.5) < 0.75) {
+      fade.run(m.id);
+      faded += 1;
+    }
+  }
+  return { faded, consolidated };
 }
 
 /** 从一句话里抽取值得长期记住的事实（不依赖模型，保证离线可用） */
@@ -167,7 +358,8 @@ export function extractFacts(raw, userName = '用户') {
     if (t.length >= 2) facts.push({ text: t, kind, importance });
   };
 
-  const explicit = text.match(/(?:记住|记一下|记下|帮我记)[：:，,\s]*(.+)/);
+  // 长的说法放前面：「帮我记住：X」要整句认成「帮我记住」，不能先被「帮我记」吃掉、剩下「住：X」。
+  const explicit = text.match(/(?:帮我记住|帮我记下|帮我记一下|请记住|记住|记一下|记下|帮我记)[：:，,\s]*(.+)/);
   if (explicit) push(explicit[1], 'note', 0.7);
 
   const pref = text.match(/我(?:更)?(?:喜欢|偏好|习惯|通常|一般|不喜欢|讨厌)([^。！？!?\n]+)/);
@@ -182,18 +374,26 @@ export function extractFacts(raw, userName = '用户') {
   return facts;
 }
 
-/** 各层条数；给了 domain 只数那个域。 */
+/** 各层条数（不含已淡忘的）；给了 domain 只数那个域。 */
 export function allLayersStats({ domain = null } = {}) {
   const scope = domainOf(domain, { allowAll: true });
   return scope
-    ? db.prepare('SELECT layer, COUNT(*) AS count FROM memories WHERE domain = ? GROUP BY layer').all(scope)
-    : db.prepare('SELECT layer, COUNT(*) AS count FROM memories GROUP BY layer').all();
+    ? db.prepare('SELECT layer, COUNT(*) AS count FROM memories WHERE domain = ? AND COALESCE(archived, 0) = 0 GROUP BY layer').all(scope)
+    : db.prepare('SELECT layer, COUNT(*) AS count FROM memories WHERE COALESCE(archived, 0) = 0 GROUP BY layer').all();
 }
 
-/** 两个域各有多少条（记忆页的切换标签用）。 */
+/** 已淡忘的有多少条。 */
+export function archivedCount({ domain = null } = {}) {
+  const scope = domainOf(domain, { allowAll: true });
+  return scope
+    ? db.prepare('SELECT COUNT(*) AS c FROM memories WHERE domain = ? AND archived = 1').get(scope).c
+    : db.prepare('SELECT COUNT(*) AS c FROM memories WHERE archived = 1').get().c;
+}
+
+/** 两个域各有多少条（记忆页的切换标签用，不含已淡忘的）。 */
 export function domainStats() {
   const counts = Object.fromEntries(DOMAINS.map((d) => [d, 0]));
-  for (const row of db.prepare('SELECT domain, COUNT(*) AS count FROM memories GROUP BY domain').all()) {
+  for (const row of db.prepare('SELECT domain, COUNT(*) AS count FROM memories WHERE COALESCE(archived, 0) = 0 GROUP BY domain').all()) {
     counts[domainOf(row.domain)] += row.count;
   }
   return counts;
