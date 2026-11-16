@@ -24,6 +24,21 @@ import { VERSION } from './src/version.js';
 import { activateOverlay } from './src/overlay.js';
 import * as updates from './src/update.js';
 
+// 被桌面 App 拉起时：App 没了（崩溃 / 被强制结束）就跟着退出，不留孤儿进程占着端口。
+const parentPid = Number(process.env.JINGJING_PARENT_PID || 0);
+if (parentPid > 1) {
+  setInterval(() => {
+    try {
+      process.kill(parentPid, 0);
+    } catch (err) {
+      if (err.code === 'ESRCH') {
+        console.log('[server] 桌面 App 已退出，服务随之停止');
+        process.exit(0);
+      }
+    }
+  }, 3000).unref();
+}
+
 // 数据目录里若有已安装的新版本，先交接给子进程；父进程只负责守护与转发信号。
 await activateOverlay();
 

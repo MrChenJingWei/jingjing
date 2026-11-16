@@ -2,6 +2,8 @@ import AppKit
 import Foundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import Carbon.HIToolbox
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -11,7 +13,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var running = false
     private var statusMenuItem: NSMenuItem!
     private var localOnlyItem: NSMenuItem!
+    private var launchAtLoginItem: NSMenuItem!
     private var qrWindow: NSWindow?
+    private var mainWindow: MainWindowController!
+    private var events: EventStream!
+    private let notifier = Notifier()
+    private var hotKey: HotKey?
+    private var pendingApprovals = 0
+    private var sigterm: DispatchSourceSignal?
 
     private let fm = FileManager.default
 
@@ -39,8 +48,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var baseURL: URL { URL(string: "http://127.0.0.1:\(port)")! }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 被 kill / 关机时走正常退出流程，先停掉服务，不留孤儿进程。
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { NSApp.terminate(nil) }
+        source.resume()
+        sigterm = source
+
         NSApp.setActivationPolicy(.accessory)
+        NSApp.mainMenu = buildMainMenu()
         setupMenu()
+        setupWindow()
         startServer()
         refresh()
         healthTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
@@ -50,8 +68,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         healthTimer?.invalidate()
+        events?.stop()
         stopServer()
     }
+
+    /// 点 Dock 图标时把窗口叫回来。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openWindow()
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    // MARK: - Window, notifications, hotkey
+
+    private func setupWindow() {
+        mainWindow = MainWindowController(baseURL: baseURL, keyProvider: { [weak self] in self?.readKey() })
+        mainWindow.onVisibilityChange = { [weak self] visible in
+            // 窗口开着时出现在 Dock 和 ⌘Tab 里，关掉后退回菜单栏。
+            NSApp.setActivationPolicy(visible ? .regular : .accessory)
+            if visible { NSApp.activate(ignoringOtherApps: true) }
+            self?.updateBadge()
+        }
+
+        events = EventStream(url: baseURL.appendingPathComponent("api/stream"), keyProvider: { [weak self] in self?.readKey() })
+        events.onEvent = { [weak self] type, payload in self?.notifier.handle(type: type, payload: payload) }
+        notifier.isFrontmost = { [weak self] in self?.mainWindow.isFrontmost ?? false }
+        notifier.onOpenTask = { [weak self] id in self?.mainWindow.openTask(id) }
+        notifier.onResolve = { [weak self] approvalId, choice in self?.resolve(approvalId: approvalId, choice: choice) }
+        notifier.onPendingCount = { [weak self] count in
+            self?.pendingApprovals = count
+            self?.updateBadge()
+            self?.updateStatus()
+        }
+
+        // ⌥⌘J：随时唤出 / 收起静静。
+        hotKey = HotKey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey) { [weak self] in
+            self?.mainWindow.toggle()
+        }
+    }
+
+    private func updateBadge() {
+        NSApp.dockTile.badgeLabel = pendingApprovals > 0 ? String(pendingApprovals) : nil
+    }
+
+    /// 在通知上直接点选项：调用本机接口拍板。
+    private func resolve(approvalId: String, choice: Int) {
+        guard let key = readKey(),
+              let url = URL(string: "\(baseURL.absoluteString)/api/approvals/\(approvalId)/resolve") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["choice": choice, "by": "notification"])
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, _ in
+            let ok = (response as? HTTPURLResponse)?.statusCode == 200
+            if !ok {
+                DispatchQueue.main.async { self?.mainWindow.show() }
+            }
+        }.resume()
+    }
+
+    private func buildMainMenu() -> NSMenu {
+        let main = NSMenu()
+        func submenu(_ title: String, _ items: [NSMenuItem]) {
+            let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let menu = NSMenu(title: title)
+            items.forEach(menu.addItem)
+            holder.submenu = menu
+            main.addItem(holder)
+        }
+        func entry(_ title: String, _ action: Selector, _ key: String, _ modifiers: NSEvent.ModifierFlags = [.command], target: AnyObject? = nil) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+            item.target = target
+            return item
+        }
+        submenu("静静", [
+            entry("关于静静", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
+            .separator(),
+            entry("设置…", #selector(openSettings), ",", target: self),
+            .separator(),
+            entry("隐藏静静", #selector(NSApplication.hide(_:)), "h"),
+            entry("隐藏其他", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
+            .separator(),
+            entry("退出静静", #selector(quitApp), "q", target: self)
+        ])
+        submenu("编辑", [
+            entry("撤销", Selector(("undo:")), "z"),
+            entry("重做", Selector(("redo:")), "z", [.command, .shift]),
+            .separator(),
+            entry("剪切", #selector(NSText.cut(_:)), "x"),
+            entry("拷贝", #selector(NSText.copy(_:)), "c"),
+            entry("粘贴", #selector(NSText.paste(_:)), "v"),
+            entry("全选", #selector(NSText.selectAll(_:)), "a")
+        ])
+        submenu("显示", [
+            entry("重新加载", #selector(reloadWindow), "r", target: self),
+            .separator(),
+            entry("实际大小", #selector(zoomReset), "0", target: self),
+            entry("放大", #selector(zoomIn), "=", target: self),
+            entry("缩小", #selector(zoomOut), "-", target: self)
+        ])
+        submenu("窗口", [
+            entry("最小化", #selector(NSWindow.performMiniaturize(_:)), "m"),
+            entry("关闭窗口", #selector(NSWindow.performClose(_:)), "w")
+        ])
+        return main
+    }
+
+    @objc private func openSettings() { mainWindow.openView("settings") }
+    @objc private func reloadWindow() { mainWindow.reload() }
+    @objc private func zoomReset() { mainWindow.zoom(nil) }
+    @objc private func zoomIn() { mainWindow.zoom(0.1) }
+    @objc private func zoomOut() { mainWindow.zoom(-0.1) }
 
     // MARK: - Menu
 
@@ -65,22 +195,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
 
-        menu.addItem(item("打开控制台", #selector(openConsole), "o"))
+        menu.addItem(item("打开静静　⌥⌘J", #selector(openWindow), ""))
+        menu.addItem(item("在浏览器中打开", #selector(openConsole), ""))
         menu.addItem(item("显示配对码…", #selector(showKey), ""))
-        menu.addItem(item("复制配对码", #selector(copyKey), "c"))
-        menu.addItem(item("手机安装二维码…", #selector(showQRCode), "q"))
+        menu.addItem(item("复制配对码", #selector(copyKey), ""))
+        menu.addItem(item("手机安装二维码…", #selector(showQRCode), ""))
         menu.addItem(.separator())
 
         localOnlyItem = item("仅本机访问", #selector(toggleLocalOnly), "")
         localOnlyItem.state = localOnly ? .on : .off
         menu.addItem(localOnlyItem)
 
-        menu.addItem(item("重启服务", #selector(restartServer), "r"))
+        launchAtLoginItem = item("开机时启动", #selector(toggleLaunchAtLogin), "")
+        launchAtLoginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(launchAtLoginItem)
+
+        menu.addItem(item("重启服务", #selector(restartServer), ""))
         menu.addItem(item("打开数据文件夹", #selector(openDataFolder), ""))
         menu.addItem(item("打开插件文件夹", #selector(openPluginsFolder), ""))
         menu.addItem(item("打开日志", #selector(openLog), ""))
         menu.addItem(.separator())
-        menu.addItem(item("退出静静", #selector(quitApp), "q"))
+        menu.addItem(item("退出静静", #selector(quitApp), ""))
 
         statusItem.menu = menu
     }
@@ -115,6 +250,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             env["JINGJING_DATA_DIR"] = dataDir.path
             env["JINGJING_HOST"] = localOnly ? "127.0.0.1" : "0.0.0.0"
             env["JINGJING_PORT"] = String(port)
+            // 服务端据此判断 App 是否还活着，App 意外退出时服务跟着退出。
+            env["JINGJING_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
             env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
             process.environment = env
             process.standardOutput = logHandle
@@ -158,17 +295,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.running = ok
                 self.updateStatus()
+                self.mainWindow.setServerReady(ok)
+                if ok { self.events.start() }
                 let suppress = ProcessInfo.processInfo.environment["JINGJING_NO_AUTO_OPEN"] == "1"
-                if ok && !suppress && !UserDefaults.standard.bool(forKey: "didAutoOpen") {
-                    UserDefaults.standard.set(true, forKey: "didAutoOpen")
-                    self.openConsole()
+                if ok && !suppress && !UserDefaults.standard.bool(forKey: "didAutoOpenWindow") {
+                    UserDefaults.standard.set(true, forKey: "didAutoOpenWindow")
+                    self.openWindow()
                 }
             }
         }.resume()
     }
 
     private func updateStatus() {
-        statusItem.button?.title = running ? "静静 ●" : "静静 ○"
+        let badge = pendingApprovals > 0 ? " \(pendingApprovals)" : ""
+        statusItem.button?.title = running ? "静静 ●\(badge)" : "静静 ○"
         if running {
             statusMenuItem.title = "服务运行中 · 端口 \(port) · \(localOnly ? "仅本机" : "局域网可访问")"
         } else if serverProcess == nil {
@@ -184,6 +324,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Actions
 
+    @objc private func openWindow() {
+        mainWindow.show()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            alert("没能修改开机启动", "\(error.localizedDescription)\n\n可以在「系统设置 → 通用 → 登录项」里手动添加静静。")
+        }
+        launchAtLoginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        if SMAppService.mainApp.status == .requiresApproval {
+            alert("需要你在系统设置里确认", "请到「系统设置 → 通用 → 登录项」里允许静静在登录时打开。")
+            SMAppService.openSystemSettingsLoginItems()
+        }
+    }
+
+    /// 在系统浏览器里打开（原来的行为，手机 / 其他浏览器调试时用）。
     @objc private func openConsole() {
         var target = baseURL
         if let key = readKey(),
@@ -392,7 +554,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()

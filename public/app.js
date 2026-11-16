@@ -2959,6 +2959,17 @@ $('#logout-btn')?.addEventListener('click', async () => {
   }
 });
 
+// 桌面 App（原生窗口）调用的入口：点系统通知时打开任务，菜单「设置…」跳到设置页。
+window.jingjing = {
+  desktop: /JingjingDesktop\//.test(navigator.userAgent),
+  openTask: (id) => openTask(id),
+  openView: (name) => {
+    if (name === 'settings') { switchView('settings'); showSettingsIndex(); return; }
+    switchView(name);
+  }
+};
+if (window.jingjing.desktop) document.documentElement.classList.add('is-desktop');
+
 async function boot() {
   initTheme();
   if ('serviceWorker' in navigator) {

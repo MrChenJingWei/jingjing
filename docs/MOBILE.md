@@ -2,7 +2,7 @@
 
 现在有两种交付形态：
 
-- **主机**：macOS 菜单栏 App（`.pkg` 安装包）+ 浏览器里的 Web 界面；
+- **主机**：macOS App（`.pkg` 安装包）：菜单栏常驻 + 原生窗口（⌥⌘J），系统通知提醒拍板；
 - **手机**：浏览器安装的 PWA（Android 是真正安装，iPhone 用 Safari 添加到主屏幕）。
 
 不需要 App Store，也不需要 Apple 开发者账号。

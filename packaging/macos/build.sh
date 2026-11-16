@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# 构建 macOS 菜单栏 App、pkg 和 zip。
+# 构建 macOS App（菜单栏 + 原生窗口）、pkg 和 zip。
+# 用法：bash packaging/macos/build.sh [--app-only]
+#   --app-only  只生成 packaging/macos/build/Jingjing.app，不打 pkg / zip / 升级包（开发调试用）
 set -euo pipefail
+
+APP_ONLY=0
+[[ "${1:-}" == "--app-only" ]] && APP_ONLY=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="$ROOT/packaging/macos/build"
@@ -18,13 +23,14 @@ VERSION="$("$NODE_BIN" -p "require('$ROOT/package.json').version")"
 rm -rf "$BUILD"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/app" "$APP/Contents/Resources/runtime" "$DIST"
 
-echo "==> 编译菜单栏 App"
+echo "==> 编译 App"
 CACHE="$BUILD/modulecache"
 mkdir -p "$CACHE" "$BUILD/tmp"
 CLANG_MODULE_CACHE_PATH="$CACHE" SWIFT_MODULE_CACHE_PATH="$CACHE" TMPDIR="$BUILD/tmp" \
-swiftc -O -swift-version 5 -module-cache-path "$CACHE" -framework AppKit \
+swiftc -O -swift-version 5 -module-cache-path "$CACHE" \
+  -framework AppKit -framework WebKit -framework UserNotifications -framework Carbon -framework ServiceManagement \
   -o "$APP/Contents/MacOS/Jingjing" \
-  "$ROOT/packaging/macos/JingjingApp.swift"
+  "$ROOT"/packaging/macos/*.swift
 
 cp "$ROOT/packaging/macos/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist" >/dev/null
@@ -57,6 +63,11 @@ chmod 755 "$APP/Contents/MacOS/Jingjing" "$APP/Contents/Resources/runtime/node"
 
 echo "==> 签名（ad-hoc）"
 codesign --force --deep --sign - "$APP" >/dev/null
+
+if [[ "$APP_ONLY" == 1 ]]; then
+  echo "完成：$APP"
+  exit 0
+fi
 
 echo "==> 生成安装包"
 STAGE="$BUILD/stage"
