@@ -13,6 +13,7 @@
       "memory"
     ],
     "cost": 1,
+    "recovery": "restart",
     "timeoutMinutes": 5,
     "concurrency": 1,
     "retries": 0

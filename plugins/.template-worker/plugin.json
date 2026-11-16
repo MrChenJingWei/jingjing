@@ -12,6 +12,7 @@
     "abilities": ["code", "write-file", "text"],
     "cost": 3,
     "keywords": "my-agent|我的agent",
+    "recovery": "ask",
     "timeoutMinutes": 30,
     "concurrency": 1,
     "retries": 0

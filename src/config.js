@@ -32,6 +32,8 @@ export const DEFAULT_SETTINGS = {
   maxHops: 6,
   // 额外读取工作流程（.md）的文件夹；<data>/workflows 总会被读取。
   workflowDirs: [],
+  // 已结束超过 afterDays 天的任务和旧消息，打包到 <data>/archive 后从数据库清理。
+  archive: { enabled: true, afterDays: 90 },
   queuePaused: false,
   persona: '平静、具体、不奉承，像一个可靠的同事。',
   channels: {

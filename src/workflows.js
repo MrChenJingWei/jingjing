@@ -9,6 +9,8 @@
  *   worker: file              # 可选：派给哪个 Worker
  *   workspace: 默认工作区      # 可选：工作区名称或 id
  *   status: active            # active / candidate / dismissed / disabled
+ *   auto: false               # true：执行中遇到 answers 里记过的问题时自动拍板
+ *   answers: 要覆盖.*吗 => 覆盖; 要发布吗 => 先不发
  *   ---
  *   1. 汇总本周完成的任务……
  *
@@ -53,6 +55,7 @@ db.exec(`
     updated_at TEXT NOT NULL
   );
 `);
+try { db.exec('ALTER TABLE workflow_state ADD COLUMN auto INTEGER'); } catch { /* 已存在 */ }
 
 /* ------------------------------- 解析 ------------------------------- */
 
@@ -86,6 +89,32 @@ export function compileTrigger(when) {
   }
 }
 
+const TRUE_RE = /^(true|yes|on|1|是|开)$/i;
+
+/** answers: 问题正则 => 选项; 问题正则 => 选项 */
+export function parseAnswers(text) {
+  const answers = [];
+  for (const part of String(text || '').split(/\s*;\s*/)) {
+    if (!part.trim()) continue;
+    const index = part.lastIndexOf('=>');
+    if (index < 0) return { answers, error: `answers 格式应为「问题 => 选项」：${part}` };
+    const question = part.slice(0, index).trim();
+    const option = part.slice(index + 2).trim();
+    if (!question || !option) return { answers, error: `answers 缺少问题或选项：${part}` };
+    try {
+      answers.push({ question, option, pattern: new RegExp(question, 'i') });
+    } catch (err) {
+      return { answers, error: `answers 里的问题不是合法正则：${err.message}` };
+    }
+  }
+  return { answers, error: null };
+}
+
+/** 把一次具体的问题泛化成能匹配同类问题的正则：转义特殊字符，数字换成 \d+。 */
+export function generalizeQuestion(question) {
+  return escapeRegExp(String(question || '').trim()).replace(/\d+/g, '\\d+').replace(/;/g, '.');
+}
+
 function idFor(file) {
   return crypto.createHash('sha1').update(path.resolve(file)).digest('hex').slice(0, 12);
 }
@@ -106,7 +135,8 @@ export function parseWorkflow(raw, { file = '', mtimeMs = 0 } = {}) {
   const name = String(meta.name || heading || fallback).trim().slice(0, 60) || fallback;
   const source = meta.source === 'learned' ? 'learned' : 'doc';
   const fileStatus = STATUSES.includes(meta.status) ? meta.status : (source === 'learned' ? 'candidate' : 'active');
-  const { trigger, error } = compileTrigger(meta.when);
+  const { trigger, error: triggerError } = compileTrigger(meta.when);
+  const { answers, error: answersError } = parseAnswers(meta.answers);
   return {
     id: idFor(file || name),
     file: file ? path.resolve(file) : '',
@@ -120,7 +150,10 @@ export function parseWorkflow(raw, { file = '', mtimeMs = 0 } = {}) {
     status: fileStatus,
     steps: body.replace(/^<!--[\s\S]*?-->\s*/, '').trim(),
     learnedFrom: meta.learned_from || '',
-    error,
+    fileAuto: TRUE_RE.test(meta.auto || ''),
+    auto: TRUE_RE.test(meta.auto || ''),
+    answers,
+    error: triggerError || answersError,
     updatedAt: mtimeMs ? new Date(mtimeMs).toISOString() : null
   };
 }
@@ -172,9 +205,12 @@ function walk(dir, depth, files, errors) {
   }
 }
 
-function effectiveStatus(workflow) {
-  const override = db.prepare('SELECT status FROM workflow_state WHERE id = ?').get(workflow.id)?.status;
-  return STATUSES.includes(override) ? override : workflow.fileStatus;
+function effectiveState(workflow) {
+  const row = db.prepare('SELECT status, auto FROM workflow_state WHERE id = ?').get(workflow.id);
+  return {
+    status: STATUSES.includes(row?.status) ? row.status : workflow.fileStatus,
+    auto: row?.auto === null || row?.auto === undefined ? workflow.fileAuto : Boolean(row.auto)
+  };
 }
 
 /** 重新扫描所有流程文件夹；没改过的文件直接用缓存。 */
@@ -200,7 +236,7 @@ export function reload() {
         workflow = parseWorkflow(fs.readFileSync(file, 'utf8'), { file, mtimeMs: stat.mtimeMs });
         cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, workflow });
       }
-      next.push({ ...workflow, status: effectiveStatus(workflow) });
+      next.push({ ...workflow, ...effectiveState(workflow) });
     } catch (err) {
       errors.push({ dir: file, error: err.message });
     }
@@ -223,8 +259,28 @@ function stats(id) {
 }
 
 function publicWorkflow(workflow) {
-  const { trigger, fileStatus, ...rest } = workflow;
-  return { ...rest, editable: isOwnedFile(workflow.file), stats: stats(workflow.id) };
+  const { trigger, fileStatus, fileAuto, answers, ...rest } = workflow;
+  return {
+    ...rest,
+    answers: (answers || []).map(({ question, option }) => ({ question, option })),
+    editable: isOwnedFile(workflow.file),
+    stats: stats(workflow.id)
+  };
+}
+
+/**
+ * 习惯开启了自动拍板时，找出对这条审批的回答（选项下标）；找不到就返回 null，照常等用户。
+ * 只认流程里明确记下的「问题 => 选项」，并且选项必须在这次的可选项里。
+ */
+export function autoAnswer(workflow, approval) {
+  if (!workflow || workflow.status !== 'active' || !workflow.auto || !approval) return null;
+  for (const answer of workflow.answers || []) {
+    if (!answer.pattern.test(approval.question || '')) continue;
+    const want = answer.option.trim().toLowerCase();
+    const index = (approval.options || []).findIndex((option) => String(option).trim().toLowerCase() === want);
+    if (index >= 0) return index;
+  }
+  return null;
 }
 
 export function listWorkflows({ fresh = false } = {}) {
@@ -400,6 +456,22 @@ export function setStatus(id, status) {
   return publicWorkflow(getWorkflow(id));
 }
 
+/** 开关自动拍板。规则同 setStatus：自己目录的写回文件，用户文件夹的只记在数据库。 */
+export function setAuto(id, auto) {
+  const workflow = getWorkflow(id);
+  if (!workflow) throw notFound();
+  const value = Boolean(auto);
+  if (isOwnedFile(workflow.file)) {
+    return publicWorkflow(writeAndReload(workflow.file, setFrontmatterField(fs.readFileSync(workflow.file, 'utf8'), 'auto', String(value))));
+  }
+  db.prepare(`
+    INSERT INTO workflow_state(id, status, auto, updated_at) VALUES(?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET auto = excluded.auto, updated_at = excluded.updated_at
+  `).run(id, workflow.status, value ? 1 : 0, now());
+  reload();
+  return publicWorkflow(getWorkflow(id));
+}
+
 export function deleteWorkflow(id) {
   const workflow = getWorkflow(id);
   if (!workflow) throw notFound();
@@ -457,7 +529,7 @@ export function taskFacts(task, events = [], { workerLabel = task.worker, worksp
     if (e.type === 'task/edited' && e.data?.from?.worker && e.data?.to?.worker) {
       facts.push(`（最初派给了「${e.data.from.worker}」，你改成了「${e.data.to.worker}」。）`);
     }
-    if (e.type === 'approval/resolved' && e.data?.option) {
+    if (e.type === 'approval/resolved' && e.data?.option && e.data?.kind !== 'recovery') {
       const asked = events.find((x) => x.type === 'task/waiting_approval' && x.data?.approvalId === e.data.approvalId);
       facts.push(`遇到「${asked?.data?.question || '需要确认的问题'}」时，选「${e.data.option}」。`);
     }
@@ -511,12 +583,23 @@ export async function learnFromTask(task, events = [], { workerLabel, workspaceN
     ? draft.steps.map((step, i) => `${i + 1}. ${step.replace(/^\d+[.、]\s*/, '')}`).join('\n')
     : facts.map((fact, i) => `${i + 1}. ${fact}`).join('\n');
 
+  // 记下这次每个拍板问题的选择，开启自动拍板后可以照着回答。
+  const answers = events
+    .filter((e) => e.type === 'approval/resolved' && e.data?.option && e.data?.kind !== 'recovery')
+    .map((e) => {
+      const asked = events.find((x) => x.type === 'task/waiting_approval' && x.data?.approvalId === e.data.approvalId);
+      return asked?.data?.question ? `${generalizeQuestion(asked.data.question)} => ${String(e.data.option).replace(/;/g, '，')}` : '';
+    })
+    .filter(Boolean)
+    .join('; ');
   const file = uniqueFile(LEARNED_DIR, name);
   const header = frontmatter({
     name,
     when,
     worker: task.worker,
     workspace: workspaceName,
+    auto: answers ? 'false' : '',
+    answers,
     status: 'candidate',
     source: 'learned',
     learned_from: task.id,

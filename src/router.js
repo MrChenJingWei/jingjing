@@ -9,7 +9,7 @@ import * as scheduler from './scheduler.js';
 import { workerCatalog, isWorker, defaultWorker } from './workers.js';
 import { pickWorker } from './worker-routing.js';
 import { matchWorkerRule } from './worker-rules.js';
-import { classify, heuristicClassify, chat as llmChat, demoReply, makeTitle } from './llm.js';
+import { classify, heuristicClassify, chat as llmChat, chatWithTools, toolsSupported, demoReply, makeTitle } from './llm.js';
 import * as workflows from './workflows.js';
 
 const MAIN_SESSION = 'main';
@@ -92,7 +92,7 @@ function recallReply(text) {
   return ['我在记忆里找到这些：', '', ...hits.map((m) => `- ${m.text}`)].join('\n');
 }
 
-function resolveShellCwd(text, base) {
+function resolveFolderCwd(text, base) {
   try {
     const dirs = fs.readdirSync(base, { withFileTypes: true })
       .filter((d) => d.isDirectory())
@@ -126,6 +126,80 @@ function defaultWorkspacePath(settings) {
   return pickWorkspace('', settings).path || settings.defaultCwd;
 }
 
+function chatSystemPrompt(clean, priorMessages, settings) {
+  const mem = memory.context(clean, { limit: 6 });
+  const tasks = scheduler.listTasks({ limit: 8 });
+  const recent = priorMessages.map((m) => `${m.role === 'user' ? '用户' : '静静'}：${String(m.text || '').slice(0, 500)}`).join('\n');
+  return [
+    '你是「静静」，用户的本地个人 AI 管家。回答简洁、具体、平静，不要客套和空话。',
+    `风格：${settings.persona || '平静、具体、不奉承，像一个可靠的同事。'}`,
+    '你熟悉用户的任务板和长期记忆。需要时主动提议把某件事变成任务，但不要编造已经完成的事。',
+    '',
+    '最近对话：',
+    recent || '（这是第一轮）',
+    '',
+    '长期记忆：',
+    memory.serializeForPrompt(mem) || '（暂无）',
+    '',
+    '当前任务：',
+    tasks.map((t) => `- [${t.status}] ${t.title}`).join('\n') || '（暂无）'
+  ].join('\n');
+}
+
+function routerTools(workers, flows) {
+  const workerIds = workers.map((w) => w.id);
+  const flowIds = flows.map((f) => f.id);
+  const fn = (name, description, properties = {}, required = []) => ({
+    type: 'function',
+    function: { name, description, parameters: { type: 'object', properties, required } }
+  });
+  return [
+    fn('create_task', '用户明确要求你去做一件具体的事（写、做、整理、修复、生成、处理、执行……）时调用，把它变成任务交给 Worker。闲聊和咨询不要调用。', {
+      title: { type: 'string', description: '不超过 24 字的任务名，不要带「帮我」之类的客套词' },
+      worker: { type: 'string', description: '最合适、开销最低的 Worker id', ...(workerIds.length ? { enum: workerIds } : {}) },
+      ...(flowIds.length ? { workflow: { type: 'string', description: '请求明显属于某个工作流程时填它的 id', enum: flowIds } } : {})
+    }, ['title']),
+    fn('remember', '用户要求你记住一个事实或偏好时调用。'),
+    fn('show_status', '用户询问任务进度、状态或待办情况时调用。'),
+    fn('recall', '用户询问你之前记住过的内容时调用。')
+  ];
+}
+
+/**
+ * 一次模型调用完成「判断 + 回答」：闲聊直接拿到回复，要做事则拿到 create_task 的参数。
+ * 返回 { decision, reply }；模型不支持工具调用时抛错，由调用方退回两步判断。
+ */
+async function routeWithTools(clean, { priorMessages, settings }) {
+  const workers = workerCatalog({ onlyAvailable: true });
+  const flows = workflows.catalog();
+  const system = [
+    chatSystemPrompt(clean, priorMessages, settings),
+    '',
+    '你可以直接用文字回答，也可以调用一个工具。只有用户明确要你去做一件事时才调用 create_task。',
+    '可用的 Worker：',
+    ...workers.map((w) => `- ${w.id}（${w.label}）${w.description ? `：${w.description}` : ''} [能力：${(w.abilities || []).join(', ')}]`),
+    ...(flows.length ? ['用户配置的工作流程：', ...flows.map((f) => `- ${f.id}：${f.name}${f.when ? `（触发词：${f.when}）` : ''}`)] : [])
+  ].join('\n');
+  const res = await chatWithTools({ system, messages: [{ role: 'user', content: clean }], tools: routerTools(workers, flows) });
+  const call = res.toolCall;
+  if (!call) return { decision: { intent: 'chat', reason: 'model' }, reply: res.text || '' };
+  const args = call.arguments || {};
+  if (call.name === 'create_task') {
+    return {
+      decision: {
+        intent: 'task',
+        reason: 'model',
+        title: args.title ? String(args.title).slice(0, 30) : makeTitle(clean),
+        worker: workers.some((w) => w.id === args.worker) ? args.worker : null,
+        workflow: flows.some((f) => f.id === args.workflow) ? args.workflow : null
+      },
+      reply: null
+    };
+  }
+  const intents = { remember: 'remember', show_status: 'status', recall: 'recall' };
+  return { decision: { intent: intents[call.name] || 'chat', reason: 'model' }, reply: intents[call.name] ? null : res.text || '' };
+}
+
 export async function handleMessage(text, { sessionId = MAIN_SESSION, source = 'web' } = {}) {
   ensureSession(sessionId);
   const clean = String(text || '').trim();
@@ -139,13 +213,24 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
   const quick = heuristicClassify(clean);
   const asking = /(?:[?？]|吗)\s*$/.test(clean) || ['remember', 'status', 'recall'].includes(quick.intent);
   const flowHit = asking ? null : workflows.matchWorkflow(clean);
-  const decision = flowHit
-    ? { intent: 'task', worker: null, title: makeTitle(clean), reason: 'workflow' }
-    : await classify(clean, {
+  let decision;
+  let directReply = null;
+  if (flowHit) {
+    decision = { intent: 'task', worker: null, title: makeTitle(clean), reason: 'workflow' };
+  } else {
+    if (toolsSupported(settings)) {
+      try {
+        ({ decision, reply: directReply } = await routeWithTools(clean, { priorMessages, settings }));
+      } catch (err) {
+        console.warn('[router] 工具调用不可用，改用两步判断：', err.message);
+      }
+    }
+    decision ||= await classify(clean, {
       history: priorMessages,
       workers: workerCatalog({ onlyAvailable: true }),
       workflows: workflows.catalog()
     });
+  }
   let reply = '';
   let task = null;
 
@@ -199,17 +284,19 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
       ({ worker, note } = pickWorker({
         text: clean,
         requested: workflow?.worker || decision.worker || null,
-        decided: Boolean(workflow?.worker) || (decision.reason === 'llm' && Boolean(decision.worker)),
+        decided: Boolean(workflow?.worker) || (decision.reason === 'model' && Boolean(decision.worker)),
         workers: catalog
       }));
-      worker ||= 'llm';
+    }
+    if (!worker) {
+      throw Object.assign(new Error('本机没有可用的 Worker，先在设置 → Worker 里启用或安装一个'), { statusCode: 400 });
     }
     const picked = catalog.find((w) => w.id === worker);
     const base = workspace.path && fs.existsSync(workspace.path) ? workspace.path : settings.defaultCwd;
     const folderBase = base && fs.existsSync(base) ? base : SANDBOX_DIR;
     // 只整理文件、不碰代码的 Worker 直接落在用户点名的子目录里（比如「整理下载文件夹」）。
     const folderScoped = picked?.abilities?.includes('manage-files') && !picked.abilities.includes('code');
-    const cwd = folderScoped ? resolveShellCwd(clean, folderBase) : base;
+    const cwd = folderScoped ? resolveFolderCwd(clean, folderBase) : base;
     const title = decision.title || makeTitle(clean);
     task = scheduler.createTask({
       title,
@@ -227,30 +314,16 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     const flowNote = workflow ? `按${workflow.source === 'learned' ? '习惯' : '工作流程'}「${workflow.name}」，` : '';
     reply = `好，${flowNote}我把「${title}」派给了「${workerLabel}」Worker${note}${ruleNote}，工作区是「${workspace.name}」。进度会在这条对话里更新，需要你拍板时我会停下来等你。`;
   } else {
-    const mem = memory.context(clean, { limit: 6 });
-    const tasks = scheduler.listTasks({ limit: 8 });
-    const recent = priorMessages.map((m) => `${m.role === 'user' ? '用户' : '静静'}：${String(m.text || '').slice(0, 500)}`).join('\n');
-    const system = [
-      '你是「静静」，用户的本地个人 AI 管家。回答简洁、具体、平静，不要客套和空话。',
-      `风格：${settings.persona || '平静、具体、不奉承，像一个可靠的同事。'}`,
-      '你熟悉用户的任务板和长期记忆。需要时主动提议把某件事变成任务，但不要编造已经完成的事。',
-      '',
-      '最近对话：',
-      recent || '（这是第一轮）',
-      '',
-      '长期记忆：',
-      memory.serializeForPrompt(mem) || '（暂无）',
-      '',
-      '当前任务：',
-      tasks.map((t) => `- [${t.status}] ${t.title}`).join('\n') || '（暂无）'
-    ].join('\n');
     let answer;
-    if (settings.provider === 'demo') {
+    if (directReply) {
+      // 工具调用那一次已经给出了回答，不用再调一次模型。
+      answer = directReply;
+    } else if (settings.provider === 'demo') {
       answer = demoReply(clean);
     } else {
       try {
         const res = await llmChat({
-          system,
+          system: chatSystemPrompt(clean, priorMessages, settings),
           messages: [{ role: 'user', content: clean }],
           maxTokens: 900
         });
@@ -414,6 +487,17 @@ async function onTaskFinished(task) {
 }
 
 bus.on(({ type, payload }) => {
+  if (type === 'approval/auto') {
+    const { task, workflow, question, option } = payload;
+    addMessage({
+      sessionId: task?.session_id || MAIN_SESSION,
+      role: 'assistant',
+      kind: 'text',
+      taskId: null,
+      text: `按习惯「${workflow.name}」，「${question}」我替你选了「${option}」。不想这样可以在设置 → 工作流程里关掉它的自动拍板。`
+    });
+    return;
+  }
   if (type !== 'task/finished') return;
   onTaskFinished(payload.task).catch((err) => console.warn('[workflow] 总结流程失败：', err.message));
 });

@@ -194,6 +194,25 @@
             <a class="mini-btn" href="/api/admin/export" download>导出 JSON</a>
           </div>
         </section>
+
+        <section class="panel">
+          <div class="panel-head-row">
+            <h3>归档旧数据</h3>
+            <button type="button" class="mini-btn" id="archive-now">立即归档</button>
+          </div>
+          <p class="panel-hint">已结束超过保留天数的任务（连同事件、审批、执行记录）和旧对话，会先打包到数据目录的 archive/，校验无误后再从数据库清理。记忆和来源去重记录不动。归档可以搜索、下载，也可以把单个任务恢复回来。</p>
+          <div class="archive-settings">
+            <label class="switch-field"><span>每天自动归档</span><input type="checkbox" class="switch" id="archive-enabled" /></label>
+            <label class="field"><span>保留天数</span><input type="number" id="archive-days" min="7" max="3650" step="1" /></label>
+            <button type="button" class="mini-btn" id="archive-save">保存</button>
+          </div>
+          <div class="admin-note" id="archive-info">—</div>
+          <div id="archive-list" class="worker-rule-list"></div>
+          <div class="admin-toolbar" style="margin-top:10px">
+            <input id="archive-search" type="search" placeholder="在归档里查任务（任务 id 或标题）…" autocomplete="off" />
+          </div>
+          <div id="archive-results" class="worker-rule-list"></div>
+        </section>
       </section>
 
       <!-- 设置 -->

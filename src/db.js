@@ -217,6 +217,26 @@ ensureColumn('worker_configs', 'deleted', 'INTEGER');
 ensureColumn('worker_configs', 'limits', 'TEXT');
 ensureColumn('tasks', 'workflow_id', 'TEXT');
 ensureColumn('messages', 'meta', 'TEXT');
+ensureColumn('tasks', 'run_id', 'TEXT');
+ensureColumn('tasks', 'recoveries', 'INTEGER');
+ensureColumn('approvals', 'kind', 'TEXT');
+db.exec(`
+  -- 每次执行一条运行记录：任务的生命周期由「任务状态 + 运行记录 + 事件」三者在本地还原。
+  CREATE TABLE IF NOT EXISTS task_runs (
+    id           TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL,
+    attempt      INTEGER NOT NULL,
+    worker       TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    token_hash   TEXT,
+    checkpoint   TEXT,
+    started_at   TEXT NOT NULL,
+    heartbeat_at TEXT,
+    finished_at  TEXT,
+    error        TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, started_at);
+`);
 
 export const now = () => new Date().toISOString();
 export const uid = (prefix = '') => prefix + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -252,6 +272,17 @@ export function deepMerge(base, patch) {
 export function getSettings() {
   const stored = getSetting('config', {});
   return normalizeWorkspaces(deepMerge(DEFAULT_SETTINGS, stored || {}));
+}
+
+/**
+ * 交给插件的设置快照：去掉模型 Key 和通知通道的凭据。
+ * 插件需要的是人设、模型名、工作区这类信息，不需要也不应该拿到密钥。
+ */
+export function pluginSettings(settings = getSettings()) {
+  const copy = structuredClone(settings);
+  delete copy.apiKey;
+  delete copy.channels;
+  return copy;
 }
 
 export function saveSettings(patch) {
@@ -290,7 +321,8 @@ export function seedIfEmpty() {
         enabled: 1,
         trigger: JSON.stringify({ type: 'daily', at: '08:00' }),
         action: JSON.stringify({
-          worker: 'llm',
+          // 留空：运行时按能力挑最便宜的文本 Worker。
+          worker: '',
           title: '生成今日晨间简报',
           prompt: '汇总昨天完成的任务、今天等待处理的事项、以及记忆里和近期相关的内容，生成一份不超过 200 字的晨间简报。',
           cwd: ''

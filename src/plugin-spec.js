@@ -42,15 +42,23 @@ export const WORKER_LIMIT_RANGES = {
   concurrency: { min: 1, max: 4, label: '最多同时运行' },
   retries: { min: 0, max: 3, label: '失败自动重试次数' }
 };
+/**
+ * 服务重启打断执行时怎么恢复：
+ * - resume：Worker 存过断点（ctx.checkpoint）就带着断点接着跑，没有断点按 ask 处理；
+ * - restart：重跑是安全的（只读、或结果可覆盖），直接重新执行；
+ * - ask：可能已经改了一半，先问用户「重新执行 / 放弃」。
+ */
+export const WORKER_RECOVERY = ['resume', 'restart', 'ask'];
 export const WORKER_DEFAULTS = Object.freeze({
   abilities: ['text'],
   cost: 3,
   keywords: '',
+  recovery: 'ask',
   timeoutMinutes: 30,
   concurrency: 2,
   retries: 0
 });
-const WORKER_KEYS = new Set(['abilities', 'cost', 'keywords', ...Object.keys(WORKER_LIMIT_RANGES)]);
+const WORKER_KEYS = new Set(['abilities', 'cost', 'keywords', 'recovery', ...Object.keys(WORKER_LIMIT_RANGES)]);
 
 function intInRange(value, { min, max }, label) {
   const number = Number(value);
@@ -80,10 +88,13 @@ export function validateWorkerBlock(raw) {
   if (keywords) {
     try { new RegExp(keywords, 'i'); } catch (err) { bad(`worker.keywords 不是合法正则：${err.message}`); }
   }
+  const recovery = raw.recovery === undefined ? WORKER_DEFAULTS.recovery : raw.recovery;
+  if (!WORKER_RECOVERY.includes(recovery)) bad(`worker.recovery 只能是 ${WORKER_RECOVERY.join(' / ')}`);
   const out = {
     abilities,
     cost: raw.cost === undefined ? WORKER_DEFAULTS.cost : intInRange(raw.cost, { min: 1, max: 5 }, 'worker.cost'),
-    keywords
+    keywords,
+    recovery
   };
   for (const [key, range] of Object.entries(WORKER_LIMIT_RANGES)) {
     out[key] = raw[key] === undefined ? WORKER_DEFAULTS[key] : intInRange(raw[key], range, `worker.${key}`);

@@ -2,16 +2,28 @@ import { getSettings } from './db.js';
 
 const truncate = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
-export function estimateTokens(text) {
-  return Math.max(1, Math.round(String(text || '').length / 1.8));
-}
+import { estimateTokens } from './worker-runtime.js';
+
+export { estimateTokens };
 
 function withTimeout(signal, ms) {
   const timeout = AbortSignal.timeout(ms);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-async function callDeepSeek({ messages, temperature, maxTokens, json, signal }) {
+function parseArguments(value) {
+  if (value && typeof value === 'object') return value;
+  try { return JSON.parse(value || '{}') || {}; } catch { return {}; }
+}
+
+function toolsUnsupportedError(provider, status, detail) {
+  const err = new Error(`${provider} ${status}: ${truncate(detail, 200)}`);
+  // 模型或服务不支持工具调用时记住，后面直接走两步判断，不再反复试。
+  if (/tool|function/i.test(detail)) err.toolsUnsupported = true;
+  return err;
+}
+
+async function callDeepSeek({ messages, temperature, maxTokens, json, signal, tools }) {
   const cfg = getSettings();
   const base = (cfg.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
   const body = {
@@ -22,6 +34,10 @@ async function callDeepSeek({ messages, temperature, maxTokens, json, signal }) 
     stream: false
   };
   if (json) body.response_format = { type: 'json_object' };
+  if (tools?.length) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
+  }
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -33,18 +49,22 @@ async function callDeepSeek({ messages, temperature, maxTokens, json, signal }) 
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
+    if (tools?.length && res.status >= 400 && res.status < 500) throw toolsUnsupportedError('DeepSeek', res.status, detail);
     throw new Error(`DeepSeek ${res.status}: ${truncate(detail, 200)}`);
   }
   const data = await res.json();
+  const message = data.choices?.[0]?.message || {};
+  const call = message.tool_calls?.[0]?.function;
   return {
-    text: data.choices?.[0]?.message?.content || '',
+    text: message.content || '',
+    toolCall: call?.name ? { name: call.name, arguments: parseArguments(call.arguments) } : null,
     tokens: data.usage?.total_tokens || 0,
     cost: 0,
     model: data.model || body.model
   };
 }
 
-async function callOllama({ messages, temperature, json, signal }) {
+async function callOllama({ messages, temperature, json, signal, tools }) {
   const cfg = getSettings();
   const url = (cfg.ollamaUrl || 'http://127.0.0.1:11434').replace(/\/+$/, '');
   const res = await fetch(`${url}/api/chat`, {
@@ -55,14 +75,21 @@ async function callOllama({ messages, temperature, json, signal }) {
       messages,
       stream: false,
       format: json ? 'json' : undefined,
+      ...(tools?.length ? { tools } : {}),
       options: { temperature: temperature ?? cfg.temperature ?? 0.6 }
     }),
     signal: withTimeout(signal, 180000)
   });
-  if (!res.ok) throw new Error(`Ollama ${res.status}: ${truncate(await res.text().catch(() => ''), 200)}`);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    if (tools?.length && res.status >= 400 && res.status < 500) throw toolsUnsupportedError('Ollama', res.status, detail);
+    throw new Error(`Ollama ${res.status}: ${truncate(detail, 200)}`);
+  }
   const data = await res.json();
+  const call = data.message?.tool_calls?.[0]?.function;
   return {
     text: data.message?.content || '',
+    toolCall: call?.name ? { name: call.name, arguments: parseArguments(call.arguments) } : null,
     tokens: (data.prompt_eval_count || 0) + (data.eval_count || 0),
     cost: 0,
     model: data.model || cfg.model
@@ -88,6 +115,32 @@ export async function chat({ messages, system, temperature, maxTokens, json = fa
   }
   const text = demoChat(all);
   return { text, tokens: estimateTokens(text), cost: 0, model: 'demo' };
+}
+
+const toolsUnsupported = new Set(); // `${mode}:${model}`
+
+export function toolsSupported(cfg = getSettings()) {
+  const mode = llmMode(cfg);
+  return mode !== 'demo' && !toolsUnsupported.has(`${mode}:${cfg.model}`);
+}
+
+/**
+ * 带工具的一次调用：模型要么直接回答（text），要么调用一个工具（toolCall）。
+ * 模型不支持工具时抛错，并记住这个模型，之后 toolsSupported() 返回 false。
+ */
+export async function chatWithTools({ messages, system, tools, temperature, maxTokens = 900, signal }) {
+  const cfg = getSettings();
+  const mode = llmMode(cfg);
+  if (!toolsSupported(cfg)) throw new Error('当前模型不支持工具调用');
+  const all = system ? [{ role: 'system', content: system }, ...messages] : messages;
+  try {
+    return mode === 'deepseek'
+      ? await callDeepSeek({ messages: all, temperature, maxTokens, signal, tools })
+      : await callOllama({ messages: all, temperature, signal, tools });
+  } catch (err) {
+    if (err.toolsUnsupported) toolsUnsupported.add(`${mode}:${cfg.model}`);
+    throw err;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -277,8 +330,9 @@ export async function classify(text, { history = [], workers = [], workflows = [
     '你是个人 AI 管家「静静」的 Router。结合最近对话，把用户当前这句话分类成一个意图，只输出 JSON。',
     'intent 取值：chat（闲聊/咨询）、remember（要求记住事实或偏好）、task（要求执行一件事）、status（询问任务进度）、recall（检索记忆）。',
     'worker 仅在 intent=task 时填写，从下面的可用 Worker 里选最合适、开销最低的一个：',
-    ...(workers.length ? workers : [{ id: 'llm', label: '问答', description: '纯文本问答' }])
-      .map((w) => `- ${w.id}（${w.label}）${w.description ? `：${w.description}` : ''}${w.abilities?.length ? ` [能力：${w.abilities.join(', ')}]` : ''}`),
+    ...(workers.length
+      ? workers.map((w) => `- ${w.id}（${w.label}）${w.description ? `：${w.description}` : ''}${w.abilities?.length ? ` [能力：${w.abilities.join(', ')}]` : ''}`)
+      : ['-（当前没有可用的 Worker，worker 留空）']),
     'title 仅在 intent=task 时填写：不超过 24 字的任务名，不要带「帮我」等客套词。',
     ...(workflows.length ? [
       'workflow 仅在 intent=task 且请求明显属于下面某个用户配置的工作流程时填写它的 id，否则留空：',
@@ -308,7 +362,7 @@ export async function classify(text, { history = [], workers = [], workflows = [
       worker: allowed.has(parsed.worker) ? parsed.worker : null,
       title: parsed.title ? truncate(String(parsed.title), 30) : makeTitle(text),
       workflow: workflows.some((w) => w.id === parsed.workflow) ? parsed.workflow : null,
-      reason: 'llm',
+      reason: 'model',
       tokens: res.tokens
     };
   } catch (err) {

@@ -11,7 +11,10 @@ export async function execute(task, ctx) {
   if (!bin) return { status: 'failed', retryable: false, summary: '没有找到 my-agent 命令。' };
 
   await ctx.emit('my-agent 已启动…');
-  // ctx.exec 会在任务被取消或超时时自动终止子进程。
+  // 存断点：服务重启后如果 recovery 是 resume，ctx.recovery.checkpoint 会带回来。
+  await ctx.checkpoint({ startedAt: Date.now() });
+  // ctx.exec 会在任务被取消或超时时自动终止子进程；子进程里有 JINGJING_REPORT_URL / JINGJING_RUN_TOKEN，
+  // 可以自己 POST 进度回来：curl -X POST "$JINGJING_REPORT_URL" -H "Authorization: Bearer $JINGJING_RUN_TOKEN" -d '{"message":"..."}'
   const result = await ctx.exec(bin, ['run', task.prompt], { cwd: ctx.workspace });
   if (result.error === 'aborted') return { status: 'cancelled', summary: '任务已停止。' };
   if (result.code !== 0) return { status: 'failed', summary: (result.stderr || result.stdout).slice(-1200) };

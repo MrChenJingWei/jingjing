@@ -1,4 +1,6 @@
-// 内置 Worker：Claude Code。调用本机 claude CLI 的非交互模式。
+// 内置 Worker：Claude Code。调用本机 claude CLI 的非交互模式，用 stream-json 实时回传进度。
+import crypto from 'node:crypto';
+import { createLineParser, describeEvent } from './stream.js';
 
 export function detect(config, { settings, which }) {
   const bin = which('claude');
@@ -6,10 +8,39 @@ export function detect(config, { settings, which }) {
   return { available, detail: available ? bin : '未安装或已禁用' };
 }
 
-function resumePrompt(task, resume) {
+function promptFor(task, ctx) {
+  if (ctx.recovery) {
+    return '（静静：服务重启打断了你上一次的执行。请先检查已经完成的部分，然后从中断的地方继续完成原来的任务。）';
+  }
+  const resume = ctx.resume;
   if (!resume) return task.prompt;
   const picked = resume.choice >= 0 ? resume.options?.[resume.choice] ?? String(resume.choice) : '取消';
   return `${task.prompt}\n\n用户刚刚对「${resume.question}」选择了：${picked}。请在此基础上继续完成。`;
+}
+
+async function runOnce(bin, task, ctx, { resumeId, prompt }) {
+  // 新会话预先指定 session id 并存为断点：服务重启后可以 --resume 接着跑，而不是从头再来。
+  const sessionId = resumeId || crypto.randomUUID();
+  const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
+  if (resumeId) args.push('--resume', resumeId);
+  else args.push('--session-id', sessionId);
+  await ctx.checkpoint({ sessionId });
+
+  let final = null;
+  let current = sessionId;
+  const parser = createLineParser((event) => {
+    if (event.type === 'system' && event.subtype === 'init' && event.session_id && event.session_id !== current) {
+      current = event.session_id;
+      ctx.checkpoint({ sessionId: current }).catch(() => {});
+    }
+    if (event.type === 'result') final = event;
+    const text = describeEvent(event);
+    if (text) ctx.emit(text);
+  });
+  // 工具权限交给 Claude Code 自身的用户配置和 macOS 账户权限，静静不覆盖。
+  const result = await ctx.exec(bin, args, { cwd: ctx.workspace, onOutput: (chunk) => parser.push(chunk) });
+  parser.flush();
+  return { result, final, sessionId: final?.session_id || current };
 }
 
 export async function execute(task, ctx) {
@@ -18,30 +49,32 @@ export async function execute(task, ctx) {
     return { status: 'failed', retryable: false, summary: '没有找到 claude 命令，或在设置里禁用了 Claude Code。' };
   }
 
-  // 工具权限交给 Claude Code 自身的用户配置和 macOS 账户权限，静静不覆盖。
-  const args = ['-p', resumePrompt(task, ctx.resume), '--output-format', 'json'];
-  if (ctx.sessionId) args.push('--resume', ctx.sessionId);
+  await ctx.emit('Claude Code 启动中…');
+  let run = await runOnce(bin, task, ctx, { resumeId: ctx.sessionId, prompt: promptFor(task, ctx) });
+  if (run.result.error === 'aborted') return { status: 'cancelled', summary: '任务已停止。' };
 
-  await ctx.emit('Claude Code 已启动，正在自己的上下文里工作…');
-  const result = await ctx.exec(bin, args, { cwd: ctx.workspace });
-  if (result.error === 'aborted') return { status: 'cancelled', summary: '任务已停止。' };
-  if (result.code !== 0) {
-    return { status: 'failed', summary: `Claude Code 退出码 ${result.code}。\n${(result.stderr || result.stdout).slice(-800)}` };
+  // 断点里的会话还没真正建立（比如刚启动就被打断）：换一个新会话从头执行。
+  const output = `${run.result.stderr}\n${run.result.stdout}`;
+  if (!run.final && ctx.sessionId && /No conversation found|session.*not found/i.test(output)) {
+    await ctx.emit('之前的会话不存在，重新开始执行…');
+    run = await runOnce(bin, task, { ...ctx, recovery: null }, { resumeId: null, prompt: task.prompt });
+    if (run.result.error === 'aborted') return { status: 'cancelled', summary: '任务已停止。' };
   }
 
-  let text = result.stdout.trim();
-  let sessionId = null;
-  let cost = 0;
-  try {
-    const parsed = JSON.parse(text);
-    text = parsed.result || parsed.message || text;
-    sessionId = parsed.session_id || null;
-    cost = parsed.total_cost_usd || 0;
-  } catch { /* 非 JSON 输出按纯文本处理 */ }
+  const { final, sessionId } = run;
+  if (!final) {
+    const tail = (run.result.stderr || run.result.stdout || '').slice(-800);
+    return { status: 'failed', summary: `Claude Code 没有返回结果（退出码 ${run.result.code}）。\n${tail}` };
+  }
+  const text = String(final.result || '').trim();
+  const cost = Number(final.total_cost_usd) || 0;
   const tokens = ctx.estimateTokens(text);
+  if (final.is_error || (final.subtype && final.subtype !== 'success')) {
+    return { status: 'failed', summary: `Claude Code 执行出错（${final.subtype || 'error'}）。\n${text.slice(-800)}`, sessionId, cost, tokens };
+  }
   const approval = ctx.parseApproval(text);
   if (approval) {
     return { status: 'needs_approval', summary: approval.text, approval: approval.approval, sessionId, tokens, cost };
   }
-  return { status: 'done', summary: text, sessionId, tokens, cost };
+  return { status: 'done', summary: text || 'Claude Code 没有输出文字结果。', sessionId, tokens, cost };
 }

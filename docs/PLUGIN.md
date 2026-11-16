@@ -398,6 +398,7 @@ Worker 是执行器：拿到一个任务，跑一轮，返回结果。它和来�
     "abilities": ["code", "write-file", "text"],
     "cost": 3,
     "keywords": "my-agent|我的agent",
+    "recovery": "ask",
     "timeoutMinutes": 30,
     "concurrency": 1,
     "retries": 0
@@ -413,6 +414,7 @@ Worker 是执行器：拿到一个任务，跑一轮，返回结果。它和来�
 | `abilities` | `["text"]` | 能做什么，Router 只按能力派活。可选：`text` 文本问答 / `write-file` 在工作区生成文件 / `manage-files` 整理移动文件 / `code` 读写代码仓库、执行命令 / `memory` 整理记忆 |
 | `cost` | `3` | 相对开销 1–5。多个 Worker 都具备所需能力时，选开销最低的（同开销内置优先） |
 | `keywords` | `""` | 正则（忽略大小写）。任务文本命中时优先派给它，比如用户说「发到飞书」就交给飞书 Worker |
+| `recovery` | `"ask"` | 服务重启打断执行后怎么还原：`resume` 带着断点（`ctx.checkpoint` 存的）继续，没有断点按 `ask`；`restart` 直接重跑（只读或结果可覆盖时用）；`ask` 先问用户「重新执行 / 放弃」。同一任务连续被打断 3 次会停下 |
 | `timeoutMinutes` | `30` | 超过就中止，任务标记失败，**不自动重试** |
 | `concurrency` | `2` | 这个 Worker 最多同时跑几个任务（1–4），同时受全局并发上限约束 |
 | `retries` | `0` | 失败后自动重试几次（0–3）。对外部有副作用或很贵的 Agent 建议保持 0 |
@@ -451,7 +453,13 @@ export async function execute(task, ctx) {
 }
 ```
 
-`execute` 必须导出；`detect(config, ctx)`、`test(config, ctx)` 可选，返回 `{ available, detail }`（也可以返回布尔值）。`detect` 每次刷新 Worker 列表都会调用，必须同步且足够快；耗时的连通性检查放进 `test`，它只在用户点「检测」时运行，可以是 async。
+`execute` 必须导出；`detect(config, ctx)`、`test(config, ctx)` 可选，返回 `{ available, detail }`（也可以返回布尔值）。`detect` 每次刷新 Worker 列表都会调用，必须同步且足够快；耗时的连通性检查放进 `test`，它只在用户点「检测」时运行，可以是 async。`detect` / `test` 的 ctx 是 `{ settings, which, llm: { mode } }`。
+
+**线程隔离**：第三方 Worker 插件的 `execute` 在独立的 Worker 线程里运行（内存上限 512MB）。同步死循环、内存泄漏只影响它自己的线程；任务被取消或超时后，宿主给 2 秒宽限，然后直接结束这个线程。所以：
+
+- `execute` 的返回值必须能 JSON 序列化；
+- 入口模块会在主线程（给 `detect` / `test` 用）和执行线程里各加载一次，模块顶层不要有副作用；
+- 内置 Worker（`workers/` 里的）在主线程执行。
 
 ### ctx：宿主能力
 
@@ -463,20 +471,41 @@ Worker 只通过 `ctx` 使用宿主能力，不要 import 静静的核心模块�
 | `emit(message, meta?)` | 上报进度，显示在任务卡和对话里 |
 | `log(message)` | 写服务日志 |
 | `config` | 这个 Worker 在本机的配置（按 manifest 的 `config` 校验过） |
-| `settings` | 静静的全局设置快照（只读） |
+| `settings` | 静静的全局设置快照（只读），**不含**模型 Key 和通知通道凭据 |
+| `secrets` | 只有内置 Worker 能拿到 `{ apiKey }`；第三方插件是 `{}` |
 | `workspace` | 任务工作目录的绝对路径 |
 | `paths.sandbox` | 静静的沙箱目录 |
 | `resume` | 从审批恢复时是 `{ question, options, choice }`，`choice < 0` 表示用户取消；否则为 `null` |
-| `sessionId` | 上一轮返回的 `sessionId`，用于续跑 |
+| `sessionId` | 上一轮返回的 `sessionId`，或断点里存的 `sessionId`，用于续跑 |
+| `checkpoint(data)` | 存断点（合并进本次执行记录，最多 64KB），返回合并后的断点。存了 `sessionId` 会同步到 `ctx.sessionId` |
+| `recovery` | 服务重启后带着断点恢复时是 `{ at, runId, checkpoint }`，否则为 `null` |
+| `run` | 本次执行 `{ id, token, reportUrl }`，给外部进程回传用（见下文） |
 | `memories` / `tasks` | 与任务相关的记忆、最近的任务板 |
 | `workers` | 当前可用的 Worker 列表（`id`、`label`、`abilities`…） |
 | `llm.mode` | `'demo'` / `'deepseek'` / `'ollama'` |
 | `llm.chat({ system, messages, json, temperature, maxTokens })` | 调用用户配置的模型，自动跟随 `signal` 中止；返回 `{ text, tokens, cost }` |
-| `exec(cmd, args, { cwd, env, onOutput, timeoutMs })` | 运行外部命令；`signal` 触发时自动 SIGTERM → SIGKILL 并返回 `{ error: 'aborted' }`。`env` 里值为 `null` 的键会被删除 |
+| `exec(cmd, args, { cwd, env, onOutput, timeoutMs })` | 运行外部命令；`signal` 触发时自动 SIGTERM → SIGKILL 并返回 `{ error: 'aborted' }`。`env` 里值为 `null` 的键会被删除；子进程自动带上 `JINGJING_RUN_ID` / `JINGJING_RUN_TOKEN` / `JINGJING_REPORT_URL` |
 | `which(bin)` | 在 PATH 和常见安装目录里找可执行文件 |
 | `sleep(ms)` | 可被取消的等待 |
 | `parseApproval(text)` | 解析输出末尾的 `[[APPROVAL]] {...}` 标记 |
 | `estimateTokens(text)` | 粗略估算 token 数 |
+
+### 回传进度
+
+进度是 Worker 自己的能力：在进程内可以随时 `ctx.emit()`；外部进程（Agent CLI、脚本、远程服务的回调）用回传接口：
+
+```bash
+curl -X POST "$JINGJING_REPORT_URL" \
+  -H "Authorization: Bearer $JINGJING_RUN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"正在编译 3/10","progress":{"done":3,"total":10},"checkpoint":{"step":3}}'
+```
+
+- 三个字段都可选：`message` 显示为进度，`checkpoint` 合并进断点，任何一次上报都算心跳；
+- 令牌只对这一次执行有效，库里只存哈希；执行结束或被取消后返回 `409 { "stop": true }`，外部进程看到就应该停下；
+- 不回传进度的 Worker 也没关系：任务卡显示「等待 Worker 回传…」和已运行时长，直到 `execute` 返回结果。
+
+内置的 Claude Code Worker 就是这么做的：用 `--output-format stream-json` 把它读了哪个文件、跑了什么命令实时转成进度，启动前用 `--session-id` 预先指定会话并存为断点，服务重启后 `--resume` 接着跑。
 
 ### 返回结果
 

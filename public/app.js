@@ -10,23 +10,22 @@ const STATUS_LABEL = {
   cancelled: '已取消'
 };
 const PLUGIN_TYPE_LABEL = { poll: '轮询', webhook: 'Webhook 推送', stream: '长连接', manual: '手动', watch: '文件监听' };
-const WORKER_LABEL = { llm: '问答', shell: '文件操作', file: '文件生成', claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness', memory: '记忆整理' };
 const ABILITY_LABEL = { text: '文本', 'write-file': '写文件', 'manage-files': '整理文件', code: '代码', memory: '记忆' };
 const WORKER_LIMIT_FIELDS = [
   { key: 'timeoutMinutes', label: '超时（分钟）', min: 1, max: 1440, help: '超过这个时长自动停止，且不自动重试' },
   { key: 'concurrency', label: '最多同时运行', min: 1, max: 4, help: '同时还受全局并发上限约束' },
   { key: 'retries', label: '失败自动重试次数', min: 0, max: 3, help: '编码类 Agent 建议保持 0，避免重复花费' }
 ];
+// Worker 的名称和图标都来自各自的 plugin.json；已删除的 Worker 显示 id。
 function workerLabel(id) {
-  return state.workers?.[id]?.label || WORKER_LABEL[id] || id;
+  return state.workers?.[id]?.label || id;
 }
 function workerGlyph(id) {
-  return state.workers?.[id]?.glyph || WORKER_GLYPH[id] || '工';
+  return state.workers?.[id]?.glyph || '工';
 }
 function workerIds() {
   return Object.keys(state.workers || {}).filter((id) => state.workers[id]?.available || !state.workers[id]?.source || state.workers[id]?.source === 'builtin');
 }
-const WORKER_GLYPH = { llm: '答', shell: '件', file: '文', claude: '码', codex: '码', dsh: 'H', memory: '忆' };
 const LAYER_LABEL = { profile: '画像', semantic: '语义', episodic: '情景', working: '工作' };
 const EVENT_LABEL = {
   'task/created': '已创建',
@@ -43,6 +42,7 @@ const EVENT_LABEL = {
   'task/edited': '已编辑',
   'task/retried': '重新排队',
   'workflow/proposed': '总结成工作流程',
+  'task/merged': '合并了新事件',
   'workflow/skipped': '没有总结流程'
 };
 const WORKFLOW_STATUS_LABEL = { active: '生效', candidate: '候选', disabled: '已停用', dismissed: '已忽略' };
@@ -355,11 +355,31 @@ function statusPill(status) {
   return `<span class="status-pill" data-s="${status}">${STATUS_LABEL[status] || status}</span>`;
 }
 
+function durationText(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} 分 ${s % 60} 秒`;
+  return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+}
+
+function elapsedHtml(task) {
+  if (!task.started_at) return '';
+  return `<span class="elapsed" data-started="${esc(task.started_at)}">· 已运行 ${durationText(Date.now() - new Date(task.started_at).getTime())}</span>`;
+}
+
+// Worker 不回传进度时，至少让人看到它还在跑、跑了多久。
+setInterval(() => {
+  for (const el of document.querySelectorAll('.elapsed[data-started]')) {
+    el.textContent = `· 已运行 ${durationText(Date.now() - new Date(el.dataset.started).getTime())}`;
+  }
+}, 5000);
+
 function inlineTaskCard(task) {
   if (!task) return '';
   const approval = approvalFor(task);
   const progress = task.status === 'running' && task.progress
-    ? `<div class="task-card-progress"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1.4s linear infinite"><path d="M12 3a9 9 0 109 9" stroke-linecap="round"/></svg>${esc(task.progress)}</div>`
+    ? `<div class="task-card-progress"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1.4s linear infinite"><path d="M12 3a9 9 0 109 9" stroke-linecap="round"/></svg>${esc(task.progress)}${elapsedHtml(task)}</div>`
     : '';
   const result = task.status === 'done' && task.result
     ? `<div class="task-card-body">${md(task.result.split('\n').slice(0, 3).join('\n'))}</div>`
@@ -637,7 +657,9 @@ function closeDrawer() {
 function eventDetail(e) {
   if (!e.data) return '';
   if (e.type === 'task/created') return `${workerLabel(e.data.worker)}${e.data.workflow ? ` · 按流程「${e.data.workflow}」` : ''}`;
-  if (e.type === 'approval/resolved') return e.data.option ? `选择：${e.data.option}` : '';
+  if (e.type === 'approval/resolved') return e.data.option ? `${e.data.by === 'habit' ? '按习惯自动' : ''}选择：${e.data.option}` : '';
+  if (e.type === 'task/recovered') return { resume: '从断点继续', restart: '重新执行', ask: '等你决定是否重跑' }[e.data.mode] || '';
+  if (e.type === 'task/started') return e.data.attempt > 1 ? `第 ${e.data.attempt} 次执行` : '';
   if (e.type === 'task/retry') return `第 ${e.data.attempt} 次尝试：${e.data.error || ''}`;
   if (e.type === 'workflow/proposed') return `候选习惯「${e.data.name || ''}」`;
   if (e.type === 'workflow/skipped') return e.data.reason || '';
@@ -647,7 +669,25 @@ function eventDetail(e) {
   return '';
 }
 
-function renderDrawer({ task, events, approval }) {
+const RUN_STATUS_LABEL = { running: '执行中', done: '完成', failed: '失败', cancelled: '取消', timeout: '超时', waiting_approval: '等拍板', interrupted: '被重启打断' };
+
+function runsHtml(runs = []) {
+  if (!runs.length) return '';
+  return `
+    <div class="drawer-section">
+      <h4>执行记录</h4>
+      <div class="run-list">
+        ${runs.map((run) => {
+          const end = run.finished_at ? new Date(run.finished_at) : new Date();
+          const took = durationText(end - new Date(run.started_at));
+          const cp = run.checkpoint ? Object.keys(run.checkpoint).join('、') : '';
+          return `<div class="run-item"><span>第 ${run.attempt} 次 · ${esc(RUN_STATUS_LABEL[run.status] || run.status)} · ${esc(took)}</span><small>${esc(cp ? `断点：${cp}` : clock(run.started_at))}</small></div>`;
+        }).join('')}
+      </div>
+    </div>`;
+}
+
+function renderDrawer({ task, events, approval, runs }) {
   const pending = approval && approval.status === 'pending' ? approval : null;
   $('#drawer').innerHTML = `
     <div class="drawer-head">
@@ -708,6 +748,7 @@ function renderDrawer({ task, events, approval }) {
         : ''}
       <button class="mini-btn" data-action="close-drawer">关闭</button>
     </div>
+    ${runsHtml(runs)}
     <div class="drawer-section">
       <h4>事件时间线</h4>
       <ul class="timeline">
@@ -2120,10 +2161,123 @@ async function loadAdmin() {
     state.tasks = tasks.tasks;
     state.stats = tasks.stats;
     renderAdmin();
+    loadArchives();
   } catch (err) {
     toast(err.message);
   }
 }
+
+function sizeText(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+function countsText(counts = {}) {
+  const parts = [];
+  if (counts.tasks) parts.push(`${counts.tasks} 个任务`);
+  if (counts.task_events) parts.push(`${counts.task_events} 条事件`);
+  if (counts.messages) parts.push(`${counts.messages} 条消息`);
+  return parts.join('，') || '没有内容';
+}
+
+async function loadArchives() {
+  try {
+    const data = await api('/api/admin/archives');
+    state.archives = data;
+    renderArchives();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function renderArchives() {
+  const data = state.archives;
+  if (!data) return;
+  const enabled = $('#archive-enabled');
+  const days = $('#archive-days');
+  if (enabled) enabled.checked = data.settings?.enabled !== false;
+  if (days && document.activeElement !== days) days.value = data.settings?.afterDays || 90;
+  const last = data.lastRun;
+  const info = $('#archive-info');
+  if (info) {
+    info.textContent = [
+      `现在可归档：${countsText(data.pending)}`,
+      last ? `上次${last.reason === 'auto' ? '自动' : '手动'}归档：${timeAgo(last.at)}，${last.file ? countsText(last.counts) : '没有需要归档的数据'}` : '还没有归档过'
+    ].join(' · ');
+  }
+  const list = $('#archive-list');
+  if (list) {
+    list.innerHTML = (data.archives || []).map((a) => `
+      <div class="worker-rule">
+        <span class="worker-rule-main"><b>${esc(a.name)}</b><small>${esc(`${timeAgo(a.createdAt)} · ${sizeText(a.size)} · ${countsText(a.counts)}`)}</small></span>
+        <span class="worker-rule-actions"><a class="mini-btn" href="/api/admin/archives/${encodeURIComponent(a.name)}" download>下载</a></span>
+      </div>`).join('');
+  }
+}
+
+$('#archive-save')?.addEventListener('click', async () => {
+  try {
+    const data = await api('/api/settings', {
+      method: 'PUT',
+      body: { archive: { enabled: Boolean($('#archive-enabled')?.checked), afterDays: Number($('#archive-days')?.value) || 90 } }
+    });
+    state.settings = data.settings;
+    await loadArchives();
+    toast('归档设置已保存。');
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+$('#archive-now')?.addEventListener('click', async (event) => {
+  const days = Number($('#archive-days')?.value) || state.archives?.settings?.afterDays || 90;
+  if (!confirm(`把已结束超过 ${days} 天的任务和旧对话打包归档，并从数据库清理？归档文件会保留在数据目录里。`)) return;
+  event.target.disabled = true;
+  try {
+    const data = await api('/api/admin/archive', { method: 'POST', body: { days } });
+    toast(data.result.file ? `已归档：${countsText(data.result.counts)}` : '没有需要归档的数据。', 3600);
+    await loadAdmin();
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    event.target.disabled = false;
+  }
+});
+
+let archiveSearchTimer = null;
+$('#archive-search')?.addEventListener('input', (event) => {
+  clearTimeout(archiveSearchTimer);
+  const q = event.target.value.trim();
+  archiveSearchTimer = setTimeout(async () => {
+    const box = $('#archive-results');
+    if (!box) return;
+    if (!q) { box.innerHTML = ''; return; }
+    try {
+      const data = await api(`/api/admin/archives?q=${encodeURIComponent(q)}`);
+      box.innerHTML = data.results.length ? data.results.map((r) => `
+        <div class="worker-rule">
+          <span class="worker-rule-main"><b>${esc(r.task.title)}</b><small>${esc(`${STATUS_LABEL[r.task.status] || r.task.status} · ${r.task.id} · ${r.events.length} 条事件 · ${r.archive}`)}</small></span>
+          <span class="worker-rule-actions"><button type="button" class="mini-btn" data-archive-restore="${esc(r.archive)}" data-task="${esc(r.task.id)}">恢复</button></span>
+        </div>`).join('') : '<div class="admin-note">归档里没有找到。</div>';
+    } catch (err) {
+      toast(err.message);
+    }
+  }, 300);
+});
+
+$('#archive-results')?.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-archive-restore]');
+  if (!button) return;
+  try {
+    const data = await api(`/api/admin/archives/${encodeURIComponent(button.dataset.archiveRestore)}/restore`, { method: 'POST', body: { taskId: button.dataset.task } });
+    if (data.task) upsertTask(data.task);
+    toast(`已恢复任务「${data.task?.title || button.dataset.task}」，可以在任务列表里看到。`, 3600);
+    button.disabled = true;
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 function renderAdmin() {
   renderAdminOverview();
@@ -2507,6 +2661,7 @@ function workflowMeta(w) {
   else if (w.source === 'doc') parts.push('按名称匹配');
   if (w.worker) parts.push(`→ ${workerLabel(w.worker)}`);
   if (w.stats?.uses) parts.push(`用过 ${w.stats.uses} 次，成功 ${w.stats.successes}`);
+  if (w.answers?.length) parts.push(`记了 ${w.answers.length} 个选择${w.auto ? '，自动拍板' : ''}`);
   if (w.error) parts.push(`⚠ ${w.error}`);
   return parts.join(' · ');
 }
@@ -2524,6 +2679,7 @@ function renderWorkflows() {
         ${w.status === 'active'
           ? `<button type="button" class="mini-btn" data-action="workflow-status" data-id="${w.id}" data-status="disabled">停用</button>`
           : `<button type="button" class="mini-btn primary" data-action="workflow-status" data-id="${w.id}" data-status="active">${w.status === 'candidate' ? '保存为习惯' : '启用'}</button>`}
+        ${w.answers?.length ? `<label class="mini-switch" title="执行中遇到记过的问题时自动拍板"><span>自动拍板</span><input type="checkbox" class="switch" data-workflow-auto="${w.id}" ${w.auto ? 'checked' : ''} /></label>` : ''}
         ${w.editable ? `<button type="button" class="mini-btn danger" data-action="workflow-delete" data-id="${w.id}">删除</button>` : ''}
       </span>
     </div>`).join('') : '<div class="admin-note">还没有工作流程。可以新建一个，或者在下面指定放流程文档的文件夹。</div>';
@@ -2595,6 +2751,19 @@ $('#add-workflow')?.addEventListener('click', () => {
       toast('工作流程已创建。');
     }
   });
+});
+
+$('#workflow-list')?.addEventListener('change', async (event) => {
+  const input = event.target.closest('[data-workflow-auto]');
+  if (!input) return;
+  try {
+    state.workflows = await api(`/api/workflows/${input.dataset.workflowAuto}/auto`, { method: 'POST', body: { auto: input.checked } });
+    renderWorkflows();
+    toast(input.checked ? '已开启：执行中遇到记过的问题会按习惯自动拍板。' : '已关闭自动拍板。');
+  } catch (err) {
+    input.checked = !input.checked;
+    toast(err.message);
+  }
 });
 
 $('#reload-workflows')?.addEventListener('click', async () => {

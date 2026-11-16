@@ -241,7 +241,9 @@ Router **不碰** `approvals` 表，也**不启动** Worker。插件发现走的
 - `shell` / `file` Worker 只在任务工作区里移动或写入文件，目标路径越出工作区（`isInside` 校验）直接失败；工作区本身可以是任意目录。
 - 服务默认只监听 `127.0.0.1`；开放到局域网需要显式设 `JINGJING_HOST=0.0.0.0`。
 - 页面渲染对模型输出做 HTML 转义，Markdown 只支持白名单语法。
-- 插件（包括 Worker 插件）在服务进程内运行、拥有完整 Node 权限，没有沙箱；只安装可信插件。manifest 里的 `capabilities` 只是声明，不做强制。
+- 插件拿到的设置里没有模型 Key 和通知通道凭据；只有随代码发布的内置 Worker 能通过 `ctx.secrets` 拿到 Key。
+- 第三方 Worker 插件的 `execute` 在独立线程里运行，取消 / 超时后会被强制结束；但它仍是同一个 Node 进程、同一个系统账户，能读写本机文件，不是安全沙箱。来源插件仍在主线程运行。只安装可信插件，manifest 里的 `capabilities` 只是声明，不做强制。
+- 回传接口 `/api/runs/<id>/report` 不需要配对码，只认本次执行的一次性令牌（库里存哈希，执行结束即失效）。
 - API Key 存在本机 SQLite；接口返回时打码，保存时保留原值。
 - Claude Code 以 `claude -p` 运行，工具权限完全交给 Claude Code 自身的用户配置，静静不追加权限参数，也不使用 `--dangerously-skip-permissions`。
 

@@ -31,7 +31,7 @@ export async function execute(task, ctx) {
     DSH_PROFILE_DIR: null,
     DSH_SESSION_ID: null,
     DSH_WEB_URL: null,
-    ...(ctx.settings.apiKey ? { DEEPSEEK_API_KEY: ctx.settings.apiKey } : {})
+    ...(ctx.secrets?.apiKey ? { DEEPSEEK_API_KEY: ctx.secrets.apiKey } : {})
   };
   await ctx.emit('DeepSeek Harness 已启动，正在自己的会话里工作…');
   const result = await ctx.exec(harness.node, [path.join(harness.install, 'lib/bin.js'), 'headless', task.prompt || task.title], {

@@ -1,0 +1,37 @@
+name: test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# 同一分支连续推送时，只保留最新一次运行。
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 运行测试
+        run: npm test
+
+      - name: 检查插件与内置 Worker 清单
+        run: npm run plugin:check
+
+      - name: 检查升级包能正常打出
+        run: |
+          command -v zip >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y zip)
+          command -v rsync >/dev/null || sudo apt-get install -y rsync
+          bash scripts/package-update.sh

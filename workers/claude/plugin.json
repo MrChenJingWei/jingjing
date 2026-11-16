@@ -17,6 +17,7 @@
     ],
     "cost": 4,
     "keywords": "claude",
+    "recovery": "resume",
     "timeoutMinutes": 60,
     "concurrency": 1,
     "retries": 0

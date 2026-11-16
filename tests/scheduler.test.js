@@ -16,7 +16,8 @@ test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
 function fakeWorker(id, worker, execute) {
   const manifest = validateManifest({ id, kind: 'worker', name: id, entry: 'index.js', worker });
-  workers.registerWorkerPlugin({ manifest, module: { execute }, dir: path.join(dataDir, 'plugins', id) });
+  // 内存里的假插件没有入口文件，测试调度逻辑时在主线程执行；线程隔离单独测。
+  workers.registerWorkerPlugin({ manifest, module: { execute }, dir: path.join(dataDir, 'plugins', id), isolate: false });
 }
 
 /** 一个手动放行的 Worker：execute 挂起，直到测试调用 release(result)。 */

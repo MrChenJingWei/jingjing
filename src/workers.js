@@ -8,115 +8,22 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { Worker as ThreadWorker } from 'node:worker_threads';
 import { pathToFileURL } from 'node:url';
-import { ROOT, SANDBOX_DIR } from './config.js';
-import { db, now, getSettings } from './db.js';
+import { ROOT, SANDBOX_DIR, HOST, PORT } from './config.js';
+import { db, now, getSettings, pluginSettings } from './db.js';
 import { validateManifest, validateConfig, validateWorkerLimits, WORKER_DEFAULTS, WORKER_LIMIT_RANGES } from './plugin-spec.js';
-import { chat, demoTaskOutput, estimateTokens, llmMode } from './llm.js';
+import { chat, demoTaskOutput, llmMode } from './llm.js';
 import { pickWorker } from './worker-routing.js';
+import { which, clearWhichCache, sleep, runCommand, extractApproval, estimateTokens } from './worker-runtime.js';
+
+export { which, clearWhichCache, runCommand, extractApproval };
 
 export const BUILTIN_WORKER_DIR = path.join(ROOT, 'workers');
 const RESULT_STATUSES = new Set(['done', 'failed', 'needs_approval', 'cancelled']);
 const WORKER_MASK = '••••••••';
-
-/* --------------------------------- 工具 --------------------------------- */
-
-const BIN = {};
-export function which(bin) {
-  if (!(bin in BIN)) {
-    const home = process.env.HOME || '';
-    const extra = [
-      path.join(home, '.local', 'bin'),
-      path.join(home, '.npm-global', 'bin'),
-      path.join(home, '.bun', 'bin'),
-      '/opt/homebrew/bin',
-      '/usr/local/bin'
-    ];
-    const env = { ...process.env, PATH: [...extra, process.env.PATH || ''].join(':') };
-    const r = spawnSync('which', [bin], { encoding: 'utf8', env });
-    BIN[bin] = r.status === 0 ? r.stdout.trim() : null;
-    if (!BIN[bin]) {
-      for (const dir of extra) {
-        const candidate = path.join(dir, bin);
-        try {
-          fs.accessSync(candidate, fs.constants.X_OK);
-          BIN[bin] = candidate;
-          break;
-        } catch { /* ignore */ }
-      }
-    }
-  }
-  return BIN[bin];
-}
-
-function sleep(ms, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error('aborted'));
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => {
-      clearTimeout(timer);
-      reject(new Error('aborted'));
-    }, { once: true });
-  });
-}
-
-/**
- * 运行一个外部命令。signal 中止时先 SIGTERM，1.5 秒后 SIGKILL，并返回 { error: 'aborted' }。
- * timeoutMs 为 0 表示不单独设超时（由调度器按 Worker 的 timeoutMinutes 统一中止）。
- */
-export function runCommand(cmd, args = [], { cwd, signal, onOutput, timeoutMs = 0, env: extraEnv = {} } = {}) {
-  const env = { ...process.env };
-  for (const [key, value] of Object.entries(extraEnv || {})) {
-    if (value === null || value === undefined) delete env[key];
-    else env[key] = String(value);
-  }
-  return new Promise((resolve) => {
-    if (signal?.aborted) return resolve({ code: -2, error: 'aborted', stdout: '', stderr: '' });
-    const child = spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const timer = timeoutMs > 0 ? setTimeout(() => child.kill('SIGKILL'), timeoutMs) : null;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      resolve({ ...result, stdout, stderr });
-    };
-    child.stdout.on('data', (buf) => { stdout += buf.toString(); onOutput?.(buf.toString()); });
-    child.stderr.on('data', (buf) => { stderr += buf.toString(); });
-    child.on('error', (err) => finish({ code: -1, error: err.message }));
-    child.on('close', (code) => finish({ code }));
-    signal?.addEventListener('abort', () => {
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 1500).unref?.();
-      finish({ code: -2, error: 'aborted' });
-    }, { once: true });
-  });
-}
-
-/** 解析输出末尾的 [[APPROVAL]] {"question":"…","options":[…]} 标记。 */
-export function extractApproval(text) {
-  const idx = String(text || '').lastIndexOf('[[APPROVAL]]');
-  if (idx === -1) return null;
-  const body = text.slice(idx + '[[APPROVAL]]'.length).trim();
-  try {
-    const parsed = JSON.parse(body.split('\n').filter(Boolean)[0]);
-    if (!parsed.question) return null;
-    return {
-      approval: {
-        question: String(parsed.question),
-        options: Array.isArray(parsed.options) && parsed.options.length
-          ? parsed.options.map(String).slice(0, 5)
-          : ['继续', '先停一下']
-      },
-      text: text.slice(0, idx).trim()
-    };
-  } catch {
-    return null;
-  }
-}
+// 插件线程收到中止后的宽限期，超时直接 terminate（同步死循环也能被结束）。
+const THREAD_GRACE_MS = 2000;
 
 /* -------------------------------- 注册表 -------------------------------- */
 
@@ -171,16 +78,34 @@ export async function loadBuiltinWorkers(dir = BUILTIN_WORKER_DIR) {
   return errors;
 }
 
-export function registerWorkerPlugin({ manifest, module, dir }) {
+/**
+ * 注册第三方 Worker 插件。isolate=true（默认）时 execute 在独立线程里跑，
+ * detect / test 仍在主线程同步调用，所以它们必须足够快。
+ */
+export function registerWorkerPlugin({ manifest, module, dir, isolate = true }) {
   const existing = workerRegistry.get(manifest.id);
   if (existing?.source === 'builtin') throw new Error(`Worker id「${manifest.id}」与内置 Worker 冲突`);
   if (existing && existing.dir !== dir) throw new Error(`Worker id「${manifest.id}」已被占用`);
   assertWorkerModule(module);
-  register({ id: manifest.id, source: 'plugin', dir, manifest, module });
+  register({ id: manifest.id, source: 'plugin', dir, manifest, module, isolate });
 }
 
 export function unregisterWorkerPlugin(id) {
   if (workerRegistry.get(id)?.source === 'plugin') workerRegistry.delete(id);
+}
+
+export function workerRecovery(id) {
+  return workerRegistry.get(id)?.manifest.worker.recovery || WORKER_DEFAULTS.recovery;
+}
+
+export function workerLabelOf(id) {
+  return workerRegistry.get(id)?.manifest.name || id;
+}
+
+/** Worker 回传进度用的本机地址。服务监听在 0.0.0.0 时用回环地址。 */
+export function reportUrl(runId) {
+  const host = !HOST || HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : HOST;
+  return `http://${host.includes(':') ? `[${host}]` : host}:${PORT}/api/runs/${encodeURIComponent(runId)}/report`;
 }
 
 export function isBuiltinWorker(id) {
@@ -279,7 +204,7 @@ export function saveWorkerConfig(id, { config, enabled, limits } = {}) {
 /* --------------------------------- 检测 --------------------------------- */
 
 function detectContext() {
-  return { settings: getSettings(), which };
+  return { settings: pluginSettings(), which, llm: { mode: llmMode() } };
 }
 
 function normalizeDetection(result) {
@@ -302,6 +227,7 @@ function workerDetection(descriptor) {
 export async function testWorker(id) {
   const descriptor = workerRegistry.get(id);
   if (!descriptor || isWorkerDeleted(id)) throw new Error('Worker 不存在');
+  clearWhichCache();
   if (typeof descriptor.module.test === 'function') {
     try {
       return normalizeDetection(await descriptor.module.test(workerConfig(descriptor), detectContext()));
@@ -331,6 +257,7 @@ export function availability() {
       abilities: manifest.worker.abilities,
       cost: manifest.worker.cost,
       keywords: manifest.worker.keywords,
+      recovery: manifest.worker.recovery,
       limits: workerLimits(descriptor.id),
       limitDefaults: limitDefaults(descriptor),
       configSchema: manifest.config || [],
@@ -356,9 +283,9 @@ export function workerCatalog({ onlyAvailable = false } = {}) {
     }));
 }
 
-/** 没有指定 Worker 时的默认选择：最便宜的可用文本 Worker。 */
+/** 没有指定 Worker 时的默认选择：最便宜的可用文本 Worker；一个可用的都没有时返回 null。 */
 export function defaultWorker() {
-  return pickWorker({ workers: workerCatalog() }).worker || 'llm';
+  return pickWorker({ workers: workerCatalog() }).worker || null;
 }
 
 /* --------------------------------- 执行 --------------------------------- */
@@ -367,12 +294,20 @@ function hostContext(descriptor, task, ctx) {
   const settings = getSettings();
   const signal = ctx.signal;
   const emit = async (message, meta = {}) => ctx.onProgress?.(String(message), meta);
+  const run = ctx.run ? { id: ctx.run.id, token: ctx.run.token, reportUrl: ctx.run.reportUrl } : null;
+  // 宿主启动的子进程自动拿到回传地址和令牌，外部 Agent 可以直接 POST 进度回来。
+  const runEnv = run ? { JINGJING_RUN_ID: run.id, JINGJING_RUN_TOKEN: run.token, JINGJING_REPORT_URL: run.reportUrl } : {};
   return {
     signal,
     emit,
+    run,
+    checkpoint: async (data) => (ctx.checkpoint ? ctx.checkpoint(data) : { ...data }),
+    recovery: ctx.recovery || null,
     log: (message) => console.log(`[worker:${descriptor.id}] ${message}`),
     config: workerConfig(descriptor),
-    settings,
+    settings: pluginSettings(settings),
+    // 只有随代码发布的内置 Worker 能拿到模型 Key（比如 DeepSeek Harness 要转交给子进程）。
+    secrets: descriptor.source === 'builtin' ? { apiKey: settings.apiKey || '' } : {},
     resume: ctx.resume || null,
     sessionId: task.resume_payload?.session_id || null,
     memories: ctx.memories || [],
@@ -385,12 +320,82 @@ function hostContext(descriptor, task, ctx) {
       chat: (options = {}) => chat({ ...options, signal: options.signal || signal }),
       demoOutput: () => demoTaskOutput({ task, memories: ctx.memories || [], tasks: ctx.tasks || [] })
     },
-    exec: (cmd, args, options = {}) => runCommand(cmd, args, { ...options, signal: options.signal || signal }),
+    exec: (cmd, args, options = {}) => runCommand(cmd, args, {
+      ...options,
+      env: { ...runEnv, ...(options.env || {}) },
+      signal: options.signal || signal
+    }),
     which,
     sleep: (ms) => sleep(ms, signal),
     parseApproval: extractApproval,
     estimateTokens
   };
+}
+
+/** 在独立线程里运行插件的 execute；主线程只转发进度、断点和模型调用。 */
+function runInThread(descriptor, task, host) {
+  const entry = pathToFileURL(path.join(descriptor.dir, descriptor.manifest.entry)).href;
+  const { signal, emit, log, checkpoint, llm, exec: _exec, which: _which, sleep: _sleep, parseApproval: _parse, estimateTokens: _tokens, ...plain } = host;
+  const runEnv = host.run ? { JINGJING_RUN_ID: host.run.id, JINGJING_RUN_TOKEN: host.run.token, JINGJING_REPORT_URL: host.run.reportUrl } : {};
+  return new Promise((resolve) => {
+    let settled = false;
+    let thread;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      thread?.terminate().catch(() => {});
+      resolve(result);
+    };
+    const onAbort = () => {
+      thread?.postMessage({ type: 'abort', reason: String(signal.reason || 'cancelled') });
+      setTimeout(() => finish({ status: 'cancelled', summary: '任务已停止。' }), THREAD_GRACE_MS).unref?.();
+    };
+    try {
+      thread = new ThreadWorker(new URL('./worker-thread.js', import.meta.url), {
+        workerData: { entry, task, data: { plain, llmMode: llm.mode, demoOutput: llm.demoOutput(), runEnv } },
+        resourceLimits: { maxOldGenerationSizeMb: 512 }
+      });
+    } catch (err) {
+      resolve({ status: 'failed', summary: `Worker「${descriptor.manifest.name}」线程启动失败：${err.message}` });
+      return;
+    }
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+
+    thread.on('message', async (msg) => {
+      if (msg?.type === 'emit') return emit(msg.message, msg.meta || {});
+      if (msg?.type === 'log') return log(msg.message);
+      if (msg?.type === 'rpc') {
+        try {
+          const handler = msg.method === 'checkpoint' ? checkpoint : msg.method === 'llm.chat' ? llm.chat : null;
+          if (!handler) throw new Error(`不支持的调用：${msg.method}`);
+          const result = await handler(...(msg.args || []));
+          thread.postMessage({ type: 'rpc-result', id: msg.id, result: JSON.parse(JSON.stringify(result ?? null)) });
+        } catch (err) {
+          thread.postMessage({ type: 'rpc-result', id: msg.id, error: err.message });
+        }
+        return;
+      }
+      if (msg?.type === 'result') {
+        try {
+          finish(normalizeResult(descriptor, msg.result));
+        } catch (err) {
+          finish({ status: 'failed', summary: `Worker「${descriptor.manifest.name}」执行失败：${err.message}` });
+        }
+        return;
+      }
+      if (msg?.type === 'error') {
+        finish(msg.aborted || signal?.aborted
+          ? { status: 'cancelled', summary: '任务已停止。' }
+          : { status: 'failed', summary: `Worker「${descriptor.manifest.name}」执行失败：${msg.error}` });
+      }
+    });
+    thread.on('error', (err) => finish({ status: 'failed', summary: `Worker「${descriptor.manifest.name}」线程出错：${err.message}` }));
+    thread.on('exit', (code) => finish(signal?.aborted
+      ? { status: 'cancelled', summary: '任务已停止。' }
+      : { status: 'failed', summary: `Worker「${descriptor.manifest.name}」线程意外退出（退出码 ${code}）` }));
+  });
 }
 
 function normalizeResult(descriptor, result) {
@@ -416,7 +421,9 @@ export async function runWorker(task, ctx = {}) {
     return { status: 'failed', summary: `Worker「${descriptor.manifest.name}」已停用。`, retryable: false };
   }
   try {
-    return normalizeResult(descriptor, await descriptor.module.execute(task, hostContext(descriptor, task, ctx)));
+    const host = hostContext(descriptor, task, ctx);
+    if (descriptor.source === 'plugin' && descriptor.isolate !== false) return await runInThread(descriptor, task, host);
+    return normalizeResult(descriptor, await descriptor.module.execute(task, host));
   } catch (err) {
     if (ctx.signal?.aborted || err?.message === 'aborted' || err?.name === 'AbortError') {
       return { status: 'cancelled', summary: '任务已停止。' };

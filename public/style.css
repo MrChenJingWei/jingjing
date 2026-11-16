@@ -1052,3 +1052,13 @@ html[data-theme="dark"] .toast { background: var(--surface-3); color: var(--ink)
 .worker-rule-main small { display: block; margin-top: 2px; font-size: 10px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .worker-rule-actions { display: flex; align-items: center; gap: 5px; flex: none; }
 .worker-rule-actions .mini-btn { padding: 4px 6px; }
+
+/* 归档 */
+.archive-settings { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; margin: 6px 0 10px; }
+.archive-settings .field { width: 120px; margin: 0; }
+/* 执行记录 */
+.run-list { display: flex; flex-direction: column; gap: 6px; }
+.run-item { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--ink-2); padding: 6px 9px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); }
+.run-item small { color: var(--faint); }
+.elapsed { color: var(--faint); margin-left: 4px; }
+.mini-switch { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }

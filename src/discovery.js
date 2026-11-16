@@ -1,4 +1,4 @@
-import { db, now, uid, getSettings } from './db.js';
+import { db, now, uid, getSettings, pluginSettings } from './db.js';
 import { bus } from './events.js';
 import * as plugins from './plugins.js';
 import { matchWorkerRule } from './worker-rules.js';
@@ -319,7 +319,7 @@ export async function runPlugin(id, { force = false } = {}) {
     const since = plugin.row.last_run;
     log(`开始拉取${since ? `（上次：${since}）` : ''}`);
     const result = await plugin.module.poll(plugin.config, {
-      settings: getSettings(),
+      settings: pluginSettings(),
       now: new Date(),
       since,
       signal: controller.signal,
@@ -357,7 +357,7 @@ export async function testPlugin(id, overrideConfig = {}) {
   }
   const started = Date.now();
   const result = await plugin.module.test(config, {
-    settings: getSettings(),
+    settings: pluginSettings(),
     now: new Date(),
     log: (msg) => console.log(`[plugin:${id}:test] ${msg}`),
     instanceId: id,
@@ -434,7 +434,7 @@ export async function startLifecycle(id) {
   await stopLifecycleEntry(id);
   try {
     const stop = await plugin.module.start(plugin.config, {
-      settings: getSettings(),
+      settings: pluginSettings(),
       log: lifecycleLogger(id),
       ingest: (items) => ingestItems(id, items, { verb: '接收' }),
       instanceId: id,

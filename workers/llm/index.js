@@ -6,8 +6,8 @@ const SYSTEM_ACTION_RE = [
   /(^|[^a-z])(git|github)([^a-z]|$)/i
 ];
 
-export function detect(config, { settings }) {
-  const demo = settings.provider === 'demo' || (settings.provider === 'deepseek' && !settings.apiKey);
+export function detect(config, { settings, llm }) {
+  const demo = llm?.mode === 'demo';
   return { available: true, detail: `${demo ? '演示模式' : `模型：${settings.model}`} · 仅文本，不读写文件/不执行命令` };
 }
 
@@ -55,7 +55,7 @@ export async function execute(task, ctx) {
     `风格：${settings.persona || '平静、具体、不奉承，像一个可靠的同事。'}`,
     '你在执行一个已经派给你的任务。直接交付结果，不要说「作为一个 AI」。',
     '你是「问答」Worker，只能处理和回答文本；你没有读写文件、执行命令、访问网络或修改系统的能力。',
-    '不要声称「已保存」「已写入」「已执行」「已修改」任何文件或系统；需要落盘时告诉用户改用「文件生成」或编码 Worker。',
+    `不要声称「已保存」「已写入」「已执行」「已修改」任何文件或系统；需要落盘时告诉用户改用 ${capableWorkers(ctx.workers)}。`,
     '不要描述系统内部操作，不要声称「任务板已更新」「已写入数据库」；只交付内容本身。',
     `当前时间：${new Date().toLocaleString('zh-CN', { hour12: false })}。`,
     '需要用户拍板才能继续时，把问题写在最后，并单独输出一行：',

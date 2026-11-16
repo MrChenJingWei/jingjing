@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { HOST, PORT, PUBLIC_DIR, DATA_DIR, DB_PATH } from './src/config.js';
-import { db, getSettings, saveSettings, seedIfEmpty } from './src/db.js';
+import { db, getSettings, getSetting, saveSettings, seedIfEmpty } from './src/db.js';
 import { bus } from './src/events.js';
 import * as memory from './src/memory.js';
 import * as scheduler from './src/scheduler.js';
@@ -12,6 +12,7 @@ import * as channels from './src/channels.js';
 import { availability, testWorker, saveWorkerConfig, isBuiltinWorker, deleteBuiltinWorker, restoreBuiltinWorkers, loadBuiltinWorkers, defaultWorker } from './src/workers.js';
 import * as workerRules from './src/worker-rules.js';
 import * as workflows from './src/workflows.js';
+import * as archive from './src/archive.js';
 import { chat as llmChat } from './src/llm.js';
 import * as plugins from './src/plugins.js';
 import * as discovery from './src/discovery.js';
@@ -169,11 +170,22 @@ const server = http.createServer(async (req, res) => {
 
   const publicApis = new Set(['/api/health', '/api/auth/status', '/api/auth/login', '/api/auth/logout']);
   const hookMatch = pathname.match(/^\/api\/hooks\/([A-Za-z0-9_-]+)$/);
-  if (!publicApis.has(pathname) && !hookMatch && !auth.isAuthorized(req)) {
+  // Worker 回传接口：不用配对码，只认这次执行的令牌（Authorization: Bearer <JINGJING_RUN_TOKEN>）。
+  const runReportMatch = pathname.match(/^\/api\/runs\/([A-Za-z0-9_-]+)\/report$/);
+  if (!publicApis.has(pathname) && !hookMatch && !runReportMatch && !auth.isAuthorized(req)) {
     return json(res, 401, { error: '还没有配对', code: 'UNAUTHORIZED' });
   }
 
   try {
+    if (runReportMatch) {
+      if (req.method !== 'POST') return fail(res, 405, '回传接口只接受 POST');
+      const header = String(req.headers.authorization || '');
+      const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+      const body = await readBody(req);
+      const result = scheduler.reportRun(runReportMatch[1], token, body);
+      return json(res, result.ok ? 200 : result.code || 400, result);
+    }
+
     if (hookMatch) {
       if (req.method !== 'POST') return fail(res, 405, 'Webhook 只接受 POST');
       const plugin = plugins.findWebhookPlugin(hookMatch[1]);
@@ -331,7 +343,7 @@ const server = http.createServer(async (req, res) => {
         const task = scheduler.getTask(id);
         if (!task) return fail(res, 404, '任务不存在');
         const approval = task.approval_id ? scheduler.getApproval(task.approval_id) : null;
-        return json(res, 200, { task, events: scheduler.taskEvents(id), approval });
+        return json(res, 200, { task, events: scheduler.taskEvents(id), approval, runs: scheduler.taskRuns(id) });
       }
       if (req.method === 'POST' && action === 'approve') {
         const body = await readBody(req);
@@ -363,7 +375,7 @@ const server = http.createServer(async (req, res) => {
       bus.emit('workflows/updated', overview);
       return json(res, 200, { workflow, ...overview });
     }
-    const workflowMatch = pathname.match(/^\/api\/workflows\/([a-f0-9]{12})(?:\/(status))?$/);
+    const workflowMatch = pathname.match(/^\/api\/workflows\/([a-f0-9]{12})(?:\/(status|auto))?$/);
     if (workflowMatch) {
       const [, id, action] = workflowMatch;
       if (req.method === 'GET' && !action) {
@@ -374,6 +386,7 @@ const server = http.createServer(async (req, res) => {
       let workflow = null;
       if (req.method === 'PUT' && !action) workflow = workflows.updateRaw(id, (await readBody(req)).raw);
       else if (req.method === 'POST' && action === 'status') workflow = workflows.setStatus(id, (await readBody(req)).status);
+      else if (req.method === 'POST' && action === 'auto') workflow = workflows.setAuto(id, (await readBody(req)).auto);
       else if (req.method === 'DELETE' && !action) workflows.deleteWorkflow(id);
       else return fail(res, 405, 'method not allowed');
       const overview = workflows.overview();
@@ -534,6 +547,45 @@ const server = http.createServer(async (req, res) => {
       if (!paused) scheduler.kick();
       bus.emit('stats/updated', scheduler.stats());
       return json(res, 200, { paused, stats: scheduler.stats() });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/admin/archives') {
+      const q = url.searchParams.get('q');
+      if (q) return json(res, 200, { results: archive.searchArchives(q) });
+      return json(res, 200, {
+        archives: archive.listArchives(),
+        settings: getSettings().archive,
+        lastRun: getSetting('archiveLastRun', null),
+        pending: archive.collect().counts
+      });
+    }
+    if (req.method === 'POST' && pathname === '/api/admin/archive') {
+      const body = await readBody(req);
+      const result = archive.archiveOld({ days: body.days, reason: 'manual' });
+      bus.emit('stats/updated', scheduler.stats());
+      return json(res, 200, { result, archives: archive.listArchives() });
+    }
+    const archiveMatch = pathname.match(/^\/api\/admin\/archives\/([^/]+)(?:\/restore)?$/);
+    if (archiveMatch) {
+      const name = decodeURIComponent(archiveMatch[1]);
+      if (req.method === 'POST' && pathname.endsWith('/restore')) {
+        const body = await readBody(req);
+        const restored = archive.restoreTask(name, String(body.taskId || ''));
+        const task = scheduler.getTask(String(body.taskId));
+        if (task) bus.emit('task/created', { task });
+        return json(res, 200, { restored, task });
+      }
+      if (req.method === 'GET') {
+        const file = archive.archiveFile(name);
+        const stat = fs.statSync(file);
+        res.writeHead(200, {
+          'Content-Type': 'application/gzip',
+          'Content-Disposition': `attachment; filename="${name}"`,
+          'Content-Length': stat.size,
+          'Cache-Control': 'no-store'
+        });
+        return fs.createReadStream(file).pipe(res);
+      }
     }
 
     if (req.method === 'GET' && pathname === '/api/admin/backup') {
@@ -761,6 +813,12 @@ plugins.seedBuiltins();
 await plugins.reloadPlugins();
 await discovery.startLifecycles();
 scheduler.init();
+// 每 6 小时检查一次，每天最多自动归档一次；启动一分钟后先检查一次。
+const runArchive = () => {
+  try { archive.maybeAutoArchive(); } catch (err) { console.warn('[archive] 自动归档失败：', err.message); }
+};
+setTimeout(runArchive, 60 * 1000).unref();
+setInterval(runArchive, 6 * 60 * 60 * 1000).unref();
 router.startProactiveLoop();
 discovery.start();
 channels.setHandlers({

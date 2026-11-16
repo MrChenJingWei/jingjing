@@ -13,6 +13,7 @@
       "write-file"
     ],
     "cost": 1,
+    "recovery": "restart",
     "timeoutMinutes": 10,
     "concurrency": 2,
     "retries": 1
