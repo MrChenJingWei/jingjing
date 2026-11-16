@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { ROOT, DATA_DIR } from './config.js';
 import { db, now, getSettings, getSetting, setSetting } from './db.js';
 import { validateManifest, validateConfig } from './plugin-spec.js';
 import { registerWorkerPlugin, unregisterWorkerPlugin, listWorkerPlugins } from './workers.js';
+import { importPluginEntry } from './plugin-loader.js';
 
 /**
  * 插件有两个来源：
@@ -180,9 +180,7 @@ export async function reloadPlugins() {
 
   for (const { name, dir, source, manifest, shadows } of candidates.values()) {
     try {
-      const stat = fs.statSync(path.join(dir, manifest.entry));
-      const url = `${pathToFileURL(path.join(dir, manifest.entry)).href}?v=${stat.mtimeMs}`;
-      const module = await import(url);
+      const module = await importPluginEntry(dir, manifest.entry);
       if (manifest.kind === 'worker') {
         registerWorkerPlugin({ manifest, module, dir, origin: source });
         loadedWorkers.add(manifest.id);
@@ -419,6 +417,9 @@ export function listPlugins() {
       removable: item.source !== 'official' || row.id !== pluginId,
       webhook: manifest.type === 'webhook',
       lifecycle: manifest.type === 'stream',
+      // 插件导出了 reply() 就能把任务结果发回原会话；autoReply 是用户打开的「完成后自动发回」。
+      canReply: typeof item.module?.reply === 'function',
+      autoReply: Boolean(row.auto_reply) && typeof item.module?.reply === 'function',
       webhookPath: token ? `/api/hooks/${token}` : null,
       workspaceId: row.workspace_id || null,
       config: maskConfig(manifest, config),
@@ -466,7 +467,7 @@ export function getPlugin(instanceId) {
   };
 }
 
-export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, label } = {}) {
+export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, label, autoReply } = {}) {
   const plugin = getPlugin(id);
   if (!plugin) throw new Error('插件不存在');
   const row = plugin.row;
@@ -502,9 +503,15 @@ export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, 
     throw err;
   }
   const nextLabel = label === undefined ? (row.label || plugin.manifest.name) : (String(label).trim().slice(0, 60) || plugin.manifest.name);
+  const nextAutoReply = autoReply === undefined ? Boolean(row.auto_reply) : Boolean(autoReply);
+  if (nextAutoReply && typeof plugin.module?.reply !== 'function') {
+    const err = new Error('这个插件不支持把结果发回原会话');
+    err.statusCode = 400;
+    throw err;
+  }
   db.prepare(`
-    UPDATE source_plugins SET label = ?, enabled = ?, config = ?, workspace_id = ?, interval_minutes = ?, updated_at = ? WHERE id = ?
-  `).run(nextLabel, nextEnabled ? 1 : 0, JSON.stringify(normalized), nextWorkspace, nextInterval, now(), id);
+    UPDATE source_plugins SET label = ?, enabled = ?, config = ?, workspace_id = ?, interval_minutes = ?, auto_reply = ?, updated_at = ? WHERE id = ?
+  `).run(nextLabel, nextEnabled ? 1 : 0, JSON.stringify(normalized), nextWorkspace, nextInterval, nextAutoReply ? 1 : 0, now(), id);
   return getPlugin(id);
 }
 

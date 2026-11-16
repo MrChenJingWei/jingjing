@@ -97,6 +97,20 @@ export function saveWorkerRule(id, patch = {}) {
   return listWorkerRules().find((rule) => rule.id === ruleId);
 }
 
+/**
+ * 有一模一样（条件和 Worker 都相同）的规则就复用它（停用的会重新启用），没有就新建一条排在最后。
+ * 拍板时选「以后这类都交给它」用：同类的几条消息连着点几次，也只会有一条规则。
+ */
+export function ensureWorkerRule({ name, pattern = '', source = '', event_type: eventType = '', workspace_id: workspaceId = '', worker }) {
+  const same = listWorkerRules().find((rule) => rule.worker === worker
+    && (rule.pattern || '') === pattern
+    && (rule.source || '') === source
+    && (rule.event_type || '') === eventType
+    && (rule.workspace_id || '') === workspaceId);
+  if (same) return same.enabled ? same : saveWorkerRule(same.id, { enabled: true });
+  return saveWorkerRule(null, { name, pattern, source, event_type: eventType, workspace_id: workspaceId, worker });
+}
+
 export function deleteWorkerRule(id) {
   db.prepare('DELETE FROM worker_rules WHERE id = ?').run(id);
   return listWorkerRules();

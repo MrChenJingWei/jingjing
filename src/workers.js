@@ -11,13 +11,25 @@ import path from 'node:path';
 import { Worker as ThreadWorker } from 'node:worker_threads';
 import { pathToFileURL } from 'node:url';
 import { ROOT, SANDBOX_DIR, HOST, PORT } from './config.js';
-import { db, now, getSettings, pluginSettings } from './db.js';
+import { db, now, getSettings, pluginSettings, settingsRevision } from './db.js';
 import { validateManifest, validateConfig, validateWorkerLimits, WORKER_DEFAULTS, WORKER_LIMIT_RANGES } from './plugin-spec.js';
 import { chat, demoTaskOutput, llmMode } from './llm.js';
 import { pickWorker } from './worker-routing.js';
-import { which, clearWhichCache, sleep, runCommand, extractApproval, estimateTokens } from './worker-runtime.js';
+import { which, clearWhichCache as clearWhich, sleep, runCommand, extractApproval, estimateTokens, terminateChildren } from './worker-runtime.js';
+import { importPluginEntry } from './plugin-loader.js';
 
-export { which, clearWhichCache, runCommand, extractApproval };
+export { which, runCommand, extractApproval, terminateChildren };
+
+// detect() 的结果缓存几秒：建任务、每次执行、拍板、每条对话都会查可用性，
+// 第三方 Worker 的 detect() 又在主线程同步执行，不缓存会被反复调用。
+const DETECT_TTL_MS = 5000;
+const detectCache = new Map(); // id -> { at, key, module, value }
+
+/** 清空命令路径和 detect 结果的缓存（点「检测」、刚装好 CLI 时用）。 */
+export function clearWhichCache() {
+  clearWhich();
+  detectCache.clear();
+}
 
 export const BUILTIN_WORKER_DIR = path.join(ROOT, 'workers');
 const RESULT_STATUSES = new Set(['done', 'failed', 'needs_approval', 'cancelled']);
@@ -66,8 +78,7 @@ export async function loadBuiltinWorkers(dir = BUILTIN_WORKER_DIR) {
       const raw = JSON.parse(fs.readFileSync(path.join(pluginDir, 'plugin.json'), 'utf8'));
       const manifest = validateManifest(raw, { dir: pluginDir, dirName: name });
       if (manifest.kind !== 'worker') throw new Error('内置 Worker 的 kind 必须是 worker');
-      const entry = path.join(pluginDir, manifest.entry);
-      const module = await import(`${pathToFileURL(entry).href}?v=${fs.statSync(entry).mtimeMs}`);
+      const module = await importPluginEntry(pluginDir, manifest.entry);
       assertWorkerModule(module);
       register({ id: manifest.id, source: 'builtin', dir: pluginDir, manifest, module });
     } catch (err) {
@@ -120,12 +131,26 @@ export function isWorker(id) {
   return workerRegistry.has(id) && !isWorkerDeleted(id);
 }
 
-/** 内置 Worker 和官方 Worker 插件随 App 发布，只能隐藏，不能删文件。 */
+/** 内置 Worker 和官方 Worker 插件随 App 发布，不能删文件，界面上只能用开关停用。 */
 export function isShippedWorker(id) {
   const descriptor = workerRegistry.get(id);
   return descriptor?.source === 'builtin' || descriptor?.origin === 'official';
 }
 
+/**
+ * 旧版本在设置页里「隐藏」掉的内置/官方 Worker 改成「停用」：重新出现在列表里，开关是关着的。
+ * 启动时加载完 Worker 后调用一次。
+ */
+export function unhideShippedWorkers() {
+  const update = db.prepare('UPDATE worker_configs SET deleted = 0, enabled = 0, updated_at = ? WHERE id = ? AND deleted = 1');
+  let count = 0;
+  for (const descriptor of workerRegistry.values()) {
+    if (isShippedWorker(descriptor.id)) count += update.run(now(), descriptor.id).changes;
+  }
+  return count;
+}
+
+/** 把内置/官方 Worker 从注册表里隐藏。界面已不再提供，测试用它把内置 Worker 排除在路由之外。 */
 export function deleteBuiltinWorker(id) {
   if (!isShippedWorker(id)) throw new Error('不是内置或官方 Worker');
   db.prepare(`
@@ -187,7 +212,9 @@ export function workerLimits(id) {
   return out;
 }
 
-export function saveWorkerConfig(id, { config, enabled, limits } = {}) {
+export const MAX_WORKER_NOTES = 300;
+
+export function saveWorkerConfig(id, { config, enabled, limits, notes } = {}) {
   const descriptor = workerRegistry.get(id);
   if (!descriptor || isWorkerDeleted(id)) throw new Error('Worker 不存在');
   const row = workerRow(id);
@@ -199,11 +226,15 @@ export function saveWorkerConfig(id, { config, enabled, limits } = {}) {
   const nextEnabled = enabled === undefined ? (row ? Boolean(row.enabled) : true) : Boolean(enabled);
   const normalized = validateConfig(descriptor.manifest, { ...current, ...patch }, { requireAll: nextEnabled });
   const nextLimits = limits === undefined ? parseJson(row?.limits) : validateWorkerLimits(limits);
+  const nextNotes = notes === undefined ? row?.notes || '' : String(notes ?? '').trim();
+  if (nextNotes.length > MAX_WORKER_NOTES) {
+    throw Object.assign(new Error(`补充说明最多 ${MAX_WORKER_NOTES} 字`), { statusCode: 400 });
+  }
   db.prepare(`
-    INSERT INTO worker_configs(id, enabled, config, limits, updated_at) VALUES(?, ?, ?, ?, ?)
+    INSERT INTO worker_configs(id, enabled, config, limits, notes, updated_at) VALUES(?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, config = excluded.config,
-      limits = excluded.limits, updated_at = excluded.updated_at
-  `).run(id, nextEnabled ? 1 : 0, JSON.stringify(normalized), JSON.stringify(nextLimits), now());
+      limits = excluded.limits, notes = excluded.notes, updated_at = excluded.updated_at
+  `).run(id, nextEnabled ? 1 : 0, JSON.stringify(normalized), JSON.stringify(nextLimits), nextNotes || null, now());
   return availability()[id];
 }
 
@@ -223,11 +254,20 @@ function workerDetection(descriptor) {
   const row = workerRow(descriptor.id);
   if (row && !row.enabled) return { available: false, detail: '已停用' };
   if (typeof descriptor.module.detect !== 'function') return { available: true, detail: '已安装' };
-  try {
-    return normalizeDetection(descriptor.module.detect(workerConfig(descriptor), detectContext()));
-  } catch (err) {
-    return { available: false, detail: err.message };
+  // 改了 Worker 配置或全局设置都会让缓存失效。
+  const key = `${row?.updated_at || ''}|${row?.config || ''}|${settingsRevision()}`;
+  const cached = detectCache.get(descriptor.id);
+  if (cached && cached.module === descriptor.module && cached.key === key && Date.now() - cached.at < DETECT_TTL_MS) {
+    return cached.value;
   }
+  let value;
+  try {
+    value = normalizeDetection(descriptor.module.detect(workerConfig(descriptor), detectContext()));
+  } catch (err) {
+    value = { available: false, detail: err.message };
+  }
+  detectCache.set(descriptor.id, { at: Date.now(), key, module: descriptor.module, value });
+  return value;
 }
 
 export async function testWorker(id) {
@@ -257,6 +297,7 @@ export function availability() {
       label: manifest.name,
       glyph: manifest.icon || '工',
       description: manifest.description,
+      notes: row?.notes || '',
       version: manifest.version,
       source: descriptor.source,
       // builtin：随 App 的核心 Worker；official：你维护的官方 Worker 插件；user：用户自己装的
@@ -283,6 +324,7 @@ export function workerCatalog({ onlyAvailable = false } = {}) {
       id,
       label: item.label,
       description: item.description,
+      notes: item.notes || '',
       available: item.available,
       abilities: item.abilities,
       cost: item.cost,

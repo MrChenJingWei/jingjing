@@ -2,6 +2,8 @@
 import crypto from 'node:crypto';
 import { createLineParser, describeEvent } from './stream.js';
 
+const USAGE_LIMIT = /hit your .{0,20}limit|usage limit|rate limit|limit (?:reached|exceeded)|resets \d/i;
+
 export function detect(config, { settings, which }) {
   const bin = which('claude');
   const available = Boolean(bin) && settings.claude?.enabled !== false;
@@ -14,6 +16,9 @@ function promptFor(task, ctx) {
   }
   const resume = ctx.resume;
   if (!resume) return task.prompt;
+  if (resume.answer) {
+    return `${task.prompt}\n\n对「${resume.question}」，用户没有选给出的选项，而是这样决定：${resume.answer}\n请按用户的决定继续完成。`;
+  }
   const picked = resume.choice >= 0 ? resume.options?.[resume.choice] ?? String(resume.choice) : '取消';
   return `${task.prompt}\n\n用户刚刚对「${resume.question}」选择了：${picked}。请在此基础上继续完成。`;
 }
@@ -72,7 +77,12 @@ export async function execute(task, ctx) {
   const cost = Number(final.total_cost_usd) || 0;
   const tokens = ctx.estimateTokens(text);
   if (final.is_error || (final.subtype && final.subtype !== 'success')) {
-    return { status: 'failed', summary: `Claude Code 执行出错（${final.subtype || 'error'}）。\n${text.slice(-800)}`, sessionId, cost, tokens };
+    // 用量到上限时 subtype 仍是 success，只有 is_error 和结果文字能看出来；马上重试也没用。
+    if (USAGE_LIMIT.test(text)) {
+      return { status: 'failed', retryable: false, summary: `Claude Code 的用量到上限了，等额度恢复后再试。\n${text.slice(-300)}`, sessionId, cost, tokens };
+    }
+    const kind = final.subtype && final.subtype !== 'success' ? `（${final.subtype}）` : '';
+    return { status: 'failed', summary: `Claude Code 执行出错${kind}。\n${text.slice(-800)}`, sessionId, cost, tokens };
   }
   const approval = ctx.parseApproval(text);
   if (approval) {

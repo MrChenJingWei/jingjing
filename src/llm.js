@@ -3,6 +3,7 @@ import { getSettings } from './db.js';
 const truncate = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 import { estimateTokens } from './worker-runtime.js';
+import { describeWorker } from './worker-routing.js';
 
 export { estimateTokens };
 
@@ -342,7 +343,7 @@ export async function classify(text, { history = [], workers = [], workflows = [
     'pluginKind 仅在 intent=plugin 时填写：source（接收 / 拉取外部消息、事件的来源插件）或 worker（执行任务的 Worker 插件）。',
     'worker 仅在 intent=task 时填写，从下面的可用 Worker 里选最合适、开销最低的一个：',
     ...(workers.length
-      ? workers.map((w) => `- ${w.id}（${w.label}）${w.description ? `：${w.description}` : ''}${w.abilities?.length ? ` [能力：${w.abilities.join(', ')}]` : ''}`)
+      ? workers.map(describeWorker)
       : ['-（当前没有可用的 Worker，worker 留空）']),
     'title 仅在 intent=task 时填写：不超过 24 字的任务名，不要带「帮我」等客套词。',
     ...(workflows.length ? [

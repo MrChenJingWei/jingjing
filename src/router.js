@@ -7,7 +7,7 @@ import { SANDBOX_DIR } from './config.js';
 import * as memory from './memory.js';
 import * as scheduler from './scheduler.js';
 import { workerCatalog, isWorker, defaultWorker } from './workers.js';
-import { pickWorker } from './worker-routing.js';
+import { pickWorker, describeWorker } from './worker-routing.js';
 import { matchWorkerRule } from './worker-rules.js';
 import { classify, heuristicClassify, chat as llmChat, chatWithTools, toolsSupported, demoReply, makeTitle, llmMode } from './llm.js';
 import * as workflows from './workflows.js';
@@ -181,7 +181,7 @@ async function routeWithTools(clean, { priorMessages, settings }) {
     '',
     '你可以直接用文字回答，也可以调用一个工具。只有用户明确要你去做一件事时才调用 create_task。',
     '可用的 Worker：',
-    ...workers.map((w) => `- ${w.id}（${w.label}）${w.description ? `：${w.description}` : ''} [能力：${(w.abilities || []).join(', ')}]`),
+    ...workers.map(describeWorker),
     ...(flows.length ? ['用户配置的工作流程：', ...flows.map((f) => `- ${f.id}：${f.name}${f.when ? `（触发词：${f.when}）` : ''}`)] : [])
   ].join('\n');
   const res = await chatWithTools({ system, messages: [{ role: 'user', content: clean }], tools: routerTools(workers, flows) });
@@ -381,25 +381,23 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
 
 /* ------------------------------ 主动发现 ------------------------------- */
 
+/** 每日规则（目前只有 daily 一种）：到点后 3 小时内、今天还没跑过就该跑。 */
 function ruleDue(rule) {
   const trigger = JSON.parse(rule.trigger);
+  if (trigger.type !== 'daily') return false;
   const last = rule.last_run ? new Date(rule.last_run) : null;
   const nowDate = new Date();
-  if (trigger.type === 'interval') {
-    if (!last) return true;
-    return nowDate - last >= (trigger.seconds || 300) * 1000;
-  }
-  if (trigger.type === 'daily') {
-    const [hh, mm] = String(trigger.at || '08:00').split(':').map(Number);
-    const target = new Date(nowDate);
-    target.setHours(hh, mm, 0, 0);
-    const diff = nowDate - target;
-    if (diff < 0 || diff > 3 * 60 * 60 * 1000) return false;
-    if (!last) return true;
-    return last < target;
-  }
-  return false;
+  const [hh, mm] = String(trigger.at || '08:00').split(':').map(Number);
+  const target = new Date(nowDate);
+  target.setHours(hh, mm, 0, 0);
+  const diff = nowDate - target;
+  if (diff < 0 || diff > 3 * 60 * 60 * 1000) return false;
+  if (!last) return true;
+  return last < target;
 }
+
+// 到点了却建不了任务（比如一个可用的 Worker 都没有）时，每条规则每天只提醒一次，不每分钟刷日志。
+const ruleWarnings = new Map(); // rule id -> 日期
 
 export async function proactiveScan() {
   const settings = getSettings();
@@ -408,24 +406,33 @@ export async function proactiveScan() {
   let created = 0;
 
   for (const rule of rules) {
-    const trigger = JSON.parse(rule.trigger);
-    if (trigger.type !== 'daily') continue;
     if (!ruleDue(rule)) continue;
     const action = JSON.parse(rule.action);
 
     const prompt = action.prompt;
     const title = action.title || rule.name;
-    const task = scheduler.createTask({
-      title,
-      prompt,
-      worker: isWorker(action.worker) ? action.worker : defaultWorker(),
-      cwd: action.cwd || defaultWorkspacePath(settings),
-      origin: 'proactive',
-      sessionId: MAIN_SESSION,
-      ruleId: rule.id,
-      priority: 3,
-      source: 'rule'
-    });
+    let task;
+    try {
+      task = scheduler.createTask({
+        title,
+        prompt,
+        worker: isWorker(action.worker) ? action.worker : defaultWorker(),
+        cwd: action.cwd || defaultWorkspacePath(settings),
+        origin: 'proactive',
+        sessionId: MAIN_SESSION,
+        ruleId: rule.id,
+        priority: 3,
+        source: 'rule'
+      });
+    } catch (err) {
+      // 不记 last_run：3 小时窗口内 Worker 恢复了还能补上。
+      const today = new Date().toDateString();
+      if (ruleWarnings.get(rule.id) !== today) {
+        ruleWarnings.set(rule.id, today);
+        console.warn(`[proactive] 「${rule.name}」到点了但没能建任务：${err.message}`);
+      }
+      continue;
+    }
     db.prepare('UPDATE rules SET last_run = ? WHERE id = ?').run(now(), rule.id);
     event(task.id, 'task/proactive', { rule: rule.name });
     addMessage({

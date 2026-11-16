@@ -59,14 +59,17 @@ export async function webhook(payload, ctx) {
   return { items: [/* 条目 */] };
 }
 
-// type 为 stream 时导出：建立长连接，收到消息时调用 ctx.ingest(items)；返回停止函数
+// type 为 stream 时导出：建立长连接，收到消息时调用 ctx.ingest(items)；返回停止函数（30 秒内要返回）
 export async function start(config, ctx) {
   const timer = setInterval(() => {}, 60000);
+  // 连接状态变化时 ctx.status('重连中…')；彻底断了、自己不再重连时 ctx.fail(err)，静静会按退避时间重启
   return () => clearInterval(timer);
 }
 ```
 
-`poll` 的 ctx：`signal`、`since`（上次成功运行时间或 null）、`now`、`log(msg)`、`settings`、`state.get/set/delete`（持久化游标、同步 token）。`start` 的 ctx 另有 `ingest(items)`。
+`poll` 的 ctx：`signal`、`since`（上次成功运行时间或 null）、`now`、`log(msg)`、`settings`、`state.get/set/delete`（持久化游标、同步 token）。`start` 的 ctx 另有 `ingest(items)`、`status(detail)`、`fail(reason, { retry })`。
+
+时间上限由静静强制：`poll` 90 秒、`test` 30 秒、`webhook` 15 秒、`reply` 20 秒、`start` 30 秒、停止函数 10 秒，超时按失败处理。条目只能交数据：派给哪个 Worker 由用户的工作流程和分配规则决定，条目内容里点名 Worker 不算数。
 
 条目格式（一次最多 10 条）：
 
@@ -78,9 +81,12 @@ export async function start(config, ctx) {
   url: 'https://…',                 // 可选
   occurredAt: '2026-11-13T04:00:00.000Z', // 可选
   kind: 'email' | 'agenda' | 'note',      // 可选
-  meta: { }                                // 可选，只参与判断
+  meta: { },                               // 可选，只参与判断
+  replyTo: { }                             // 可选，「发回哪里」，配合 reply()
 }
 ```
+
+消息类来源想让静静把任务结果发回原会话：条目带 `replyTo`（比如 `{ chatId }`），并导出 `reply(config, { to, text, task }, ctx)` 去发，`to` 就是那个 `replyTo`，发不出去就抛错。什么时候发由静静和用户决定，插件不要自己发。
 
 ## 二、Worker 插件（kind: "worker"）
 

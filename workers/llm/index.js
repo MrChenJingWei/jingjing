@@ -46,9 +46,11 @@ export async function execute(task, ctx) {
   const { settings, resume } = ctx;
   const memBlock = ctx.memories.map((m) => `- ${m.text}`).join('\n') || '-（暂无）';
   const taskBlock = ctx.tasks.slice(0, 8).map((t) => `- [${t.status}] ${t.title}`).join('\n') || '-（暂无）';
-  const decision = resume
-    ? `\n\n用户刚刚对「${resume.question}」选择了：${resume.choice >= 0 ? resume.options?.[resume.choice] ?? resume.choice : '取消'}。请据此继续完成，不要重复提问。`
-    : '';
+  const decision = !resume
+    ? ''
+    : resume.answer
+      ? `\n\n对「${resume.question}」，用户没有选给出的选项，而是这样决定：${resume.answer}\n请按用户的决定继续完成，不要重复提问。`
+      : `\n\n用户刚刚对「${resume.question}」选择了：${resume.choice >= 0 ? resume.options?.[resume.choice] ?? resume.choice : '取消'}。请据此继续完成，不要重复提问。`;
 
   const system = [
     '你是「静静」，运行在用户个人主机上的 AI 管家。',

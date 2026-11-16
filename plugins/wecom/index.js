@@ -22889,10 +22889,40 @@ async function start(config, ctx) {
   }
   const client = new import_aibot_node_sdk.default.WSClient({ botId: config.botId, secret: config.secret });
   let closed = false;
-  client.on("authenticated", () => ctx.log("\u4F01\u4E1A\u5FAE\u4FE1\u957F\u8FDE\u63A5\u8BA4\u8BC1\u6210\u529F"));
-  client.on("disconnected", (reason) => ctx.log(`\u4F01\u4E1A\u5FAE\u4FE1\u957F\u8FDE\u63A5\u65AD\u5F00\uFF1A${reason}`));
-  client.on("reconnecting", (attempt) => ctx.log(`\u4F01\u4E1A\u5FAE\u4FE1\u957F\u8FDE\u63A5\u91CD\u8FDE\u4E2D\uFF08\u7B2C ${attempt} \u6B21\uFF09`));
-  client.on("error", (err) => ctx.log(`\u4F01\u4E1A\u5FAE\u4FE1\u8FDE\u63A5\u9519\u8BEF\uFF1A${err.message}`));
+  let ready = false;
+  const status = (detail) => ctx.status?.(detail);
+  const giveUp = (reason, options) => {
+    if (closed) return;
+    closed = true;
+    try {
+      client.disconnect();
+    } catch {
+    }
+    ctx.fail?.(reason, options);
+  };
+  client.on("authenticated", () => {
+    ctx.log("\u4F01\u4E1A\u5FAE\u4FE1\u957F\u8FDE\u63A5\u8BA4\u8BC1\u6210\u529F");
+    if (ready) status("\u5DF2\u8FDE\u63A5");
+  });
+  client.on("disconnected", (reason) => {
+    ctx.log(`\u4F01\u4E1A\u5FAE\u4FE1\u957F\u8FDE\u63A5\u65AD\u5F00\uFF1A${reason}`);
+    if (!ready || closed) return;
+    if (client.started === false) {
+      giveUp(`\u4F01\u4E1A\u5FAE\u4FE1\u65AD\u5F00\u4E86\u8FD9\u6761\u8FDE\u63A5\uFF1A${reason}\u3002\u53EF\u80FD\u540C\u4E00\u4E2A\u673A\u5668\u4EBA\u5728\u522B\u5904\u767B\u5F55\u4E86\uFF0C\u786E\u8BA4\u540E\u5728\u63D2\u4EF6\u9875\u91CD\u65B0\u4FDD\u5B58\u5373\u53EF\u91CD\u8FDE\u3002`, { retry: false });
+    } else {
+      status(`\u8FDE\u63A5\u65AD\u5F00\uFF0C\u7B49\u5F85\u91CD\u8FDE\uFF1A${reason}`);
+    }
+  });
+  client.on("reconnecting", (attempt) => {
+    ctx.log(`\u4F01\u4E1A\u5FAE\u4FE1\u957F\u8FDE\u63A5\u91CD\u8FDE\u4E2D\uFF08\u7B2C ${attempt} \u6B21\uFF09`);
+    if (ready) status(`\u91CD\u8FDE\u4E2D\uFF08\u7B2C ${attempt} \u6B21\uFF09`);
+  });
+  client.on("error", (err) => {
+    ctx.log(`\u4F01\u4E1A\u5FAE\u4FE1\u8FDE\u63A5\u9519\u8BEF\uFF1A${err.message}`);
+    if (ready && /WSReconnectExhausted|WSAuthFailure/.test(err?.name || "")) {
+      giveUp(`\u4F01\u4E1A\u5FAE\u4FE1\u957F\u8FDE\u63A5\u653E\u5F03\u91CD\u8FDE\uFF1A${err.message}`);
+    }
+  });
   client.on("message.text", async (frame) => {
     const body = frame.body || {};
     const content = String(body.text?.content || "").trim();
@@ -22982,6 +23012,7 @@ ${lines.join("\n")}
     client.once("error", fail);
     client.connect();
   });
+  ready = true;
   return async () => {
     if (closed) return;
     closed = true;

@@ -211,6 +211,76 @@ test('习惯开启自动拍板时，按记下的选择替用户回答；没开�
   scheduler.cancel(manual.id);
 });
 
+test('拍板时可以不选选项、自己写决定；Worker 没开这个口子时只能选选项', async () => {
+  const seen = [];
+  fakeWorker('decider', {}, async (task, ctx) => {
+    if (!ctx.resume) {
+      return { status: 'needs_approval', summary: '拿不到进度', approval: { question: '进度拿不到，怎么处理？', options: ['只给模板', '去检索'], custom: true } };
+    }
+    seen.push(ctx.resume);
+    return { status: 'done', summary: `按「${ctx.resume.options[ctx.resume.choice]}」做了` };
+  });
+  const task = scheduler.createTask({ title: '自己写决定', prompt: 'x', worker: 'decider' });
+  await waitFor(() => status(task.id) === 'waiting_approval', '等待拍板');
+  const approval = scheduler.getApproval(scheduler.getTask(task.id).approval_id);
+  assert.equal(approval.custom, true);
+  assert.throws(() => scheduler.approve(approval.id, null, { answer: '长'.repeat(501) }), /太长/);
+  scheduler.approve(approval.id, null, { answer: '  先问问产品经理，下午再回  ' });
+  await waitFor(() => status(task.id) === 'done', '按自己写的决定继续');
+  assert.equal(seen[0].answer, '先问问产品经理，下午再回');
+  assert.equal(seen[0].options[seen[0].choice], '先问问产品经理，下午再回', '只认 options[choice] 的 Worker 也能拿到这句话');
+  assert.equal(scheduler.getTask(task.id).result, '按「先问问产品经理，下午再回」做了');
+  assert.equal(scheduler.getApproval(approval.id).answer, '先问问产品经理，下午再回');
+  const resolved = scheduler.taskEvents(task.id).find((e) => e.type === 'approval/resolved');
+  assert.equal(resolved.data.custom, true);
+  assert.equal(resolved.data.option, '先问问产品经理，下午再回', '习惯学习能记下这个决定');
+
+  // 按选项下标做不同操作的 Worker 不开这个口子：自己写的决定和越界的下标都会被拒绝。
+  fakeWorker('picker', {}, async (t, ctx) => (ctx.resume
+    ? { status: 'done', summary: ctx.resume.options[ctx.resume.choice] }
+    : { status: 'needs_approval', summary: '扫完了', approval: { question: '归档吗？', options: ['归档', '不动'] } }));
+  const fixed = scheduler.createTask({ title: '只能选', prompt: 'x', worker: 'picker' });
+  await waitFor(() => status(fixed.id) === 'waiting_approval', '等待拍板');
+  const fixedApproval = scheduler.getApproval(scheduler.getTask(fixed.id).approval_id);
+  assert.equal(fixedApproval.custom, false);
+  assert.throws(() => scheduler.approve(fixedApproval.id, 0, { answer: '随便' }), /只能从给出的选项里选/);
+  assert.throws(() => scheduler.approve(fixedApproval.id, 2), /没有这个选项/);
+  assert.equal(scheduler.getApproval(fixedApproval.id).status, 'pending', '被拒绝的拍板不会改状态');
+  scheduler.approve(fixedApproval.id, 1);
+  await waitFor(() => status(fixed.id) === 'done', '选项照常可用');
+  assert.equal(scheduler.getTask(fixed.id).result, '不动');
+});
+
+test('自己写的决定里点名了别的 Worker：改派给它从头接着做；Worker 给的选项里提到不算', async () => {
+  fakeWorker('asker2', {}, async (task, ctx) => (ctx.resume
+    ? { status: 'done', summary: 'asker2 接着做了' }
+    : { status: 'needs_approval', summary: '拿不到数据', sessionId: 's-asker2', approval: { question: '数据怎么拿？', options: ['我自己去 fancy 里查'], custom: true } }));
+  const handed = [];
+  fakeWorker('fancy', { abilities: ['text', 'code'], keywords: 'fancy' }, async (task, ctx) => {
+    handed.push({ resume: ctx.resume, sessionId: ctx.sessionId });
+    return { status: 'done', summary: 'fancy 查完了' };
+  });
+
+  const task = scheduler.createTask({ title: '改派', prompt: '查进度', worker: 'asker2' });
+  await waitFor(() => status(task.id) === 'waiting_approval', '等待拍板');
+  scheduler.approve(scheduler.getTask(task.id).approval_id, null, { answer: '用 fancy 查了回他' });
+  await waitFor(() => status(task.id) === 'done', '改派后完成');
+  assert.equal(scheduler.getTask(task.id).worker, 'fancy');
+  assert.equal(scheduler.getTask(task.id).result, 'fancy 查完了');
+  assert.equal(handed[0].sessionId, null, '原 Worker 的会话不交给新 Worker');
+  assert.equal(handed[0].resume.answer, '用 fancy 查了回他');
+  const edited = scheduler.taskEvents(task.id).find((e) => e.type === 'task/edited');
+  assert.deepEqual([edited.data.from.worker, edited.data.to.worker, edited.data.by], ['asker2', 'fancy', 'approval']);
+
+  // 选了 Worker 自己给的选项，哪怕里面提到 fancy，也不改派。
+  const option = scheduler.createTask({ title: '不改派', prompt: '查进度', worker: 'asker2' });
+  await waitFor(() => status(option.id) === 'waiting_approval', '等待拍板');
+  scheduler.approve(scheduler.getTask(option.id).approval_id, 0);
+  await waitFor(() => status(option.id) === 'done', '原 Worker 完成');
+  assert.equal(scheduler.getTask(option.id).worker, 'asker2');
+  assert.equal(handed.length, 1);
+});
+
 function writePlugin(id, source) {
   const dir = path.join(dataDir, 'thread-plugins', id);
   fs.mkdirSync(dir, { recursive: true });
@@ -262,4 +332,70 @@ test('线程里的同步死循环：取消后立即释放槽位，线程被结�
   const broken = scheduler.createTask({ title: '抛异常', prompt: 'x', worker: 'thrower' });
   await waitFor(() => status(broken.id) === 'failed', '失败');
   assert.match(scheduler.getTask(broken.id).error, /插件炸了/);
+});
+
+test('每一种终态都只发一次 task/finished：排队中取消、执行中取消、Worker 自己取消、拍板超限、重启后放弃', async () => {
+  const { bus } = await import('../src/events.js');
+  const { saveSettings } = await import('../src/db.js');
+  const finished = [];
+  const off = bus.on(({ type, payload }) => {
+    if (type === 'task/finished') finished.push([payload.task.id, payload.task.status]);
+  });
+  const finishedOf = (id) => finished.filter(([taskId]) => taskId === id).map(([, s]) => s);
+  try {
+    // 排队中就取消。
+    saveSettings({ queuePaused: true });
+    const queued = scheduler.createTask({ title: '排队中取消', prompt: 'x', worker: 'run-rec' });
+    scheduler.cancel(queued.id);
+    saveSettings({ queuePaused: false });
+    assert.deepEqual(finishedOf(queued.id), ['cancelled']);
+
+    // 执行中取消：Worker 之后晚到的结果不会再发一次。
+    const calls = gatedWorker('fin-gate');
+    const live = scheduler.createTask({ title: '执行中取消', prompt: 'x', worker: 'fin-gate' });
+    await waitFor(() => calls.length === 1, '开始执行');
+    scheduler.cancel(live.id);
+    // 取消后迟到的断点不再保存。
+    await assert.rejects(calls[0].ctx.checkpoint({ late: true }), /已经结束/);
+    calls[0].release({ status: 'done', summary: '晚到' });
+    await waitFor(() => scheduler.stats().running === 0, '槽位释放');
+    for (let i = 0; i < 10; i += 1) await tick();
+    assert.deepEqual(finishedOf(live.id), ['cancelled']);
+    assert.equal(scheduler.taskRuns(live.id)[0].checkpoint, null);
+
+    // Worker 自己返回 cancelled。
+    fakeWorker('fin-self-cancel', {}, async () => ({ status: 'cancelled', summary: '不做了' }));
+    const self = scheduler.createTask({ title: 'Worker 取消', prompt: 'x', worker: 'fin-self-cancel' });
+    await waitFor(() => status(self.id) === 'cancelled', 'Worker 取消');
+    assert.deepEqual(finishedOf(self.id), ['cancelled']);
+
+    // 拍板次数超过上限：失败、清掉「等你拍板」、写明原因，审批也记为已处理。
+    saveSettings({ maxHops: 1 });
+    fakeWorker('fin-asker', {}, async () => ({ status: 'needs_approval', summary: '还要问', approval: { question: '继续吗？', options: ['继续'] } }));
+    const looping = scheduler.createTask({ title: '一直问', prompt: 'x', worker: 'fin-asker' });
+    await waitFor(() => status(looping.id) === 'waiting_approval', '第一次拍板');
+    scheduler.approve(scheduler.getTask(looping.id).approval_id, 0);
+    await waitFor(() => status(looping.id) === 'waiting_approval' && scheduler.getTask(looping.id).hops === 1, '第二次拍板');
+    const lastApproval = scheduler.getTask(looping.id).approval_id;
+    scheduler.approve(lastApproval, 0);
+    const failed = scheduler.getTask(looping.id);
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.progress, null);
+    assert.equal(failed.approval_id, null);
+    assert.match(failed.result, /来回拍板 1 次/);
+    assert.equal(scheduler.getApproval(lastApproval).status, 'approved');
+    assert.deepEqual(finishedOf(looping.id), ['failed']);
+    saveSettings({ maxHops: 6 });
+
+    // 服务重启后选「放弃」。
+    gatedWorker('fin-rec-ask', { recovery: 'ask' });
+    insertInterrupted({ id: 't_fin_decline', worker: 'fin-rec-ask' });
+    scheduler.recover();
+    scheduler.approve(scheduler.getTask('t_fin_decline').approval_id, 1);
+    assert.equal(status('t_fin_decline'), 'cancelled');
+    assert.deepEqual(finishedOf('t_fin_decline'), ['cancelled']);
+  } finally {
+    off();
+    saveSettings({ queuePaused: false, maxHops: 6 });
+  }
 });

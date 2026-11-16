@@ -43,7 +43,9 @@ const EVENT_LABEL = {
   'task/retried': '重新排队',
   'workflow/proposed': '总结成工作流程',
   'task/merged': '合并了新事件',
-  'workflow/skipped': '没有总结流程'
+  'workflow/skipped': '没有总结流程',
+  'task/replied': '已发回原会话',
+  'task/reply_failed': '发回原会话失败'
 };
 const WORKFLOW_STATUS_LABEL = { active: '生效', candidate: '候选', disabled: '已停用', dismissed: '已忽略' };
 
@@ -384,6 +386,17 @@ setInterval(() => {
   }
 }, 5000);
 
+/** 任务来自能回消息的来源（比如企微机器人）且已完成：可以把结果发回原会话。 */
+function replySourceOf(task) {
+  if (!task || task.status !== 'done' || !task.reply_to || !String(task.origin || '').startsWith('plugin:')) return null;
+  const plugin = (state.plugins || []).find((item) => item.id === task.origin.slice('plugin:'.length));
+  return plugin?.canReply && plugin.enabled ? plugin : null;
+}
+
+function replyButton(task) {
+  return replySourceOf(task) ? `<button class="mini-btn" data-action="reply-source" data-id="${task.id}">发回原会话</button>` : '';
+}
+
 function inlineTaskCard(task) {
   if (!task) return '';
   const approval = approvalFor(task);
@@ -414,12 +427,16 @@ function inlineTaskCard(task) {
       ${approval ? approvalBlock(task, approval) : ''}
       <div class="task-card-actions">
         <button class="mini-btn" data-action="open-task" data-id="${task.id}">查看详情</button>
+        ${replyButton(task)}
         ${['queued', 'running', 'waiting_approval'].includes(task.status)
           ? `<button class="mini-btn danger" data-action="cancel-task" data-id="${task.id}">停止</button>`
           : ''}
       </div>
     </div>`;
 }
+
+// 拍板输入框里没提交的文字：对话和抽屉会整块重绘，靠它把内容和光标还原回去。
+const approvalDrafts = new Map();
 
 function approvalBlock(task, approval) {
   return `
@@ -430,6 +447,12 @@ function approvalBlock(task, approval) {
           <button class="mini-btn ${i === 0 ? 'primary' : ''}" data-action="approve" data-id="${task.id}" data-choice="${i}">${esc(opt)}</button>
         `).join('')}
       </div>
+      ${approval.custom ? `
+        <div class="approval-custom">
+          <input type="text" maxlength="500" data-approval-input="${esc(approval.id)}" data-task-id="${task.id}"
+            value="${esc(approvalDrafts.get(approval.id) || '')}" placeholder="都不合适？直接写你的决定，比如：先问问产品再说" autocomplete="off" />
+          <button class="mini-btn" data-action="approve-custom" data-id="${task.id}" data-approval-id="${esc(approval.id)}">按这个办</button>
+        </div>` : ''}
       <div class="approval-note">选完后会从挂起点恢复，接着原来的上下文继续跑。</div>
     </div>`;
 }
@@ -453,7 +476,11 @@ function pluginDraftCard(msg) {
     info.config?.length ? `需要你填的配置：${info.config.map((f) => f.label + (f.required ? '（必填）' : '')).join('、')}` : '',
     info.testSkipped || ''
   ].filter(Boolean);
-  const errors = (report.errors || []).map((e) => `<li class="is-error">${esc(e)}</li>`).join('');
+  // 编码任务中途断了：没通过时算错误；文件已通过检查时只是提醒可能没写完整。
+  const interrupted = report.interrupted
+    ? `<li class="${d.status === 'failed' ? 'is-error' : 'is-warn'}">编码任务中途断了：${esc(report.interrupted.split('\n').filter(Boolean).join(' '))}${d.status === 'ready' ? '（文件已通过检查，但可能没写完整）' : ''}</li>`
+    : '';
+  const errors = interrupted + (report.errors || []).map((e) => `<li class="is-error">${esc(e)}</li>`).join('');
   const warnings = (report.warnings || []).map((w) => `<li class="is-warn">${esc(w)}</li>`).join('');
   const busy = d.status === 'writing' || d.status === 'checking';
   const actions = {
@@ -461,6 +488,7 @@ function pluginDraftCard(msg) {
             <button class="mini-btn" data-action="draft-files" data-id="${d.id}">查看代码</button>
             <button class="mini-btn" data-action="draft-discard" data-id="${d.id}">放弃</button>`,
     failed: `<button class="mini-btn" data-action="draft-retry" data-id="${d.id}">再试一次</button>
+             <button class="mini-btn" data-action="draft-recheck" data-id="${d.id}" title="文件其实已经写好、或者你手动改过时用：只检查不重写，通过后照样要你确认安装">重新检查</button>
              <button class="mini-btn" data-action="draft-files" data-id="${d.id}">查看代码</button>
              <button class="mini-btn" data-action="draft-discard" data-id="${d.id}">放弃</button>`,
     installed: `<button class="mini-btn" data-action="draft-open-plugin" data-id="${d.id}">去配置</button>
@@ -526,6 +554,14 @@ async function handleDraftAction(action, el) {
       state.pluginDrafts = data.drafts || state.pluginDrafts;
       renderChat();
       toast('好，再让它改一轮。');
+      return;
+    }
+    if (action === 'draft-recheck') {
+      el.disabled = true;
+      const data = await api(`/api/plugin-drafts/${id}/recheck`, { method: 'POST', timeoutMs: 30000 });
+      state.pluginDrafts = data.drafts || state.pluginDrafts;
+      renderChat();
+      toast(data.draft?.status === 'ready' ? '检查通过了，看一眼代码就可以安装。' : '还是没通过，卡片上有最新的检查结果。', 3600);
       return;
     }
     if (action === 'draft-open-plugin') {
@@ -616,7 +652,7 @@ function renderChat({ forceBottom = false, initial = false } = {}) {
   const scroller = $('#chat-scroll');
   const nearBottom = !initial && scroller.clientHeight > 0 &&
     scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
-  $('#messages').innerHTML = state.messages.map(messageHtml).join('');
+  keepApprovalFocus(() => { $('#messages').innerHTML = state.messages.map(messageHtml).join(''); });
   const pending = state.approvals.length;
   const running = state.tasks.filter((t) => ['running', 'queued'].includes(t.status)).length;
   $('#presence-title').textContent = pending
@@ -796,7 +832,7 @@ function closeDrawer() {
 function eventDetail(e) {
   if (!e.data) return '';
   if (e.type === 'task/created') return `${workerLabel(e.data.worker)}${e.data.workflow ? ` · 按流程「${e.data.workflow}」` : ''}`;
-  if (e.type === 'approval/resolved') return e.data.option ? `${e.data.by === 'habit' ? '按习惯自动' : ''}选择：${e.data.option}` : '';
+  if (e.type === 'approval/resolved') return e.data.option ? (e.data.custom ? `你的决定：${e.data.option}` : `${e.data.by === 'habit' ? '按习惯自动' : ''}选择：${e.data.option}`) : '';
   if (e.type === 'task/recovered') return { resume: '从断点继续', restart: '重新执行', ask: '等你决定是否重跑' }[e.data.mode] || '';
   if (e.type === 'task/started') return e.data.attempt > 1 ? `第 ${e.data.attempt} 次执行` : '';
   if (e.type === 'task/retry') return `第 ${e.data.attempt} 次尝试：${e.data.error || ''}`;
@@ -805,6 +841,11 @@ function eventDetail(e) {
   if (e.type === 'task/waiting_approval') return e.data.question || '';
   if (e.type === 'task/failed') return (e.data.error || '').slice(0, 120);
   if (e.type === 'task/proactive') return e.data.rule || '';
+  if (e.type === 'task/edited' && e.data.from?.worker && e.data.to?.worker) {
+    return `${e.data.by === 'approval' ? '按你的决定' : ''}改派：${workerLabel(e.data.from.worker)} → ${workerLabel(e.data.to.worker)}`;
+  }
+  if (e.type === 'task/replied') return `${e.data.by === 'auto' ? '自动' : '你'}发到「${e.data.label || e.data.via}」`;
+  if (e.type === 'task/reply_failed') return (e.data.error || '').slice(0, 120);
   return '';
 }
 
@@ -828,7 +869,7 @@ function runsHtml(runs = []) {
 
 function renderDrawer({ task, events, approval, runs }) {
   const pending = approval && approval.status === 'pending' ? approval : null;
-  $('#drawer').innerHTML = `
+  keepApprovalFocus(() => { $('#drawer').innerHTML = `
     <div class="drawer-head">
       <div>
         <p class="eyebrow">任务详情</p>
@@ -882,6 +923,7 @@ function renderDrawer({ task, events, approval, runs }) {
       ${['queued', 'running', 'waiting_approval'].includes(task.status)
         ? `<button class="mini-btn danger" data-action="cancel-task" data-id="${task.id}">停止这个任务</button>`
         : ''}
+      ${replyButton(task)}
       ${task.status === 'done' && !task.workflow_id
         ? `<button class="mini-btn" data-action="learn-task" data-id="${task.id}">总结成工作流程</button>`
         : ''}
@@ -897,7 +939,7 @@ function renderDrawer({ task, events, approval, runs }) {
             ${eventDetail(e) ? `<div class="t-data">${esc(eventDetail(e))}</div>` : ''}
           </li>`).join('')}
       </ul>
-    </div>`;
+    </div>`; });
 }
 
 function tokensText(n) {
@@ -923,14 +965,45 @@ $('#drawer')?.addEventListener('change', async (event) => {
   }
 });
 
-async function approveTask(taskId, choice) {
+/** 重绘一块区域时，保住拍板输入框的焦点和光标位置。 */
+function keepApprovalFocus(render) {
+  const active = document.activeElement;
+  const id = active?.dataset?.approvalInput;
+  const selection = id ? [active.selectionStart, active.selectionEnd] : null;
+  render();
+  if (!id) return;
+  const input = [...document.querySelectorAll('[data-approval-input]')].find((el) => el.dataset.approvalInput === id);
+  if (!input) return;
+  input.focus({ preventScroll: true });
+  try { input.setSelectionRange(...selection); } catch { /* 不支持就算了 */ }
+}
+
+async function approveTask(taskId, choice, answer = '') {
   try {
-    await api(`/api/tasks/${taskId}/approve`, { method: 'POST', body: { choice } });
-    toast(choice >= 0 ? '收到，从停机点继续处理。' : '好，这件事停下了。');
+    await api(`/api/tasks/${taskId}/approve`, { method: 'POST', body: answer ? { answer } : { choice } });
+    toast(answer ? '收到，按你的决定继续。' : choice >= 0 ? '收到，从停机点继续处理。' : '好，这件事停下了。');
+    return true;
   } catch (err) {
     toast(`${err.message}，正在同步最新状态…`, 4000);
     resync().catch(() => {});
+    return false;
   }
+}
+
+function openReplyDialog(taskId) {
+  const task = state.tasks.find((t) => t.id === taskId);
+  const plugin = replySourceOf(task);
+  if (!plugin) { toast('这个任务现在不能发回原会话。'); return; }
+  openDialog({
+    title: '发回原会话',
+    desc: `会通过「${plugin.label || plugin.name}」发给当初发消息的会话。发之前可以改。`,
+    body: `<label class="field"><span>要发的内容</span><textarea name="text" rows="10" maxlength="20000">${esc(task.result || '')}</textarea></label>`,
+    onSubmit: async ({ text }) => {
+      if (!String(text || '').trim()) throw new Error('内容是空的');
+      const data = await api(`/api/tasks/${taskId}/reply`, { method: 'POST', body: { text }, timeoutMs: 30000 });
+      toast(`已发到「${data.label}」。`);
+    }
+  });
 }
 
 async function cancelTask(taskId) {
@@ -1360,16 +1433,20 @@ function renderWorkerGrid() {
   $('#worker-grid').innerHTML = entries.map(([key, w]) => {
     const abilities = (w.abilities || []).map((a) => ABILITY_LABEL[a] || a).join(' · ');
     const origin = { builtin: '内置', official: '官方插件', user: '我的插件' }[w.origin] || 'Worker 插件';
-    const shipped = w.origin === 'builtin' || w.origin === 'official';
-    const status = w.available ? w.detail || '可用' : w.detail || '不可用';
+    // 内置和官方 Worker 随静静发布，只能停用；自己装的插件才能删除。
+    const removable = w.origin !== 'builtin' && w.origin !== 'official';
+    // 开关只管「用不用」；开着但这台机器上还跑不了（没装、缺 Key）时单独标出来，让用户知道差什么。
+    const cls = !w.enabled ? 'is-off' : w.available ? '' : 'is-unavailable';
+    const status = !w.enabled ? '已停用' : w.detail || (w.available ? '可用' : '不可用');
     return `
-    <div class="worker-item ${w.available ? '' : 'is-off'}" data-worker="${key}" title="${esc(w.description || '')}">
+    <div class="worker-item ${cls}" data-worker="${key}" title="${esc([w.description, w.notes ? `本机补充：${w.notes}` : ''].filter(Boolean).join('\n'))}">
       <span class="worker-dot"></span>
       <span class="worker-item-main"><b>${esc(w.label || key)}</b><small>${esc(status)} · ${esc(origin)}${abilities ? ` · ${esc(abilities)}` : ''}</small></span>
       <span class="worker-item-actions">
         <button type="button" class="mini-btn" data-worker-config="${key}">配置</button>
         <button type="button" class="mini-btn" data-worker-test="${key}">检测</button>
-        <button type="button" class="mini-btn danger" data-worker-delete="${key}">${shipped ? '隐藏' : '删除'}</button>
+        ${removable ? `<button type="button" class="mini-btn danger" data-worker-delete="${key}">删除</button>` : ''}
+        <input type="checkbox" class="switch" data-worker-enabled="${key}" ${w.enabled ? 'checked' : ''} title="${w.enabled ? '点击停用' : '点击启用'}" aria-label="启用 ${esc(w.label || key)}" />
       </span>
     </div>`;
   }).join('');
@@ -1507,7 +1584,12 @@ $('#worker-grid')?.addEventListener('click', async (event) => {
     openDialog({
       title: `配置 ${w.label || id}`,
       desc: `${w.description ? `${w.description} ` : ''}这些配置只属于当前主机的这个 Worker；运行限制留空表示用默认值。`,
-      body: `<div class="grid-2">${workerLimitFields(w)}${workerConfigFields(w)}<label class="switch-field"><span>启用</span><input type="checkbox" class="switch" name="worker.enabled" ${w.enabled ? 'checked' : ''}></label></div>`,
+      body: `<div class="grid-2">${workerLimitFields(w)}${workerConfigFields(w)}
+        <label class="field span-2"><span>本机补充说明</span>
+          <textarea name="worker.notes" maxlength="300" rows="3" placeholder="比如：已接入 TAPD MCP，能查需求、缺陷和迭代进度">${esc(w.notes || '')}</textarea>
+          <small>静静挑 Worker 时会把这段和它的描述一起给模型看。写这台机器上它额外能做的事：接了哪些 MCP、能访问哪些系统。</small>
+        </label>
+        <label class="switch-field"><span>启用</span><input type="checkbox" class="switch" name="worker.enabled" ${w.enabled ? 'checked' : ''}></label></div>`,
       onSubmit: async (values) => {
         const configValues = {};
         for (const field of w.configSchema || []) {
@@ -1520,7 +1602,7 @@ $('#worker-grid')?.addEventListener('click', async (event) => {
           // 和默认值相同就不存覆盖，以后 Worker 升级默认值时能跟着变。
           if (raw !== '' && Number(raw) !== w.limitDefaults?.[field.key]) limits[field.key] = Number(raw);
         }
-        const data = await api(`/api/workers/${id}`, { method: 'PUT', body: { config: configValues, limits, enabled: Boolean(values['worker.enabled']) } });
+        const data = await api(`/api/workers/${id}`, { method: 'PUT', body: { config: configValues, limits, notes: values['worker.notes'] ?? '', enabled: Boolean(values['worker.enabled']) } });
         state.workers = data.workers;
         renderWorkerGrid();
         toast('Worker 配置已保存。');
@@ -1542,28 +1624,34 @@ $('#worker-grid')?.addEventListener('click', async (event) => {
   if (del) {
     const id = del.dataset.workerDelete;
     const worker = state.workers[id];
-    const shipped = worker?.origin === 'builtin' || worker?.origin === 'official';
-    if (!confirm(shipped
-      ? `隐藏 Worker「${worker?.label || id}」？它随静静发布，隐藏后可以点「恢复内置 Worker」找回。`
-      : `删除 Worker「${worker?.label || id}」？插件文件会一起移除。`)) return;
+    if (!confirm(`删除 Worker「${worker?.label || id}」？插件文件会一起移除。只是暂时不用的话，关掉开关就行。`)) return;
     try {
       const data = await api(`/api/workers/${id}`, { method: 'DELETE' });
       state.workers = data.workers;
       renderWorkerGrid();
-      toast(shipped ? 'Worker 已隐藏。' : 'Worker 已删除。');
+      toast('Worker 已删除。');
     } catch (err) {
       toast(err.message);
     }
   }
 });
 
-$('#restore-workers')?.addEventListener('click', async () => {
+$('#worker-grid')?.addEventListener('change', async (event) => {
+  const input = event.target.closest('[data-worker-enabled]');
+  if (!input) return;
+  const id = input.dataset.workerEnabled;
+  const enabled = input.checked;
+  input.disabled = true;
   try {
-    const data = await api('/api/workers/restore', { method: 'POST' });
+    const data = await api(`/api/workers/${id}`, { method: 'PUT', body: { enabled } });
     state.workers = data.workers;
     renderWorkerGrid();
-    toast('内置 Worker 已恢复。');
+    const w = state.workers[id];
+    if (enabled && w && !w.available) toast(`已启用，但这台机器上还用不了：${w.detail || '检测未通过'}`, 4200);
   } catch (err) {
+    // 比如必填配置还没填：开关退回原位，提示去「配置」里补上。
+    input.checked = !enabled;
+    input.disabled = false;
     toast(err.message);
   }
 });
@@ -1825,6 +1913,11 @@ function pluginCardHtml(plugin, { detail = false } = {}) {
             <option value="__custom__">选择自定义文件夹…</option>
           </select>
         </label>
+        ${plugin.canReply ? `
+          <label class="switch-field plugin-auto-reply">
+            <span>任务完成后自动发回原会话<small>默认关闭。打开后，结果不经你过目就直接发给对方；关着时，可以在完成的任务上点「发回原会话」，改好再发。</small></span>
+            <input type="checkbox" class="switch" data-plugin-auto-reply="${plugin.id}" ${plugin.autoReply ? 'checked' : ''} />
+          </label>` : ''}
         ${webhookUrl ? `
           <div class="webhook-box">
             <div class="webhook-label">Webhook 地址 <span>${plugin.enabled ? '已启用' : '启用后生效'}</span></div>
@@ -1896,7 +1989,7 @@ async function loadPluginRecent(id) {
     const box = $('#plugin-recent');
     if (!box) return;
     const items = data.items || [];
-    const label = { task: '已建任务', merged: '已合并', skipped: '跳过', new: '待处理' };
+    const label = { task: '已建任务', merged: '已合并', skipped: '跳过', new: '待处理', pending: '判断中' };
     box.innerHTML = `
       <div class="plugin-recent-head"><h4>最近处理</h4><span>消息进来后，静静判断了什么</span></div>
       ${items.length ? items.map((item) => `
@@ -2229,6 +2322,20 @@ onPluginContainers('change', async (event) => {
       toast(target ? '任务工作区已更新。' : '已改为跟随默认工作区。');
     } catch (err) {
       workspaceSelect.value = previous;
+      toast(err.message);
+    }
+    return;
+  }
+  const autoReply = event.target.closest('[data-plugin-auto-reply]');
+  if (autoReply) {
+    const id = autoReply.dataset.pluginAutoReply;
+    try {
+      const data = await api(`/api/plugins/${id}`, { method: 'PUT', body: { autoReply: autoReply.checked } });
+      const index = state.plugins.findIndex((plugin) => plugin.id === id);
+      if (index >= 0) state.plugins[index] = data.plugin;
+      toast(autoReply.checked ? '已打开：之后从这里来的任务，完成后会自动把结果发回原会话。' : '已关闭自动发回，需要时在任务上手动发。', 3600);
+    } catch (err) {
+      autoReply.checked = !autoReply.checked;
       toast(err.message);
     }
     return;
@@ -2898,6 +3005,13 @@ function connectEvents() {
     if (state.view === 'settings') fillSettings();
   });
 
+  // 拍板时选了「以后这类都交给它」会新建一条分配规则。
+  on('worker-rules/updated', ({ rules }) => {
+    if (!Array.isArray(rules)) return;
+    state.workerRules = rules;
+    if (state.view === 'settings') renderWorkerRules();
+  });
+
   on('plugins/updated', ({ plugins, errors }) => {
     state.plugins = plugins;
     if (Array.isArray(errors)) state.pluginErrors = errors;
@@ -2911,6 +3025,9 @@ function connectEvents() {
     if (state.view === 'settings') renderPlugins();
   });
 
+  on('task/replied', ({ label, by }) => {
+    if (by === 'auto') toast(`任务结果已自动发到「${label}」。`);
+  });
   on('channel/delivery', (item) => {
     if (!item.ok) toast(`${item.channel} 通知发送失败：${item.error || ''}`);
   });
@@ -3069,6 +3186,8 @@ document.addEventListener('click', async (e) => {
   }
   else if (action === 'close-drawer') closeDrawer();
   else if (action === 'approve') approveTask(el.dataset.id, Number(el.dataset.choice));
+  else if (action === 'approve-custom') submitApprovalAnswer(el.dataset.id, el.dataset.approvalId, el);
+  else if (action === 'reply-source') openReplyDialog(el.dataset.id);
   else if (action === 'cancel-task') {
     el.disabled = true;
     await cancelTask(el.dataset.id);
@@ -3122,8 +3241,31 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  const approvalInput = e.target.closest?.('[data-approval-input]');
+  if (approvalInput && e.key === 'Enter' && !e.isComposing) {
+    e.preventDefault();
+    submitApprovalAnswer(approvalInput.dataset.taskId, approvalInput.dataset.approvalInput, approvalInput);
+    return;
+  }
   if (e.key === 'Escape' && state.openTaskId) closeDrawer();
 });
+
+document.addEventListener('input', (e) => {
+  const id = e.target.dataset?.approvalInput;
+  if (id) approvalDrafts.set(id, e.target.value);
+});
+
+async function submitApprovalAnswer(taskId, approvalId, el) {
+  const answer = (approvalDrafts.get(approvalId) || '').trim();
+  if (!answer) {
+    toast('先写下你的决定，或者直接点上面的选项。');
+    document.querySelector(`[data-approval-input="${CSS.escape(approvalId)}"]`)?.focus();
+    return;
+  }
+  el.disabled = true;
+  if (await approveTask(taskId, null, answer)) approvalDrafts.delete(approvalId);
+  el.disabled = false;
+}
 
 /* ------------------------------- boot --------------------------------- */
 

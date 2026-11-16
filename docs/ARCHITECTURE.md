@@ -126,6 +126,10 @@ task/created → task/started → task/progress* → task/waiting_approval
 
 失败路径：`task/retry`（attempt < 2）或 `task/failed`；人工停止：`task/cancelled`；重启恢复：`task/recovered`。
 
+任务走到终态（done / failed / cancelled）只有一个出口 `finalize()`：写状态和事件（同一个事务），然后推送、发 `task/finished`、通知、更新统计。不管是 Worker 返回、超时、执行异常、用户取消、拍板次数超限还是重启后放弃，下游（流程效果统计、自动发回原会话、插件工坊）都只听 `task/finished`。删除任务发 `task/deleted`。
+
+服务退出（SIGTERM / SIGINT / 桌面 App 退出）时，调度器中止所有执行，给子进程整组发 SIGTERM，1.5 秒后 SIGKILL，运行记录记为 `interrupted`；任务保持 `running`，下次启动由 `recover()` 按 Worker 声明的恢复方式接着做。正常退出打断的不算进「连续被重启打断」的次数，只有崩溃、被强制结束才算。
+
 ## 来源插件与发现
 
 插件统一放在数据目录的 `plugins/`（命令行版 `data/plugins/`，App 版 `~/Library/Application Support/Jingjing/plugins/`）。安装包里的 `plugins/` 是首次启动的种子，复制后不再区分来源；所有插件都可以删除，不需要重新打包。
@@ -152,29 +156,37 @@ export async function poll(config, ctx) {
 export async function test(config) { return { ok: true, detail: '...' }; }
 ```
 
-入站 Webhook 走另一条入口：`POST /api/hooks/<token>` → 插件的 `webhook(payload)` → `ingestItems()`，后面的去重、判断、建任务与轮询完全共用。
+入站 Webhook 走另一条入口：`POST /api/hooks/<token>` → 插件的 `webhook(payload)`（15 秒上限）→ 立即回应发送方 → 后台 `ingestItems()`，后面的去重、判断、建任务与轮询完全共用。不等模型判断再回应，免得发送方超时重发。
 
-长连接来源（企业微信智能机器人）由插件的 `start(config, ctx)` 主动连接，收到消息后调用 `ctx.ingest(items)`；启用/停用/改配置时核心负责启动和停止这条连接。
+长连接来源（企业微信智能机器人）由插件的 `start(config, ctx)` 主动连接，收到消息后调用 `ctx.ingest(items)`；启用/停用/改配置时核心负责启动和停止这条连接。插件用 `ctx.status(detail)` 报告连接状态，连接彻底断了用 `ctx.fail(reason)` 交回核心，核心按退避（30 秒起翻倍，最长 30 分钟）自动重启；`start()` 抛错或 30 秒没返回也一样。服务启动时长连接并行启动、不阻塞监听端口。
 
 发现流程：
 
 ```
-插件 poll（90s 超时）
-  → 截断到 10 条 → 过滤已见 externalId
-  → 批量问模型：要行动吗？标题？执行提示？
+插件 poll（90s 超时，宿主强制）
+  → 截断到 10 条 → 占位 source_items(status=pending)，占不到的算已见
+  → 批量问模型：要行动吗？标题？执行提示？属于哪个工作流程？
   → 读取该来源绑定的工作区
-  → createTask(worker=命中的分配规则，否则最便宜的文本 Worker, cwd=工作区路径, origin=plugin:<id>)
-  → source_items 记 task / skipped
+  → createTask(worker=流程指定 > 分配规则 > 最便宜的文本 Worker, cwd=工作区路径, origin=plugin:<id>)
+  → source_items 记 task / merged / skipped（出错就放掉占位，下次重来）
   → 主对话一条汇总 + 插件状态更新
 ```
 
-模型不可用时退回关键词规则；插件抛错只影响它自己，不会中断其他来源或调度器。
+先占位再判断：判断要等模型，同一条在这期间再进来（发送方重发、长连接重放）也不会建出两个任务。进程在判断途中退出留下的 pending 占位，下次启动时清掉。
+
+**外部内容不能决定交给谁**：条目是外人写的（邮件、群消息、Webhook），所以派 Worker 只认主人的配置——工作流程指定的 Worker、分配规则，都没命中就交给最便宜的文本 Worker。消息里点名的 Worker、模型挑的 Worker、按文字推断出的能力都不算；模型只能在主人配好的工作流程里判断属于哪个。只有主人在对话里（Web、配对的 Telegram）才能点名 Worker。
+
+外部消息点名了本机可用的 Worker、或含有默认 Worker 做不了的强能力信号（代码、仓库、生成文件），而流程和规则都没命中时，不直接降级成文字回复：`createTask({ hold })` 建好任务就停在一条 `kind = 'routing'` 的审批上（`approvals.meta.choices` 记着每个选项交给谁、要不要顺手建规则）。主人选了才改派并入队；选「以后这类都交给它」由 `ensureWorkerRule()` 建一条限定这个来源的分配规则（同样的规则已存在就复用）。这类审批选的是 Worker，不是给 Worker 的答复，所以不传给 Worker、不算拍板次数，也不会被记进习惯。
+
+模型不可用时退回关键词规则；插件抛错或超时只影响它自己，不会中断其他来源或调度器。
 
 ## 并发与一致性
 
 - `pump()` 用 `UPDATE ... WHERE status = 'queued'` 做原子占位，避免同一任务被调度两次。
-- 所有状态变化都走 `setStatus()`，并同步写一条事件。
+- 所有状态变化都走 `setStatus()`，并同步写一条事件；拍板、挂起、重试、删除这类多步写入包在 `transaction()` 里，崩溃时不会留下「审批已处理、任务还在等」的半截状态。
 - 内存里只有 `running` 这个运行时 Map；重启后以数据库为准。
+- 同一个数据目录只允许一个服务进程（`instance-lock.js`，SQLite 独占文件锁，进程退出时由系统释放）：否则第二个进程的 `recover()` 会把第一个进程正在跑的任务当成被打断、再执行一遍。启动顺序是先拿锁、再监听端口、最后才 `recover()` 和开始调度。
+- 插件重新加载时，入口带上整个插件目录的版本号，并通过模块钩子传给入口相对引用的子文件（`plugin-loader.js`），多文件插件重装后不用重启。
 - SSE 只负责推送变化，前端每次以 API 返回的任务对象覆盖本地副本，不做增量推断。
 
 ## 记忆的读写时机
@@ -232,8 +244,8 @@ Router **不碰** `approvals` 表，也**不启动** Worker。插件发现走的
 
 ## 通道
 
-- Web / PWA：HTTP + SSE（`/api/stream`），断线由浏览器自动重连。
-- Telegram：`getUpdates` 长轮询；审批按钮的 `callback_data` 是 `approve:<approvalId>:<choice>`。
+- Web / PWA：HTTP + SSE（`/api/stream`），断线由浏览器自动重连。同一个浏览器（IP + UA）最多保留 3 条实时连接，不同设备互不挤占。
+- Telegram：`getUpdates` 长轮询；审批按钮的 `callback_data` 是 `approve:<approvalId>:<choice>`。只认设置里配置的 Chat ID，别的会话发来的消息和按钮一律丢弃（日志里会记下对方的 Chat ID，方便第一次配置）。
 - 飞书 / 通用 Webhook：单向 POST，失败会通过 SSE 推一条提醒到界面。
 
 ## 安全边界
@@ -242,7 +254,8 @@ Router **不碰** `approvals` 表，也**不启动** Worker。插件发现走的
 - 服务默认只监听 `127.0.0.1`；开放到局域网需要显式设 `JINGJING_HOST=0.0.0.0`。
 - 页面渲染对模型输出做 HTML 转义，Markdown 只支持白名单语法。
 - 插件拿到的设置里没有模型 Key 和通知通道凭据；只有随代码发布的内置 Worker 能通过 `ctx.secrets` 拿到 Key。
-- 第三方 Worker 插件的 `execute` 在独立线程里运行，取消 / 超时后会被强制结束；但它仍是同一个 Node 进程、同一个系统账户，能读写本机文件，不是安全沙箱。来源插件仍在主线程运行。只安装可信插件，manifest 里的 `capabilities` 只是声明，不做强制。
+- 第三方 Worker 插件的 `execute` 在独立线程里运行，取消 / 超时后会被强制结束；但它仍是同一个 Node 进程、同一个系统账户，能读写本机文件，不是安全沙箱。来源插件仍在主线程运行（各入口有宿主强制的时间上限，但同步死循环仍会卡住整个服务）。只安装可信插件，manifest 里的 `capabilities` 只是声明，不做强制。
+- 外部来源（邮件、企微、Webhook）的内容不能决定交给哪个 Worker，见「来源插件与发现」；Telegram 只认配置的 Chat ID。能让有工具能力的 Worker 处理外部内容的，只有主人自己配的工作流程和分配规则。
 - 回传接口 `/api/runs/<id>/report` 不需要配对码，只认本次执行的一次性令牌（库里存哈希，执行结束即失效）。
 - API Key 存在本机 SQLite；接口返回时打码，保存时保留原值。
 - Claude Code 以 `claude -p` 运行，工具权限完全交给 Claude Code 自身的用户配置，静静不追加权限参数，也不使用 `--dangerously-skip-permissions`。

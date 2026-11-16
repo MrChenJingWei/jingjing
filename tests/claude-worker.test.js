@@ -107,7 +107,25 @@ test('结果里的审批标记、错误结果和没有结果的情况', async ()
   assert.equal(approval.approval.question, '要覆盖 a.js 吗？');
 
   const errored = fakeCtx({ outputs: [{ chunks: [result('额度不够', { subtype: 'error_max_turns', is_error: true })] }] });
-  assert.equal((await execute({ prompt: 'x' }, errored.ctx)).status, 'failed');
+  const maxTurns = await execute({ prompt: 'x' }, errored.ctx);
+  assert.equal(maxTurns.status, 'failed');
+  assert.match(maxTurns.summary, /执行出错（error_max_turns）/);
+
+  // 用量到上限：subtype 还是 success，不能显示成「执行出错（success）」，也不该自动重试。
+  const limited = fakeCtx({ outputs: [{ chunks: [result("You've hit your 5-hour limit · resets 1:40pm (Asia/Singapore)", { is_error: true })] }] });
+  const limit = await execute({ prompt: 'x' }, limited.ctx);
+  assert.equal(limit.status, 'failed');
+  assert.equal(limit.retryable, false);
+  assert.match(limit.summary, /用量到上限了[\s\S]*resets 1:40pm/);
+  assert.doesNotMatch(limit.summary, /success/);
+
+  assert.equal(approval.approval.custom, true, '输出里提问的审批允许用户自己写决定');
+
+  // 用户没选选项、自己写了决定：下一轮指令里原话带上。
+  const decided = fakeCtx({ outputs: [{ chunks: [result('好的')] }] });
+  decided.ctx.resume = { question: '进度拿不到，怎么处理？', options: ['只给模板', '去检索', '先问产品'], choice: 2, answer: '先问产品' };
+  await execute({ prompt: '回复需求进度' }, decided.ctx);
+  assert.match(decided.calls[0][1], /没有选给出的选项，而是这样决定：先问产品/);
 
   const crashed = fakeCtx({ outputs: [{ chunks: [], code: 2, stderr: 'boom' }] });
   const failed = await execute({ prompt: 'x' }, crashed.ctx);

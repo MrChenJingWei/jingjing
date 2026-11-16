@@ -25,11 +25,41 @@ export async function start(config, ctx) {
 
   const client = new AiBot.WSClient({ botId: config.botId, secret: config.secret });
   let closed = false;
+  let ready = false;
+  // 旧版宿主没有 status / fail，缺了就只记日志。
+  const status = (detail) => ctx.status?.(detail);
+  const giveUp = (reason, options) => {
+    if (closed) return;
+    closed = true;
+    try { client.disconnect(); } catch { /* ignore */ }
+    ctx.fail?.(reason, options);
+  };
 
-  client.on('authenticated', () => ctx.log('企业微信长连接认证成功'));
-  client.on('disconnected', (reason) => ctx.log(`企业微信长连接断开：${reason}`));
-  client.on('reconnecting', (attempt) => ctx.log(`企业微信长连接重连中（第 ${attempt} 次）`));
-  client.on('error', (err) => ctx.log(`企业微信连接错误：${err.message}`));
+  client.on('authenticated', () => {
+    ctx.log('企业微信长连接认证成功');
+    if (ready) status('已连接');
+  });
+  client.on('disconnected', (reason) => {
+    ctx.log(`企业微信长连接断开：${reason}`);
+    if (!ready || closed) return;
+    // 被服务端踢下线（同一个机器人在别处建了新连接）SDK 不会重连；自动重连只会和另一边来回互踢，交给主人处理。
+    if (client.started === false) {
+      giveUp(`企业微信断开了这条连接：${reason}。可能同一个机器人在别处登录了，确认后在插件页重新保存即可重连。`, { retry: false });
+    } else {
+      status(`连接断开，等待重连：${reason}`);
+    }
+  });
+  client.on('reconnecting', (attempt) => {
+    ctx.log(`企业微信长连接重连中（第 ${attempt} 次）`);
+    if (ready) status(`重连中（第 ${attempt} 次）`);
+  });
+  client.on('error', (err) => {
+    ctx.log(`企业微信连接错误：${err.message}`);
+    // SDK 重连次数或认证失败次数用完后就不再重连：交给宿主按退避时间整个重启。
+    if (ready && /WSReconnectExhausted|WSAuthFailure/.test(err?.name || '')) {
+      giveUp(`企业微信长连接放弃重连：${err.message}`);
+    }
+  });
 
   client.on('message.text', async (frame) => {
     const body = frame.body || {};
@@ -111,6 +141,7 @@ export async function start(config, ctx) {
     client.once('error', fail);
     client.connect();
   });
+  ready = true;
 
   return async () => {
     if (closed) return;

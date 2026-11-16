@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectNeed, pickWorker } from '../src/worker-routing.js';
+import { detectNeed, pickWorker, namedWorker } from '../src/worker-routing.js';
 
 const codeAbilities = ['code', 'write-file', 'manage-files', 'text'];
 const builtins = [
@@ -67,4 +67,12 @@ test('detectNeed：写文件优先，弱信号只在离线判断时生效', () =
   assert.equal(detectNeed('跑一下编译'), 'code');
   assert.equal(detectNeed('跑一下编译', { decided: true }), null);
   assert.equal(detectNeed('写一首诗'), null);
+});
+
+test('一句话里点名了哪个可用的 Worker', () => {
+  assert.equal(namedWorker('使用claude通过tapd mcp查了回他', builtins)?.id, 'claude');
+  assert.equal(namedWorker('用 Claude Code 去查', builtins)?.id, 'claude');
+  assert.equal(namedWorker('用 codex 跑一下', builtins), null, '点名的 Worker 本机不可用');
+  assert.equal(namedWorker('先放着，下午再说', builtins), null);
+  assert.equal(namedWorker('', builtins), null);
 });

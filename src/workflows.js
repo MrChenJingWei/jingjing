@@ -508,6 +508,8 @@ export function corePhrase(text) {
 }
 
 const NONTRIVIAL_EVENTS = new Set(['task/waiting_approval', 'task/edited', 'task/retried', 'task/retry']);
+// 静静自己问的（重启后要不要重跑、外部消息交给谁），不是做事过程中的选择，不记进习惯。
+const HOST_APPROVALS = new Set(['recovery', 'routing']);
 
 /**
  * 这次任务值不值得总结成习惯：只看对话/手动发起的成功任务，没按已有流程执行，
@@ -529,7 +531,7 @@ export function taskFacts(task, events = [], { workerLabel = task.worker, worksp
     if (e.type === 'task/edited' && e.data?.from?.worker && e.data?.to?.worker) {
       facts.push(`（最初派给了「${e.data.from.worker}」，你改成了「${e.data.to.worker}」。）`);
     }
-    if (e.type === 'approval/resolved' && e.data?.option && e.data?.kind !== 'recovery') {
+    if (e.type === 'approval/resolved' && e.data?.option && !HOST_APPROVALS.has(e.data?.kind)) {
       const asked = events.find((x) => x.type === 'task/waiting_approval' && x.data?.approvalId === e.data.approvalId);
       facts.push(`遇到「${asked?.data?.question || '需要确认的问题'}」时，选「${e.data.option}」。`);
     }
@@ -585,7 +587,7 @@ export async function learnFromTask(task, events = [], { workerLabel, workspaceN
 
   // 记下这次每个拍板问题的选择，开启自动拍板后可以照着回答。
   const answers = events
-    .filter((e) => e.type === 'approval/resolved' && e.data?.option && e.data?.kind !== 'recovery')
+    .filter((e) => e.type === 'approval/resolved' && e.data?.option && !HOST_APPROVALS.has(e.data?.kind))
     .map((e) => {
       const asked = events.find((x) => x.type === 'task/waiting_approval' && x.data?.approvalId === e.data.approvalId);
       return asked?.data?.question ? `${generalizeQuestion(asked.data.question)} => ${String(e.data.option).replace(/;/g, '，')}` : '';

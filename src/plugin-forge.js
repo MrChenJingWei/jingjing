@@ -30,6 +30,7 @@ const MAX_BYTES = 1024 * 1024;
 const PROBE_TIMEOUT_MS = 10 * 1000;
 const NODE_BUILTINS = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]));
 const KIND_LABEL = { source: '任务来源插件', worker: 'Worker 插件' };
+const TEMPLATE_IDS = new Set(['my-source', 'my-worker']);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS plugin_drafts (
@@ -311,6 +312,8 @@ export async function checkDraft(draftOrId) {
     config: (manifest.config || []).map((field) => ({ key: field.key, label: field.label, type: field.type, required: field.required }))
   });
   if (manifest.kind !== draft.kind) errors.push(`kind 应该是 "${draft.kind}"，现在是 "${manifest.kind}"`);
+  // 模板本身就能通过检查：id 没改说明还没真正动手写（比如编码任务一开始就断了）。
+  if (TEMPLATE_IDS.has(manifest.id)) errors.push(`id 还是模板里的「${manifest.id}」，插件还没写，或者没写完`);
   if (knownPluginIds().has(manifest.id) || isWorker(manifest.id)) errors.push(`id「${manifest.id}」已经被占用，换一个`);
 
   if (fs.existsSync(path.join(dir, 'package.json'))) {
@@ -398,11 +401,17 @@ async function runModelRound(draft, errors = []) {
   if (!written) throw new Error('模型没有给出插件文件');
 }
 
+/** 检查草稿并把报告存起来。extra 会并进报告（比如 interrupted：编码任务中途断掉的原因）。 */
+async function runCheck(draftId, extra = {}) {
+  update(draftId, { status: 'checking' });
+  const report = { ...(await checkDraft(draftId)), ...extra };
+  const draft = update(draftId, { report: JSON.stringify(report), plugin_id: report.info.id || null, name: report.info.name || null });
+  return { draft, report };
+}
+
 /** 一轮写完后：检查，通过就等用户确认；没通过且还有轮次就交回去修；否则判定失败。 */
 async function afterRound(draftId) {
-  let draft = update(draftId, { status: 'checking' });
-  const report = await checkDraft(draft);
-  draft = update(draftId, { report: JSON.stringify(report), plugin_id: report.info.id || null, name: report.info.name || null });
+  let { draft, report } = await runCheck(draftId);
   if (report.ok) {
     update(draftId, { status: 'ready' });
     announce(draftId, `「${report.info.name}」写好了，检查都通过了。看一眼代码，没问题就点「安装」。`);
@@ -416,6 +425,22 @@ async function afterRound(draftId) {
   }
   update(draftId, { status: 'failed' });
   announce(draftId, `「${report.info.name || draft.request.slice(0, 20)}」改了 ${draft.rounds} 轮还是没通过检查，先停在这里。可以看看代码，或者让我再试一次。`);
+}
+
+/**
+ * 编码任务失败了（比如额度用完、进程被杀），但文件可能已经写好了：照常检查一遍。
+ * 通过就等用户确认（卡片上提示可能没写完整）；没通过就停下，不自动开新一轮——Worker 这时多半还用不了。
+ */
+async function salvage(draftId, reason) {
+  const { report } = await runCheck(draftId, { interrupted: reason });
+  const short = reason.split('\n')[0].slice(0, 80);
+  if (report.ok) {
+    update(draftId, { status: 'ready' });
+    announce(draftId, `「${report.info.name}」的编码任务中途断了（${short}），不过草稿里的文件已经通过了检查。可能没写完整，先「查看代码」确认，没问题再点「安装」。`);
+    return;
+  }
+  update(draftId, { status: 'failed' });
+  announce(draftId, `插件没写成：${short}。等它能用了点「再试一次」，会接着已经写好的部分继续。`);
 }
 
 function fail(draftId, message) {
@@ -499,10 +524,34 @@ export function retryDraft(id) {
   const draft = getDraft(id);
   if (!draft) throw notFound();
   if (draft.status !== 'failed') throw Object.assign(new Error('只有没通过的草稿可以再试'), { statusCode: 400 });
-  const errors = draft.report?.errors?.length ? draft.report.errors : ['上一次没有完成，请检查并补全插件'];
+  const errors = [
+    ...(draft.report?.interrupted ? ['上一次写到一半中断了：先看看当前目录里已经写好的部分，再把插件补全'] : []),
+    ...(draft.report?.errors || [])
+  ];
+  if (!errors.length) errors.push('上一次没有完成，请检查并补全插件');
   const next = update(id, { rounds: 1, status: 'writing' });
   if (next.mode === 'agent') return startAgentRound(next, fixPrompt(next, errors));
   runModelRound(next, errors).then(() => afterRound(id)).catch((err) => fail(id, `模型生成失败：${err.message}`));
+  return next;
+}
+
+/**
+ * 没通过的草稿重新检查一遍，不让 Worker 改：编码任务报错但文件其实写完了，或者用户自己动手改过草稿时用。
+ * 通过就变成待确认，照样要用户点「安装」；没通过就用新的检查结果替换旧报错。
+ */
+export async function recheckDraft(id) {
+  const draft = getDraft(id);
+  if (!draft) throw notFound();
+  if (draft.status !== 'failed') throw Object.assign(new Error('只有没通过的草稿需要重新检查'), { statusCode: 400 });
+  let report;
+  try {
+    ({ report } = await runCheck(id, { interrupted: draft.report?.interrupted }));
+  } catch (err) {
+    update(id, { status: 'failed' });
+    throw err;
+  }
+  const next = update(id, { status: report.ok ? 'ready' : 'failed' });
+  if (report.ok) announce(id, `「${report.info.name}」重新检查通过了。看一眼代码，没问题就点「安装」。`);
   return next;
 }
 
@@ -520,17 +569,24 @@ export function draftFiles(id) {
     });
 }
 
-// 编码任务结束时接着检查；被取消或失败时记下来。
+// 编码任务结束时接着检查；失败时也检查一遍已经写出来的文件；被取消或删掉时记下来。
+// 调度器在每一种终态（完成、失败、超时、取消、拍板超限……）都会发 task/finished。
 bus.on(({ type, payload }) => {
-  if (type !== 'task/finished' && type !== 'task/updated') return;
+  if (type === 'task/deleted') {
+    if (payload.task?.origin !== 'plugin-forge') return;
+    const row = db.prepare("SELECT id FROM plugin_drafts WHERE task_id = ? AND status = 'writing'").get(payload.id);
+    if (row) fail(row.id, '编码任务被删除了');
+    return;
+  }
+  if (type !== 'task/finished') return;
   const task = payload.task;
   if (!task || task.origin !== 'plugin-forge') return;
   const row = db.prepare("SELECT id FROM plugin_drafts WHERE task_id = ? AND status = 'writing'").get(task.id);
   if (!row) return;
-  if (type === 'task/finished' && task.status === 'done') {
+  if (task.status === 'done') {
     afterRound(row.id).catch((err) => fail(row.id, err.message));
   } else if (task.status === 'failed') {
-    fail(row.id, `编码任务失败：${String(task.error || '').slice(0, 300)}`);
+    salvage(row.id, String(task.error || '编码任务失败').slice(0, 300)).catch((err) => fail(row.id, err.message));
   } else if (task.status === 'cancelled') {
     fail(row.id, '编码任务被取消了');
   }

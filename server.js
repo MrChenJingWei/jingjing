@@ -9,7 +9,7 @@ import * as memory from './src/memory.js';
 import * as scheduler from './src/scheduler.js';
 import * as router from './src/router.js';
 import * as channels from './src/channels.js';
-import { availability, testWorker, saveWorkerConfig, isShippedWorker, deleteBuiltinWorker, restoreBuiltinWorkers, loadBuiltinWorkers, defaultWorker } from './src/workers.js';
+import { availability, testWorker, saveWorkerConfig, isShippedWorker, unhideShippedWorkers, loadBuiltinWorkers, defaultWorker } from './src/workers.js';
 import * as workerRules from './src/worker-rules.js';
 import * as workflows from './src/workflows.js';
 import * as archive from './src/archive.js';
@@ -24,6 +24,9 @@ import { seed } from './src/seed.js';
 import { VERSION } from './src/version.js';
 import { activateOverlay } from './src/overlay.js';
 import * as updates from './src/update.js';
+import { acquireInstanceLock } from './src/instance-lock.js';
+
+let shuttingDown = false;
 
 // 被桌面 App 拉起时：App 没了（崩溃 / 被强制结束）就跟着退出，不留孤儿进程占着端口。
 const parentPid = Number(process.env.JINGJING_PARENT_PID || 0);
@@ -34,7 +37,7 @@ if (parentPid > 1) {
     } catch (err) {
       if (err.code === 'ESRCH') {
         console.log('[server] 桌面 App 已退出，服务随之停止');
-        process.exit(0);
+        shutdown();
       }
     }
   }, 3000).unref();
@@ -44,6 +47,14 @@ if (parentPid > 1) {
 await activateOverlay();
 
 installLogCapture();
+
+// 同一个数据目录只能跑一个服务：否则第二个进程启动时会把第一个进程正在跑的任务当成被打断，再执行一遍。
+const instanceLock = acquireInstanceLock(DATA_DIR);
+if (!instanceLock.ok) {
+  console.error(`静静已经在运行${instanceLock.pid ? `（进程 ${instanceLock.pid}）` : ''}，数据目录：${DATA_DIR}`);
+  console.error('同一个数据目录只能跑一个服务。要再开一个，请用 JINGJING_DATA_DIR 指定别的数据目录。');
+  process.exit(1);
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -216,23 +227,15 @@ const server = http.createServer(async (req, res) => {
       } catch {
         payload = { text: raw };
       }
-      const result = await plugin.module.webhook(payload, {
+      // 插件把请求转成条目就回应；判断和建任务在后台做，发送方不会因为等模型超时而重发。
+      const accepted = await discovery.receiveWebhook(plugin, {
+        payload,
         headers: req.headers,
         rawBody: raw,
         query: Object.fromEntries(url.searchParams.entries()),
-        method: req.method,
-        instanceId: plugin.instanceId,
-        pluginId: plugin.pluginId,
-        state: {
-          get: (key, fallback = null) => plugins.getPluginState(plugin.instanceId, key, fallback),
-          set: (key, value) => plugins.setPluginState(plugin.instanceId, key, value),
-          delete: (key) => plugins.deletePluginState(plugin.instanceId, key)
-        },
-        log: (message) => console.log(`[webhook:${plugin.instanceId}] ${message}`)
+        method: req.method
       });
-      const items = Array.isArray(result?.items) ? result.items : [];
-      const ingested = await discovery.ingestItems(plugin.instanceId, items, { verb: '接收' });
-      return json(res, 200, { ok: true, ...ingested });
+      return json(res, 200, accepted);
     }
 
     if (req.method === 'GET' && pathname === '/api/auth/status') {
@@ -271,7 +274,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && pathname === '/api/stream') {
-      return bus.subscribe(res);
+      // 浏览器对同一个站点的并发连接有限，按「同一个浏览器」（IP + UA）限制实时连接数，而不是全局限制。
+      return bus.subscribe(res, { client: `${req.socket.remoteAddress || ''}|${req.headers['user-agent'] || ''}` });
     }
 
     if (req.method === 'POST' && pathname === '/api/system/pick-folder') {
@@ -343,7 +347,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { task });
     }
 
-    const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(approve|cancel|retry|learn))?$/);
+    const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(approve|cancel|retry|learn|reply))?$/);
     if (taskMatch) {
       const [, id, action] = taskMatch;
       if (req.method === 'PATCH' && !action) {
@@ -366,8 +370,12 @@ const server = http.createServer(async (req, res) => {
         const body = await readBody(req);
         const task = scheduler.getTask(id);
         if (!task?.approval_id) return fail(res, 400, '这个任务没有待审批项');
-        const result = scheduler.approve(task.approval_id, Number(body.choice), { by: body.by || 'web' });
+        const result = scheduler.approve(task.approval_id, Number(body.choice), { by: body.by || 'web', answer: body.answer });
         return json(res, 200, result);
+      }
+      if (req.method === 'POST' && action === 'reply') {
+        const body = await readBody(req).catch(() => ({}));
+        return json(res, 200, await discovery.replyToSource(id, { text: body.text, by: 'user' }));
       }
       if (req.method === 'POST' && action === 'cancel') {
         return json(res, 200, { task: scheduler.cancel(id) });
@@ -390,7 +398,7 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 200, { draft, drafts: forge.listDrafts() });
     }
-    const draftMatch = pathname.match(/^\/api\/plugin-drafts\/(d_[A-Za-z0-9]+)(?:\/(files|install|discard|retry))?$/);
+    const draftMatch = pathname.match(/^\/api\/plugin-drafts\/(d_[A-Za-z0-9]+)(?:\/(files|install|discard|retry|recheck))?$/);
     if (draftMatch) {
       const [, id, action] = draftMatch;
       if (req.method === 'GET' && !action) return json(res, 200, { draft: forge.getDraft(id) });
@@ -401,6 +409,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'POST' && action === 'discard') return json(res, 200, { draft: forge.discardDraft(id), drafts: forge.listDrafts() });
       if (req.method === 'POST' && action === 'retry') return json(res, 200, { draft: forge.retryDraft(id), drafts: forge.listDrafts() });
+      if (req.method === 'POST' && action === 'recheck') return json(res, 200, { draft: await forge.recheckDraft(id), drafts: forge.listDrafts() });
     }
 
     if (pathname === '/api/workflows' && req.method === 'GET') {
@@ -439,7 +448,7 @@ const server = http.createServer(async (req, res) => {
     const approveMatch = pathname.match(/^\/api\/approvals\/([^/]+)\/resolve$/);
     if (approveMatch && req.method === 'POST') {
       const body = await readBody(req);
-      return json(res, 200, scheduler.approve(approveMatch[1], Number(body.choice), { by: body.by || 'web' }));
+      return json(res, 200, scheduler.approve(approveMatch[1], Number(body.choice), { by: body.by || 'web', answer: body.answer }));
     }
 
     if (req.method === 'GET' && pathname === '/api/memories') {
@@ -692,13 +701,6 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    if (req.method === 'POST' && pathname === '/api/workers/restore') {
-      restoreBuiltinWorkers();
-      const workers = availability();
-      bus.emit('workers/updated', { workers });
-      return json(res, 200, { ok: true, workers });
-    }
-
     const workerMatch = pathname.match(/^\/api\/workers\/([^/]+)(?:\/test)?$/);
     if (workerMatch) {
       const id = decodeURIComponent(workerMatch[1]);
@@ -715,8 +717,10 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, result);
       }
       if (req.method === 'DELETE' && !isTest) {
-        if (isShippedWorker(id)) deleteBuiltinWorker(id);
-        else plugins.removeWorkerPlugin(id);
+        if (isShippedWorker(id)) {
+          return json(res, 400, { error: '内置和官方 Worker 不能删除，不用的话在设置里关掉开关即可。' });
+        }
+        plugins.removeWorkerPlugin(id);
         const workers = availability();
         bus.emit('workers/updated', { workers });
         return json(res, 200, { ok: true, workers });
@@ -810,7 +814,9 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'PUT' && !action) {
         const body = await readBody(req);
         const plugin = plugins.savePlugin(id, body);
-        if (plugin?.lifecycle) await discovery.restartLifecycle(id);
+        // getPlugin() 上没有 lifecycle 字段，按 type 判断；停用时 restartLifecycle 会负责断开。
+        // 只有启用状态或配置变了才重连；改名称、工作区、自动发回不必断开长连接。
+        if (plugin?.type === 'stream' && (body.enabled !== undefined || body.config !== undefined)) await discovery.restartLifecycle(id);
         bus.emit('plugins/updated', { plugins: plugins.listPlugins(), errors: plugins.pluginErrors() });
         return json(res, 200, { plugin: plugins.listPlugins().find((item) => item.id === id) || plugin, errors: plugins.pluginErrors() });
       }
@@ -871,7 +877,7 @@ auth.getAccessKey();
 await loadBuiltinWorkers();
 plugins.seedBuiltins();
 await plugins.reloadPlugins();
-await discovery.startLifecycles();
+unhideShippedWorkers();
 // 插件工坊：写好的插件通过对话卡片通知用户；用户点「安装」后重新加载插件。
 forge.configure({
   post: (text, options) => router.postAssistant(text, options),
@@ -883,6 +889,30 @@ forge.configure({
     bus.emit('workers/updated', { workers: availability() });
   }
 });
+channels.setHandlers({
+  onMessage: (text, meta) => router.handleMessage(text, { sessionId: router.MAIN_SESSION, source: meta.source }),
+  onApproval: (approvalId, choice) => scheduler.approve(approvalId, choice, { by: 'telegram' })
+});
+
+// 先占住端口，再恢复和启动任务：端口起不来就直接退出，不去动库里的任务。
+try {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(PORT, HOST, () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+} catch (err) {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`端口 ${PORT} 已被占用。换一个：JINGJING_PORT=7778 npm start`);
+  } else {
+    console.error(err);
+  }
+  process.exit(1);
+}
+server.on('error', (err) => console.error('[server]', err));
+
 scheduler.init();
 // 每 6 小时检查一次，每天最多自动归档一次；启动一分钟后先检查一次。
 const runArchive = () => {
@@ -892,36 +922,37 @@ setTimeout(runArchive, 60 * 1000).unref();
 setInterval(runArchive, 6 * 60 * 60 * 1000).unref();
 router.startProactiveLoop();
 discovery.start();
-channels.setHandlers({
-  onMessage: (text, meta) => router.handleMessage(text, { sessionId: router.MAIN_SESSION, source: meta.source }),
-  onApproval: (approvalId, choice) => scheduler.approve(approvalId, choice, { by: 'telegram' })
-});
 channels.restartTelegram();
+// 长连接不等：某一条连不上或卡住，不影响服务本身。
+discovery.startLifecycles().catch((err) => console.warn('[plugin] 启动长连接失败：', err.message));
 
-server.listen(PORT, HOST, () => {
-  console.log('');
-  console.log(`  静静 · 本地个人 AI 工作站 · v${VERSION}`);
-  console.log(`  → http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`);
-  console.log(`  数据目录：${DATA_DIR}`);
-  console.log(`  运行模式：${getSettings().provider === 'demo' ? '演示模式（无需 API Key）' : getSettings().provider}`);
-  if (process.env.JINGJING_OVERLAY_VERSION) console.log(`  热更新版本：${process.env.JINGJING_OVERLAY_VERSION}（数据目录）`);
-  console.log(`  配对码文件：${auth.accessKeyPath()}`);
-  console.log('');
-});
+console.log('');
+console.log(`  静静 · 本地个人 AI 工作站 · v${VERSION}`);
+console.log(`  → http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`);
+console.log(`  数据目录：${DATA_DIR}`);
+console.log(`  运行模式：${getSettings().provider === 'demo' ? '演示模式（无需 API Key）' : getSettings().provider}`);
+if (process.env.JINGJING_OVERLAY_VERSION) console.log(`  热更新版本：${process.env.JINGJING_OVERLAY_VERSION}（数据目录）`);
+console.log(`  配对码文件：${auth.accessKeyPath()}`);
+console.log('');
 
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`端口 ${PORT} 已被占用。换一个：JINGJING_PORT=7778 npm start`);
-  } else {
-    console.error(err);
-  }
-  process.exit(1);
-});
+/**
+ * 正常退出：先停掉新的轮询和重连，中止正在跑的任务并结束它们的子进程（整组），关掉长连接，再退出。
+ * 被中止的任务保持 running，下次启动由 recover() 按 Worker 的恢复方式接着做。
+ */
+async function shutdown(signal = 'exit') {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n静静先休息了。${signal === 'exit' ? '' : `（${signal}）`}`);
+  // 不管收尾卡在哪，最多等 4 秒。
+  setTimeout(() => process.exit(0), 4000).unref();
+  discovery.stop();
+  channels.stopTelegram();
+  await Promise.allSettled([scheduler.shutdown(), discovery.stopLifecycles()]);
+  server.close();
+  server.closeAllConnections?.();
+  process.exit(0);
+}
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => {
-    console.log('\n静静先休息了。');
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 1200);
-  });
+  process.on(sig, () => shutdown(sig));
 }

@@ -56,8 +56,38 @@ export function sleep(ms, signal) {
   });
 }
 
+// 这个线程启动的、还没退出的子进程。服务退出时统一结束，不留下还在改文件的孤儿进程。
+const children = new Set();
+
 /**
- * 运行一个外部命令。signal 中止时先 SIGTERM，1.5 秒后 SIGKILL，并返回 { error: 'aborted' }。
+ * 结束子进程和它派生出来的整组进程（比如 Claude Code 的 Bash 工具起的命令）。
+ * 子进程用 detached 启动、自成一个进程组，所以能按组发信号。
+ */
+function killTree(child, signal) {
+  if (!child?.pid) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try { child.kill(signal); } catch { /* 已经退出 */ }
+  }
+}
+
+export function activeChildren() {
+  return children.size;
+}
+
+/** 给所有还在跑的子进程发 SIGTERM，最多等 graceMs，剩下的 SIGKILL。 */
+export async function terminateChildren(graceMs = 1500) {
+  for (const child of children) killTree(child, 'SIGTERM');
+  const deadline = Date.now() + graceMs;
+  while (children.size && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  for (const child of children) killTree(child, 'SIGKILL');
+}
+
+/**
+ * 运行一个外部命令。signal 中止时给整组进程发 SIGTERM，1.5 秒后 SIGKILL，并返回 { error: 'aborted' }。
  * timeoutMs 为 0 表示不单独设超时（由调度器按 Worker 的 timeoutMinutes 统一中止）。
  */
 export function runCommand(cmd, args = [], { cwd, signal, onOutput, timeoutMs = 0, env: extraEnv = {} } = {}) {
@@ -68,11 +98,15 @@ export function runCommand(cmd, args = [], { cwd, signal, onOutput, timeoutMs = 
   }
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve({ code: -2, error: 'aborted', stdout: '', stderr: '' });
-    const child = spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    children.add(child);
+    const forget = () => children.delete(child);
+    child.once('exit', forget);
+    child.once('error', forget);
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const timer = timeoutMs > 0 ? setTimeout(() => child.kill('SIGKILL'), timeoutMs) : null;
+    const timer = timeoutMs > 0 ? setTimeout(() => killTree(child, 'SIGKILL'), timeoutMs) : null;
     const finish = (result) => {
       if (settled) return;
       settled = true;
@@ -84,8 +118,8 @@ export function runCommand(cmd, args = [], { cwd, signal, onOutput, timeoutMs = 
     child.on('error', (err) => finish({ code: -1, error: err.message }));
     child.on('close', (code) => finish({ code }));
     signal?.addEventListener('abort', () => {
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 1500).unref?.();
+      killTree(child, 'SIGTERM');
+      setTimeout(() => killTree(child, 'SIGKILL'), 1500).unref?.();
       finish({ code: -2, error: 'aborted' });
     }, { once: true });
   });
@@ -104,7 +138,9 @@ export function extractApproval(text) {
         question: String(parsed.question),
         options: Array.isArray(parsed.options) && parsed.options.length
           ? parsed.options.map(String).slice(0, 5)
-          : ['继续', '先停一下']
+          : ['继续', '先停一下'],
+        // 输出里提问的 Worker 会把用户的决定写进下一轮指令，用户可以不选选项、自己写一个决定。
+        custom: true
       },
       text: text.slice(0, idx).trim()
     };

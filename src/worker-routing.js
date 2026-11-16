@@ -31,6 +31,33 @@ export function detectNeed(text, { decided = false } = {}) {
   return null;
 }
 
+const FILE_TERM_RE = /(文件|文档|txt|markdown|md|tex|json|csv|html)/i;
+
+/**
+ * 和 detectNeed 一样推断需要的能力，同时给出是哪个词触发的（比如「代码」「仓库」「文件」），
+ * 用来向用户说明、或者生成一条看得懂的分配规则。没有信号时返回 null。
+ */
+export function needSignal(text, { decided = false } = {}) {
+  const t = String(text || '');
+  for (const re of WRITE_FILE_RE) {
+    const hit = t.match(re);
+    if (hit) return { need: 'write-file', term: hit[0].match(FILE_TERM_RE)?.[0] || hit[0] };
+  }
+  const strong = t.match(CODE_STRONG_RE);
+  if (strong) return { need: 'code', term: strong[0] };
+  if (decided) return null;
+  const files = t.match(MANAGE_FILES_RE);
+  if (files) return { need: 'manage-files', term: files[0] };
+  const weak = t.match(CODE_WEAK_RE);
+  if (weak) return { need: 'code', term: weak[0] };
+  return null;
+}
+
+/** 能做这件事（具备 ability）的可用 Worker 里开销最低的一个。 */
+export function cheapestWith(workers, ability) {
+  return cheapest(workers.filter((w) => w.available !== false), (w) => can(w, ability));
+}
+
 function keywordRe(worker) {
   if (!worker.keywords) return null;
   try { return new RegExp(worker.keywords, 'i'); } catch { return null; }
@@ -48,6 +75,24 @@ function cheapest(workers, predicate) {
 }
 
 const can = (worker, ability) => Array.isArray(worker?.abilities) && worker.abilities.includes(ability);
+
+/** 给模型看的一行 Worker 说明：描述 + 用户补充的本机能力（比如接了哪些 MCP）+ 能力标签。 */
+export function describeWorker(w) {
+  const desc = w.description ? `：${w.description}` : '';
+  const notes = w.notes ? `；本机补充：${w.notes}` : '';
+  const abilities = w.abilities?.length ? ` [能力：${w.abilities.join(', ')}]` : '';
+  return `- ${w.id}（${w.label || w.id}）${desc}${notes}${abilities}`;
+}
+
+/**
+ * 一句话里点名了哪个可用的 Worker（按 manifest 的 keywords 认，比如「用 claude 通过 tapd 查」→ Claude Code）。
+ * 点名了多个时取开销最低的；没点名或点名的不可用时返回 null。
+ */
+export function namedWorker(text, workers = []) {
+  const t = String(text || '');
+  if (!t) return null;
+  return workers.filter((w) => w.available !== false && keywordRe(w)?.test(t)).sort(byPreference)[0] || null;
+}
 
 /**
  * @param {object} input

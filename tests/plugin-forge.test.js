@@ -159,6 +159,59 @@ test('编码 Worker 写插件：第一轮没通过自动交回去修，通过后
   workers.unregisterWorkerPlugin('fake-coder');
 });
 
+test('编码任务报错时照样检查已经写出来的文件；没写完的可以等额度恢复后重新检查', async () => {
+  const manifest = validateManifest({ id: 'flaky-coder', kind: 'worker', name: '会断的编码', entry: 'index.js', worker: { abilities: ['code', 'text'], cost: 1 } });
+  let mode = 'wrote-then-limit';
+  workers.registerWorkerPlugin({
+    manifest,
+    dir: path.join(dataDir, 'flaky-coder'),
+    isolate: false,
+    module: {
+      execute: async (task, ctx) => {
+        if (mode === 'wrote-then-limit') writeDraft(ctx.workspace, { ...goodManifest, id: 'limit-rss' }, goodCode);
+        return { status: 'failed', retryable: false, summary: "Claude Code 的用量到上限了，等额度恢复后再试。\nYou've hit your 5-hour limit" };
+      }
+    }
+  });
+  try {
+    // 写完才断：文件通过检查 → 等用户确认，卡片上提示可能没写完整。
+    const wrote = forge.createDraft({ request: '写完才断', sessionId: 'main' });
+    const ready = await waitFor(() => forge.getDraft(wrote.id).status === 'ready' && forge.getDraft(wrote.id), '断了但文件可用');
+    assert.equal(ready.rounds, 1, '不会自动开新一轮');
+    assert.equal(ready.pluginId, 'limit-rss');
+    assert.match(ready.report.interrupted, /用量到上限/);
+    assert.ok(posts.some((p) => p.options.meta?.draftId === wrote.id && /中途断了.*通过了检查/.test(p.text)));
+    forge.discardDraft(wrote.id);
+
+    // 一开始就断：草稿还是模板原样，不能当成写好了。
+    mode = 'limit-at-start';
+    const empty = forge.createDraft({ request: '一开始就断', sessionId: 'main' });
+    const failed = await waitFor(() => forge.getDraft(empty.id).status === 'failed' && forge.getDraft(empty.id), '断了且没写');
+    assert.match(failed.report.errors.join(), /还是模板里的「my-source」/);
+    assert.match(failed.report.interrupted, /用量到上限/);
+
+    // 用户自己把文件补好了（或者其实早写完了）：重新检查，不让 Worker 动手，通过后照样等确认。
+    writeDraft(path.join(forge.DRAFT_DIR, empty.id), { ...goodManifest, id: 'manual-rss' }, goodCode);
+    const rechecked = await forge.recheckDraft(empty.id);
+    assert.equal(rechecked.status, 'ready');
+    assert.equal(rechecked.pluginId, 'manual-rss');
+    assert.equal(rechecked.report.errors.length, 0);
+    await assert.rejects(forge.recheckDraft(empty.id), /只有没通过的草稿/);
+    forge.discardDraft(empty.id);
+
+    // 再试一次时告诉 Worker 上次是中途断的，接着写。
+    mode = 'limit-at-start';
+    const again = forge.createDraft({ request: '再断一次', sessionId: 'main' });
+    await waitFor(() => forge.getDraft(again.id).status === 'failed', '又断了');
+    const retried = forge.retryDraft(again.id);
+    assert.match(scheduler.getTask(retried.taskId).prompt, /写到一半中断了/);
+    await waitFor(() => forge.getDraft(again.id).status === 'failed', '重试也断了');
+    forge.discardDraft(again.id);
+  } finally {
+    workers.unregisterWorkerPlugin('flaky-coder');
+  }
+});
+
 test('没有编码 Worker 但接了模型时，让模型直接生成文件，同样检查后等确认', async () => {
   saveSettings({ provider: 'deepseek', apiKey: 'sk-test' });
   const realFetch = globalThis.fetch;

@@ -199,6 +199,19 @@ export async function poll(config, ctx) {
 
 `test(config)` 可选。返回 `{ ok, detail, preview? }`，`preview` 是字符串数组，会显示在设置页。
 
+每个入口都有时间上限，到点由静静强制按失败处理，不等插件理会 `signal`：
+
+| 入口 | 上限 |
+| --- | --- |
+| `poll()` | 90 秒 |
+| `test()` | 30 秒 |
+| `webhook()` | 15 秒 |
+| `reply()` | 20 秒 |
+| `start()` | 30 秒 |
+| 停止函数 / `stop()` | 10 秒 |
+
+超时后插件那边的调用不会被杀掉，只是结果被丢弃；所以仍然要把 `signal` 传给 `fetch`，别让请求一直挂着。
+
 ## 入站 Webhook
 
 除了轮询（`poll`），插件还可以声明自己接收推送：
@@ -229,7 +242,7 @@ export async function webhook(payload, ctx) {
 
 1. 为插件生成一个地址：`POST /api/hooks/<token>`；
 2. 在插件详情页显示这个地址，可复制；
-3. 收到 POST 后调用插件的 `webhook()`，再把返回的条目交给 `ingestItems()` 去重、判断、建任务；
+3. 收到 POST 后调用插件的 `webhook()`，拿到条目就回应 `200 {"ok":true,"accepted":<条数>}`；去重、判断、建任务在后台做，不让发送方等模型；
 4. 插件只需要把外部 payload 转成通用条目，不需要轮询，也不需要自己建任务。
 
 `payload` 是解析后的 JSON；解析失败时是 `{ text: "原始文本" }`。请求头通过 `ctx.headers` 传入（小写键名），可以据此判断 `x-github-event` 等事件类型。
@@ -252,7 +265,7 @@ curl -X POST 'http://<主机地址>:7777/api/hooks/<token>' \
 - 这是**公开入口**，鉴权完全依赖地址里的随机 token，不要再套主配对码；
 - 外部服务必须能访问到主机地址，局域网 IP 只适合内网；跨网络用 Tailscale 或 HTTPS 反向代理；
 - 目前没有 HMAC 签名校验和 token 轮换按钮，不要把这个地址贴到公开仓库；
-- 请求体上限 1MB，只接受 POST；处理是同步的，LLM 判断慢时外部服务可能会重试，`externalId` 会负责去重。
+- 请求体上限 1MB，只接受 POST；`webhook()` 返回后立即回应，模型判断在后台做。外部服务重发同一条时，`externalId` 会负责去重（判断途中重发也不会建出两个任务）。
 
 ## 长连接插件
 
@@ -277,6 +290,9 @@ export async function start(config, ctx) {
     }]);
     console.log('建了', result.created, '个任务');
   });
+  client.on('reconnecting', (n) => ctx.status(`重连中（第 ${n} 次）`));
+  client.on('reconnected', () => ctx.status('已连接'));
+  client.on('gaveUp', (err) => ctx.fail(err));   // 插件自己不再重连了：交给静静重启
   return () => client.close();
 }
 ```
@@ -286,6 +302,8 @@ export async function start(config, ctx) {
 | 字段 | 说明 |
 | --- | --- |
 | `ingest(items)` | 把条目交给核心去重、判断、建任务；返回 `{scanned, created, details}` |
+| `status(detail)` | 连接正常，更新设置页上的状态说明（比如「已连接」「重连中（第 2 次）」） |
+| `fail(reason, { retry })` | 连接彻底断了、插件自己不会再重连时调用。静静会调用停止函数，然后按退避时间自动重启（30 秒起，每次翻倍，最长 30 分钟；稳定跑满 5 分钟后退避清零）。`retry: false` 表示重连也没用（比如被别处的登录顶掉），停在错误状态等用户处理 |
 | `log(msg)` | 写入服务日志 |
 | `settings` | 全局设置 |
 | `instanceId` / `pluginId` | 当前实例 id 和插件 id |
@@ -297,8 +315,9 @@ export async function start(config, ctx) {
 
 - 启用插件 → 核心调用 `start()`；
 - 停用、保存配置、重新加载 → 核心先调用停止函数；
-- 服务重启 → 所有已启用的 lifecycle 插件自动重新启动；
-- `start()` 抛错或 15 秒内没有连上，插件状态会显示为错误，不会影响其他插件。
+- 服务重启 → 所有已启用的 lifecycle 插件并行重新启动，不等它们连上，服务先起来；
+- `start()` 抛错或 30 秒内没有返回，插件状态显示为错误，并按上面的退避时间自动重试，不会影响其他插件。超时后 `start()` 才连上的，静静会立刻调用停止函数关掉它；
+- 停掉以后，旧连接迟到的 `ingest` / `status` / `fail` 一律忽略。
 
 `poll()` 仍然必须导出，长连接插件返回 `{ items: [] }` 即可。
 
@@ -337,7 +356,8 @@ Webhook 的 `ctx` 还包含 `rawBody`、`headers`、`query`，方便插件做签
   content: '纯文本，建议 <= 2000 字',
   url: 'https://example.com/item/1',
   occurredAt: '2026-11-13T04:00:00.000Z',
-  meta: { from: '...' }
+  meta: { from: '...' },
+  replyTo: { chatId: '...' }       // 可选：任务结果发回哪里（配合导出的 reply()）
 }
 ```
 
@@ -349,13 +369,26 @@ Webhook 的 `ctx` 还包含 `rawBody`、`headers`、`query`，方便插件做签
 - 插件不要自己建任务、不要写数据库、不要直接改界面；
 - 单次 `poll()` 超过 90 秒会被中止；请把 `ctx.signal` 传给 `fetch`。
 
+## 把任务结果发回原会话（可选）
+
+消息类来源（企微、Slack、邮件……）可以让静静把任务结果发回给发消息的人：
+
+1. 条目带上 `replyTo`：插件自己认识的「发回哪里」，比如 `{ chatId }`。不超过 2000 字符的 JSON，静静原样存在任务上、原样交回；
+2. 导出 `reply(config, { to, text, task }, ctx)`：`to` 就是那个 `replyTo`，`text` 是要发的内容（可能很长，按渠道的长度限制自己截断），`task` 是 `{ id, title }`。发不出去就抛错，错误信息会显示给用户。长连接插件可以借 `start()` 建好的连接发；
+3. 什么时候发由静静决定：
+   - 完成的任务上有「发回原会话」按钮，用户可以先改再发；
+   - 插件设置页有「任务完成后自动发回原会话」开关，**默认关闭**。打开后任务一完成就发，交给 Worker 的指令里会注明「结果会原样发回，直接写给对方」。
+
+插件不要自己决定什么时候回消息（收到时回一句「收到」这种回执除外）。
+
 ## 哪些行为由静静控制
 
 | 行为 | 由谁决定 |
 | --- | --- |
 | 拉取频率、超时 | 静静（每个来源单独配置，manifest 的 `intervalMinutes` 是默认值） |
 | 去重键、已读/跳过 | 静静 |
-| 是否建任务、任务标题、Worker、优先级 | 静静（模型判断 + 本文规则） |
+| 是否建任务、任务标题、优先级 | 静静（模型判断 + 本文规则） |
+| 交给哪个 Worker | 你（工作流程、分配规则；都没命中就用开销最低的文本 Worker） |
 | 任务在哪个工作区执行 | 静静（来源插件在设置页绑定的工作区） |
 | 是否等你审批、任务何时执行 | 静静 |
 | 配置表单长什么样 | 静静按 manifest 的 `config` 渲染 |
@@ -366,10 +399,11 @@ Webhook 的 `ctx` 还包含 `rawBody`、`headers`、`query`，方便插件做签
 
 ## 核心会怎么处理
 
-1. 过滤已见过的 `externalId`；
-2. 把新条目批量交给模型判断：要不要行动、优先级、任务标题、执行提示；
+1. 过滤已见过的 `externalId`（先占位再判断，判断途中同一条再进来也算见过）；
+2. 把新条目批量交给模型判断：要不要行动、优先级、任务标题、执行提示、属于哪个工作流程；
 3. 模型不可用时退回关键词规则；
-4. 需要行动的建任务（Worker 先看分配规则，没命中就用开销最低的文本 Worker，通常是 `llm`），并在主对话里留一条汇总；
+4. 需要行动的建任务。**外部来源的条目不能自己指定 Worker**：消息里点名的（「用 deepseek 查一下」）、模型挑的、按文字推断出的能力都不算，只认你配置的——工作流程指定的 Worker > 分配规则 > 开销最低的文本 Worker。工作流程先用原消息匹配触发词，没命中再看模型挑的流程（只能在你配好的流程里选）和模型改写的任务名。比如企微群里有人 @ 机器人说「用 deepseek 查蓝马的 bug」，而你的「查 bug」流程配了 Claude Code，那就交给 Claude Code。只有你自己在对话里（Web、配对的 Telegram）才能点名 Worker。主对话里的汇总会写明交给了谁、按哪个流程或规则；
+   - 流程和分配规则都没命中，但消息**点名了一个本机可用的 Worker**（按它声明的 `keywords`，比如「用 codex 查本地代码」），或**明显需要默认 Worker 没有的能力**（只认强信号：代码、仓库、git、生成文件……；「测试」「删除」这类日常用语不算）：任务建好先停在拍板，不执行，问你交给谁——「交给 Codex / 以后这类都交给 Codex / 只用问答回文字 / 不处理」。选「以后这类都交给它」会建一条只管这个来源的分配规则（点名的按 Worker 的 `keywords`，能力的按触发的那个词），同类消息下次直接交过去、不再问；规则可以在「设置 → Worker」里改或删。这个判断全靠关键词，不调模型；
 5. 不需要行动的记为 `skipped`，不打扰你；
 6. 更新插件的「上次运行 / 结果 / 错误」，设置页可见。
 
@@ -405,7 +439,8 @@ Worker 是执行器：拿到一个任务，跑一轮，返回结果。它和来�
 | | 内置 Worker | Worker 插件 |
 | --- | --- | --- |
 | 位置 | `<app>/workers/<id>/`，随在线升级更新 | `<数据目录>/plugins/<id>/` |
-| 删除 | 隐藏，可「恢复内置 Worker」 | 文件和配置一起删除 |
+| 停用 | 设置里关掉开关，仍留在列表里 | 同左 |
+| 删除 | 不能删除 | 文件和配置一起删除 |
 | id 冲突 | — | 不能和内置 Worker 同名 |
 
 ### plugin.json
@@ -445,6 +480,8 @@ Worker 是执行器：拿到一个任务，跑一轮，返回结果。它和来�
 `timeoutMinutes` / `concurrency` / `retries` 只是默认值，用户可以在「设置 → Worker → 配置」里按主机覆盖。
 
 ### Router 怎么挑 Worker
+
+下面是你在对话里（Web、配对的 Telegram）发消息时的顺序。来源插件发现的条目（邮件、企微、Webhook……）只走第 1、2、6 步：外人写的内容不能点名 Worker，也不让模型替它挑。
 
 按顺序：
 
@@ -498,7 +535,7 @@ Worker 只通过 `ctx` 使用宿主能力，不要 import 静静的核心模块�
 | `secrets` | 只有内置 Worker 能拿到 `{ apiKey }`；第三方插件是 `{}` |
 | `workspace` | 任务工作目录的绝对路径 |
 | `paths.sandbox` | 静静的沙箱目录 |
-| `resume` | 从审批恢复时是 `{ question, options, choice }`，`choice < 0` 表示用户取消；否则为 `null` |
+| `resume` | 从审批恢复时是 `{ question, options, choice, answer? }`，`choice < 0` 表示用户取消；用户没选选项、自己写了决定时带 `answer`（同时追加在 `options` 末尾、`choice` 指向它）；否则为 `null` |
 | `sessionId` | 上一轮返回的 `sessionId`，或断点里存的 `sessionId`，用于续跑 |
 | `checkpoint(data)` | 存断点（合并进本次执行记录，最多 64KB），返回合并后的断点。存了 `sessionId` 会同步到 `ctx.sessionId` |
 | `recovery` | 服务重启后带着断点恢复时是 `{ at, runId, checkpoint }`，否则为 `null` |
@@ -540,6 +577,7 @@ curl -X POST "$JINGJING_REPORT_URL" \
 ```
 
 - 返回 `needs_approval` 后任务挂起、Worker 退出；用户拍板后会重新调用 `execute`，`ctx.resume` 里带着选择。
+- `approval.custom: true` 时，拍板卡片上会多一个输入框，用户可以不选选项、直接写自己的决定（`ctx.parseApproval` 解析出来的审批默认开启）。按选项下标做不同操作的 Worker（比如「归档 / 取消 / 列清单」）不要开，免得自己写的决定落进默认分支。
 - 抛出异常或返回非法结果都按 `failed` 处理，不会卡住队列。
 - 取消和超时由调度器负责：`signal` 触发后调度器立刻释放槽位，**之后 `execute` 返回的任何结果都会被丢弃**。请尽快响应 `signal`，尤其是自己启动的子进程（用 `ctx.exec` 就不用操心）。
 

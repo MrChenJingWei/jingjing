@@ -105,6 +105,12 @@ export async function notifyTask(task) {
 
 /* --------------------------- Telegram 双向通道 --------------------------- */
 
+/** 是不是主人自己的会话：和设置里的 Chat ID 一致才算；没配 Chat ID 时谁都不认。 */
+export function fromOwner(chat, settings = getSettings()) {
+  const expected = String(settings.channels?.telegram?.chatId ?? '').trim();
+  return Boolean(expected) && chat?.id !== undefined && chat?.id !== null && String(chat.id) === expected;
+}
+
 async function pollLoop(token) {
   if (polling) return;
   polling = true;
@@ -122,6 +128,12 @@ async function pollLoop(token) {
       const data = await res.json();
       for (const update of data.result || []) {
         offset = update.update_id + 1;
+        // 机器人的用户名谁都能搜到：只认设置里配置的那个会话，别人发来的消息和按钮一律丢掉。
+        const chat = update.callback_query ? update.callback_query.message?.chat : update.message?.chat;
+        if (!fromOwner(chat)) {
+          if (chat?.id !== undefined) console.warn(`[channel] 忽略了 Telegram 会话 ${chat.id} 发来的消息：不是设置里配置的 Chat ID`);
+          continue;
+        }
         if (update.callback_query) {
           const [tag, approvalId, index] = String(update.callback_query.data || '').split(':');
           if (tag === 'approve' && approvalHandler) {
@@ -168,6 +180,13 @@ export function restartTelegram() {
     pollAbort?.abort();
     console.log('[channel] Telegram 已停止');
   }
+}
+
+/** 服务退出时停掉 Telegram 长轮询。 */
+export function stopTelegram() {
+  if (!polling) return;
+  polling = false;
+  pollAbort?.abort();
 }
 
 export function channelStatus() {
