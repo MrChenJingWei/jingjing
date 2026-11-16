@@ -47,6 +47,8 @@ jobs:
           # 更新说明（「关于与更新」里给用户看的）：tag 附注写了内容就用它，否则用 tag 指向的那个提交的标题；
           # 这样从 main 手动重跑、或补发安装包时，说明不会变成最后一个 ci / chore 提交。
           VERSION="$(node -p "require('./package.json').version")"
+          # actions/checkout 拉 tag 时会把附注 tag 变成轻量 tag，读不到附注；重新取一次真正的 tag。
+          git fetch --force --tags origin >/dev/null 2>&1 || true
           NOTES="$(git log -1 --pretty=%s)"
           if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
             NOTES="$(git log -1 --pretty=%s "v$VERSION^{commit}")"
