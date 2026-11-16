@@ -82,12 +82,12 @@ export async function loadBuiltinWorkers(dir = BUILTIN_WORKER_DIR) {
  * 注册第三方 Worker 插件。isolate=true（默认）时 execute 在独立线程里跑，
  * detect / test 仍在主线程同步调用，所以它们必须足够快。
  */
-export function registerWorkerPlugin({ manifest, module, dir, isolate = true }) {
+export function registerWorkerPlugin({ manifest, module, dir, isolate = true, origin = 'user' }) {
   const existing = workerRegistry.get(manifest.id);
   if (existing?.source === 'builtin') throw new Error(`Worker id「${manifest.id}」与内置 Worker 冲突`);
-  if (existing && existing.dir !== dir) throw new Error(`Worker id「${manifest.id}」已被占用`);
+  // 同 id 的插件重新加载、或「我的」覆盖官方时直接替换；同一轮加载里的重复 id 由 plugins.js 拦下。
   assertWorkerModule(module);
-  register({ id: manifest.id, source: 'plugin', dir, manifest, module, isolate });
+  register({ id: manifest.id, source: 'plugin', origin, dir, manifest, module, isolate });
 }
 
 export function unregisterWorkerPlugin(id) {
@@ -120,8 +120,14 @@ export function isWorker(id) {
   return workerRegistry.has(id) && !isWorkerDeleted(id);
 }
 
+/** 内置 Worker 和官方 Worker 插件随 App 发布，只能隐藏，不能删文件。 */
+export function isShippedWorker(id) {
+  const descriptor = workerRegistry.get(id);
+  return descriptor?.source === 'builtin' || descriptor?.origin === 'official';
+}
+
 export function deleteBuiltinWorker(id) {
-  if (!isBuiltinWorker(id)) throw new Error('不是内置 Worker');
+  if (!isShippedWorker(id)) throw new Error('不是内置或官方 Worker');
   db.prepare(`
     INSERT INTO worker_configs(id, enabled, deleted, config, updated_at) VALUES(?, 1, 1, '{}', ?)
     ON CONFLICT(id) DO UPDATE SET deleted = 1, updated_at = excluded.updated_at
@@ -132,7 +138,7 @@ export function deleteBuiltinWorker(id) {
 export function restoreBuiltinWorkers() {
   const update = db.prepare('UPDATE worker_configs SET deleted = 0 WHERE id = ?');
   for (const descriptor of workerRegistry.values()) {
-    if (descriptor.source === 'builtin') update.run(descriptor.id);
+    if (isShippedWorker(descriptor.id)) update.run(descriptor.id);
   }
   return { ok: true };
 }
@@ -253,6 +259,8 @@ export function availability() {
       description: manifest.description,
       version: manifest.version,
       source: descriptor.source,
+      // builtin：随 App 的核心 Worker；official：你维护的官方 Worker 插件；user：用户自己装的
+      origin: descriptor.source === 'builtin' ? 'builtin' : descriptor.origin || 'user',
       enabled: row ? Boolean(row.enabled) : true,
       abilities: manifest.worker.abilities,
       cost: manifest.worker.cost,
@@ -290,6 +298,12 @@ export function defaultWorker() {
 
 /* --------------------------------- 执行 --------------------------------- */
 
+function parseTaskOptions(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value) || {}; } catch { return {}; }
+}
+
 function hostContext(descriptor, task, ctx) {
   const settings = getSettings();
   const signal = ctx.signal;
@@ -310,6 +324,8 @@ function hostContext(descriptor, task, ctx) {
     secrets: descriptor.source === 'builtin' ? { apiKey: settings.apiKey || '' } : {},
     resume: ctx.resume || null,
     sessionId: task.resume_payload?.session_id || null,
+    // 任务级运行选项，比如插件草稿任务的 { allowEdits: true }：允许编码 Agent 在工作目录里直接改文件。
+    options: parseTaskOptions(task.options),
     memories: ctx.memories || [],
     tasks: ctx.tasks || [],
     workers: workerCatalog({ onlyAvailable: true }),

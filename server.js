@@ -9,10 +9,11 @@ import * as memory from './src/memory.js';
 import * as scheduler from './src/scheduler.js';
 import * as router from './src/router.js';
 import * as channels from './src/channels.js';
-import { availability, testWorker, saveWorkerConfig, isBuiltinWorker, deleteBuiltinWorker, restoreBuiltinWorkers, loadBuiltinWorkers, defaultWorker } from './src/workers.js';
+import { availability, testWorker, saveWorkerConfig, isShippedWorker, deleteBuiltinWorker, restoreBuiltinWorkers, loadBuiltinWorkers, defaultWorker } from './src/workers.js';
 import * as workerRules from './src/worker-rules.js';
 import * as workflows from './src/workflows.js';
 import * as archive from './src/archive.js';
+import * as forge from './src/plugin-forge.js';
 import { chat as llmChat } from './src/llm.js';
 import * as plugins from './src/plugins.js';
 import * as discovery from './src/discovery.js';
@@ -120,6 +121,7 @@ function bootstrap() {
     workerRules: workerRules.listWorkerRules(),
     workers: availability(),
     workflows: workflows.overview(),
+    pluginDrafts: forge.listDrafts(),
     stats: scheduler.stats(),
     plugins: plugins.listPlugins(),
     pluginErrors: plugins.pluginErrors(),
@@ -374,6 +376,31 @@ const server = http.createServer(async (req, res) => {
         const result = await router.proposeWorkflow(id, { force: true });
         return json(res, 200, { ...result, ...workflows.overview() });
       }
+    }
+
+    // 插件工坊：让静静写插件。安装只能由用户在界面上点「安装」触发。
+    if (pathname === '/api/plugin-drafts' && req.method === 'GET') {
+      return json(res, 200, { drafts: forge.listDrafts() });
+    }
+    if (pathname === '/api/plugin-drafts' && req.method === 'POST') {
+      const body = await readBody(req);
+      const draft = forge.createDraft({ kind: body.kind, request: body.request, sessionId: router.MAIN_SESSION });
+      if (draft.taskId) {
+        router.postAssistant(`好，我让编码 Worker 写一个${draft.kindLabel}：${draft.request.slice(0, 60)}。写完先自动检查，通过后你确认再安装。`, { kind: 'task', taskId: draft.taskId });
+      }
+      return json(res, 200, { draft, drafts: forge.listDrafts() });
+    }
+    const draftMatch = pathname.match(/^\/api\/plugin-drafts\/(d_[A-Za-z0-9]+)(?:\/(files|install|discard|retry))?$/);
+    if (draftMatch) {
+      const [, id, action] = draftMatch;
+      if (req.method === 'GET' && !action) return json(res, 200, { draft: forge.getDraft(id) });
+      if (req.method === 'GET' && action === 'files') return json(res, 200, { files: forge.draftFiles(id) });
+      if (req.method === 'POST' && action === 'install') {
+        const result = await forge.installDraft(id);
+        return json(res, 200, { ...result, drafts: forge.listDrafts(), plugins: plugins.listPlugins(), workers: availability() });
+      }
+      if (req.method === 'POST' && action === 'discard') return json(res, 200, { draft: forge.discardDraft(id), drafts: forge.listDrafts() });
+      if (req.method === 'POST' && action === 'retry') return json(res, 200, { draft: forge.retryDraft(id), drafts: forge.listDrafts() });
     }
 
     if (pathname === '/api/workflows' && req.method === 'GET') {
@@ -688,7 +715,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, result);
       }
       if (req.method === 'DELETE' && !isTest) {
-        if (isBuiltinWorker(id)) deleteBuiltinWorker(id);
+        if (isShippedWorker(id)) deleteBuiltinWorker(id);
         else plugins.removeWorkerPlugin(id);
         const workers = availability();
         bus.emit('workers/updated', { workers });
@@ -759,9 +786,27 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { plugin, plugins: list, errors: plugins.pluginErrors() });
     }
 
-    const pluginMatch = pathname.match(/^\/api\/plugins\/([^/]+)(?:\/(test|scan))?$/);
+    const pluginMatch = pathname.match(/^\/api\/plugins\/([^/]+)(?:\/(test|scan|fork|restore-official))?$/);
     if (pluginMatch) {
       const [, id, action] = pluginMatch;
+      if (req.method === 'POST' && (action === 'fork' || action === 'restore-official')) {
+        const plugin = plugins.getPlugin(id);
+        if (!plugin) return fail(res, 404, '插件不存在');
+        await discovery.stopLifecycles();
+        let forkedId = null;
+        try {
+          if (action === 'fork') forkedId = plugins.forkOfficial(plugin.pluginId);
+          else plugins.restoreOfficial(plugin.pluginId);
+        } finally {
+          await plugins.reloadPlugins();
+          await discovery.startLifecycles();
+        }
+        const list = plugins.listPlugins();
+        const errors = plugins.pluginErrors();
+        bus.emit('plugins/updated', { plugins: list, errors });
+        bus.emit('workers/updated', { workers: availability() });
+        return json(res, 200, { plugins: list, errors, forkedId, workers: availability() });
+      }
       if (req.method === 'PUT' && !action) {
         const body = await readBody(req);
         const plugin = plugins.savePlugin(id, body);
@@ -827,6 +872,17 @@ await loadBuiltinWorkers();
 plugins.seedBuiltins();
 await plugins.reloadPlugins();
 await discovery.startLifecycles();
+// 插件工坊：写好的插件通过对话卡片通知用户；用户点「安装」后重新加载插件。
+forge.configure({
+  post: (text, options) => router.postAssistant(text, options),
+  reload: async () => {
+    await discovery.stopLifecycles();
+    const list = await plugins.reloadPlugins();
+    await discovery.startLifecycles();
+    bus.emit('plugins/updated', { plugins: list, errors: plugins.pluginErrors() });
+    bus.emit('workers/updated', { workers: availability() });
+  }
+});
 scheduler.init();
 // 每 6 小时检查一次，每天最多自动归档一次；启动一分钟后先检查一次。
 const runArchive = () => {

@@ -269,6 +269,14 @@ Worker 是执行器，不是任务来源。内置 Worker 包括：问答、文�
 
 DeepSeek Harness 已经是内置 Worker，任务里选「DeepSeek Harness」即可用 `dsh headless` 执行。
 
+## 官方插件、我的插件，以及让静静自己写插件
+
+- **官方插件**：项目维护的常用来源插件 / Worker 插件（邮箱、日历、Webhook、企业微信……），随静静发布和在线升级，只读；想改就「复制为我的插件」。
+- **我的插件**：自己安装的、自己写的、让静静写的，放在数据目录，升级永远不会覆盖；和官方同 id 时覆盖官方，随时可以「恢复官方版本」。
+- **让静静写**：对它说「写一个拉取 RSS 的来源插件」，或在插件页点「让静静写一个」。它会交给 Claude Code / Codex 等编码 Worker（没有的话用云端模型）在草稿目录里写，自动检查（规范、不重名、只用 Node 自带模块、能正常加载），没通过就让它接着修；通过后把代码给你看，**你点「安装」才会装上**。官方已经有类似插件时会先提示你用官方的。
+
+细节和维护流程见 [docs/PLUGIN.md](docs/PLUGIN.md)。
+
 
 ### Worker 分配规则
 
@@ -389,8 +397,10 @@ jingjing/
 │   ├── archive.js         旧数据打包、清理、搜索、恢复
 │   ├── scheduler.js       队列、挂起恢复、事件日志、重试
 │   ├── router.js          Router、规则、对话
-│   ├── plugins.js         来源插件加载、配置、状态
+│   ├── plugins.js         插件加载（官方 + 我的）、配置、状态
 │   ├── plugin-spec.js     manifest / config 规范校验
+│   ├── plugin-forge.js    插件工坊：让静静写插件、检查、确认后安装
+│   ├── plugin-probe.js    检查插件草稿用的隔离线程
 │   ├── discovery.js       去重、模型判断、建任务
 │   ├── channels.js        Telegram / 飞书 / Webhook
 │   ├── auth.js            配对码、会话 Cookie、限流
@@ -401,12 +411,16 @@ jingjing/
 ├── workers/               内置 Worker（和 Worker 插件同一种格式）
 │   ├── llm/ file/ shell/ memory/
 │   └── claude/ codex/ dsh/
-├── plugins/               任务来源插件
+├── plugins/               官方插件（随 App 发布，只读）
 │   ├── plugin.schema.json manifest 的 JSON Schema
+│   ├── AUTHORING.md       精简编写规范（静静写插件时交给编码 Agent）
 │   ├── .template/         新来源插件模板
 │   ├── .template-worker/  新 Worker 插件模板
 │   ├── email-imap/        IMAP 客户端 + MIME 解析
-│   └── calendar/          ICS 解析 + 日程任务
+│   ├── calendar/          ICS 解析 + 日程任务
+│   ├── webhook/           通用 Webhook 接收
+│   └── wecom/             企业微信（构建产物，源码在 plugin-src/wecom）
+├── plugin-src/            带 npm 依赖的官方插件源码，npm run plugins:build 打包到 plugins/
 ├── packaging/macos/       Swift 菜单栏 App + 打包脚本
 ├── .github/workflows/     tag 触发：测试、打包升级包、发 Release
 ├── scripts/               常驻服务安装 / 卸载 / 重置 / 升级包打包

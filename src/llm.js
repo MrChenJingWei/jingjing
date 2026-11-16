@@ -199,7 +199,8 @@ export function demoReply(text) {
   if (/(记住|记一下|记下)/.test(t)) {
     return '好，我记下了。以后做计划和回话时，我会把它带在上下文里。';
   }
-  if (/(任务|进度|待办|今天该做|安排)/.test(t)) {
+  // 只在问任务板时这样回，不能看到「任务」两个字就套用（比如「实现任务来源插件」）。
+  if (/(任务板|任务列表|进度|待办|今天该做|怎么安排)/.test(t)) {
     return '我把当前的任务板整理在「任务」页了。要我现在把最该先做的一件挑出来，或者替你排个顺序吗？';
   }
   if (t.endsWith('?') || t.endsWith('？')) {
@@ -283,9 +284,11 @@ export function demoTaskOutput({ task, memories = [], tasks = [] }) {
 /* 意图识别                                                            */
 /* ------------------------------------------------------------------ */
 
-const INTENTS = new Set(['chat', 'remember', 'task', 'status', 'recall']);
+const INTENTS = new Set(['chat', 'remember', 'task', 'status', 'recall', 'plugin']);
+// 要静静写一个新插件：「写一个 RSS 来源插件」「实现任务来源插件并安装它」
+const PLUGIN_RE = /(写|做|开发|实现|生成|创建|新建|搞|弄)(一个|个|一份)?.{0,24}(插件|plugin)/i;
 
-const ACTION_RE = /(帮我|帮忙|请|安排|提醒|整理|检查|修复|写|做一个|跑一下|执行|部署|总结|生成|清洗|归档|清理|重命名|移动|看看|看一下|处理)/;
+const ACTION_RE = /(帮我|帮忙|请|安排|提醒|整理|检查|修复|写|做一个|做个|跑一下|执行|部署|总结|生成|清洗|归档|清理|重命名|移动|看看|看一下|处理|实现|开发|安装|接入|配置|搭建|创建|新建|添加|加一个|改一下|修改|优化|升级|迁移|导出|导入|同步|翻译|调研|分析|我想要|我希望|我需要)/;
 
 /**
  * 离线意图识别。只判断意图和标题；具体派给哪个 Worker 由 worker-routing 按能力决定。
@@ -293,10 +296,17 @@ const ACTION_RE = /(帮我|帮忙|请|安排|提醒|整理|检查|修复|写|做
 export function heuristicClassify(text) {
   const t = String(text || '').trim();
   const out = { intent: 'chat', worker: null, title: '', reason: 'heuristic' };
-  const isAction = ACTION_RE.test(t) && t.length >= 4;
+  // 以「？」「吗」结尾的是提问；但「能帮我看看这个吗？」这类带请求词的仍算要做事。
+  const asking = /(?:[?？]|吗)\s*$/.test(t) && !/(帮我|帮忙|麻烦|请你|请帮)/.test(t);
+  const isAction = ACTION_RE.test(t) && t.length >= 4 && !asking;
 
   if (/(记住|记一下|记下|帮我记)/.test(t) || /我(?:更)?(?:喜欢|偏好|习惯|通常|一般|不喜欢|讨厌)/.test(t)) {
     out.intent = 'remember';
+    return out;
+  }
+  if (PLUGIN_RE.test(t) && !asking) {
+    out.intent = 'plugin';
+    out.title = makeTitle(t);
     return out;
   }
   // 「待办」「今天该做」既可能是问进度，也可能是要求做事：带动作词时按任务处理。
@@ -324,11 +334,12 @@ export function makeTitle(text) {
 
 export async function classify(text, { history = [], workers = [], workflows = [] } = {}) {
   const cfg = getSettings();
-  if (cfg.provider === 'demo') return heuristicClassify(text);
+  if (llmMode(cfg) === 'demo') return heuristicClassify(text);
 
   const system = [
     '你是个人 AI 管家「静静」的 Router。结合最近对话，把用户当前这句话分类成一个意图，只输出 JSON。',
-    'intent 取值：chat（闲聊/咨询）、remember（要求记住事实或偏好）、task（要求执行一件事）、status（询问任务进度）、recall（检索记忆）。',
+    'intent 取值：chat（闲聊/咨询）、remember（要求记住事实或偏好）、task（要求执行一件事）、status（询问任务进度）、recall（检索记忆）、plugin（要求给静静写一个新的任务来源插件或 Worker 插件）。',
+    'pluginKind 仅在 intent=plugin 时填写：source（接收 / 拉取外部消息、事件的来源插件）或 worker（执行任务的 Worker 插件）。',
     'worker 仅在 intent=task 时填写，从下面的可用 Worker 里选最合适、开销最低的一个：',
     ...(workers.length
       ? workers.map((w) => `- ${w.id}（${w.label}）${w.description ? `：${w.description}` : ''}${w.abilities?.length ? ` [能力：${w.abilities.join(', ')}]` : ''}`)
@@ -338,7 +349,7 @@ export async function classify(text, { history = [], workers = [], workflows = [
       'workflow 仅在 intent=task 且请求明显属于下面某个用户配置的工作流程时填写它的 id，否则留空：',
       ...workflows.map((w) => `- ${w.id}：${w.name}${w.when ? `（触发词：${w.when}）` : ''}${w.hint ? `，${w.hint}` : ''}`)
     ] : []),
-    'JSON 结构：{"intent":"...","worker":"...","title":"...","workflow":""}'
+    'JSON 结构：{"intent":"...","worker":"...","title":"...","workflow":"","pluginKind":""}'
   ].join('\n');
 
   try {
@@ -362,6 +373,7 @@ export async function classify(text, { history = [], workers = [], workflows = [
       worker: allowed.has(parsed.worker) ? parsed.worker : null,
       title: parsed.title ? truncate(String(parsed.title), 30) : makeTitle(text),
       workflow: workflows.some((w) => w.id === parsed.workflow) ? parsed.workflow : null,
+      pluginKind: ['source', 'worker'].includes(parsed.pluginKind) ? parsed.pluginKind : null,
       reason: 'model',
       tokens: res.tokens
     };

@@ -1,5 +1,5 @@
-const CACHE = 'jingjing-shell-v18';
-const ASSET_VERSION = '20261116-1';
+const CACHE = 'jingjing-shell-v19';
+const ASSET_VERSION = '20261116-2';
 const ASSETS = [
   '/',
   '/index.html',

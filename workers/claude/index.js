@@ -24,6 +24,8 @@ async function runOnce(bin, task, ctx, { resumeId, prompt }) {
   const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
   if (resumeId) args.push('--resume', resumeId);
   else args.push('--session-id', sessionId);
+  // 静静明确允许改文件的任务（比如在插件草稿目录里写插件）才自动接受编辑；其他任务交给用户自己的权限配置。
+  if (ctx.options?.allowEdits) args.push('--permission-mode', 'acceptEdits');
   await ctx.checkpoint({ sessionId });
 
   let final = null;

@@ -12,7 +12,9 @@ export async function execute(task, ctx) {
     ? `${task.prompt}\n\n用户的选择：${ctx.resume.choice >= 0 ? ctx.resume.options?.[ctx.resume.choice] : '取消'}`
     : task.prompt;
   await ctx.emit('Codex 已启动…');
-  const result = await ctx.exec(bin, ['exec', '--skip-git-repo-check', prompt], { cwd: ctx.workspace });
+  // 静静明确允许改文件的任务才用 --full-auto（只能写工作目录）；其他任务按 codex 自己的默认沙箱。
+  const args = ['exec', ...(ctx.options?.allowEdits ? ['--full-auto'] : []), '--skip-git-repo-check', prompt];
+  const result = await ctx.exec(bin, args, { cwd: ctx.workspace });
   if (result.error === 'aborted') return { status: 'cancelled', summary: '任务已停止。' };
   const text = (result.stdout || result.stderr).trim() || `Codex 退出码 ${result.code}`;
   if (result.code !== 0) return { status: 'failed', summary: text.slice(-1200) };

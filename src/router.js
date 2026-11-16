@@ -9,8 +9,9 @@ import * as scheduler from './scheduler.js';
 import { workerCatalog, isWorker, defaultWorker } from './workers.js';
 import { pickWorker } from './worker-routing.js';
 import { matchWorkerRule } from './worker-rules.js';
-import { classify, heuristicClassify, chat as llmChat, chatWithTools, toolsSupported, demoReply, makeTitle } from './llm.js';
+import { classify, heuristicClassify, chat as llmChat, chatWithTools, toolsSupported, demoReply, makeTitle, llmMode } from './llm.js';
 import * as workflows from './workflows.js';
+import * as forge from './plugin-forge.js';
 
 const MAIN_SESSION = 'main';
 
@@ -159,6 +160,9 @@ function routerTools(workers, flows) {
       worker: { type: 'string', description: '最合适、开销最低的 Worker id', ...(workerIds.length ? { enum: workerIds } : {}) },
       ...(flowIds.length ? { workflow: { type: 'string', description: '请求明显属于某个工作流程时填它的 id', enum: flowIds } } : {})
     }, ['title']),
+    fn('create_plugin', '用户要你给静静写一个新的插件时调用：任务来源插件（接收 / 拉取外部消息、事件）或 Worker 插件（执行任务）。', {
+      kind: { type: 'string', enum: ['source', 'worker'], description: 'source：来源插件；worker：Worker 插件' }
+    }, ['kind']),
     fn('remember', '用户要求你记住一个事实或偏好时调用。'),
     fn('show_status', '用户询问任务进度、状态或待办情况时调用。'),
     fn('recall', '用户询问你之前记住过的内容时调用。')
@@ -196,6 +200,9 @@ async function routeWithTools(clean, { priorMessages, settings }) {
       reply: null
     };
   }
+  if (call.name === 'create_plugin') {
+    return { decision: { intent: 'plugin', reason: 'model', pluginKind: args.kind === 'worker' ? 'worker' : 'source' }, reply: null };
+  }
   const intents = { remember: 'remember', show_status: 'status', recall: 'recall' };
   return { decision: { intent: intents[call.name] || 'chat', reason: 'model' }, reply: intents[call.name] ? null : res.text || '' };
 }
@@ -211,7 +218,7 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
   // 命中用户配置的工作流程（或确认过的习惯）就直接按流程派活，不用再让模型猜。
   // 明显是在提问、要记东西或问进度的消息不套流程。
   const quick = heuristicClassify(clean);
-  const asking = /(?:[?？]|吗)\s*$/.test(clean) || ['remember', 'status', 'recall'].includes(quick.intent);
+  const asking = /(?:[?？]|吗)\s*$/.test(clean) || ['remember', 'status', 'recall', 'plugin'].includes(quick.intent);
   const flowHit = asking ? null : workflows.matchWorkflow(clean);
   let decision;
   let directReply = null;
@@ -263,6 +270,23 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     reply = statusReply();
   } else if (decision.intent === 'recall') {
     reply = recallReply(clean);
+  } else if (decision.intent === 'plugin') {
+    const kind = decision.pluginKind || forge.inferKind(clean);
+    // 官方已经有类似插件时先提示，免得重复造轮子；用户明确要另写时再动手。
+    const official = /(另写|重新写|自己写|不用官方|新写一个)/.test(clean) ? null : forge.findSimilarOfficial(clean, kind);
+    if (official) {
+      const where = kind === 'worker' ? '设置 → Worker' : '设置 → 任务来源插件 → 官方';
+      reply = `官方已经有「${official.name}」${official.description ? `：${official.description}` : ''}\n\n在${where}里启用、填好配置就能用。如果它不合适，跟我说「还是帮我另写一个」，我再动手写。`;
+    } else {
+      try {
+        const draft = forge.createDraft({ kind, request: clean, sessionId });
+        task = draft.taskId ? scheduler.getTask(draft.taskId) : null;
+        const who = draft.mode === 'agent' ? `「${workerCatalog().find((w) => w.id === draft.worker)?.label || draft.worker}」` : '模型';
+        reply = `好，我让${who}写一个${draft.kindLabel}。写完我会先自动检查（清单规范、只用 Node 自带模块、能不能正常加载），没通过就让它接着修，最多 ${draft.maxRounds} 轮。通过以后会把代码给你看，**你点「安装」才会装上**。`;
+      } catch (err) {
+        reply = err.message;
+      }
+    }
   } else if (decision.intent === 'task') {
     const workflow = flowHit?.workflow || (decision.workflow ? workflows.getWorkflow(decision.workflow) : null);
     const workspace = workflows.resolveWorkspace(workflow, settings) || pickWorkspace(clean, settings);
@@ -318,7 +342,7 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     if (directReply) {
       // 工具调用那一次已经给出了回答，不用再调一次模型。
       answer = directReply;
-    } else if (settings.provider === 'demo') {
+    } else if (llmMode(settings) === 'demo') {
       answer = demoReply(clean);
     } else {
       try {

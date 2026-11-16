@@ -7,31 +7,84 @@ import { db, now, getSettings, getSetting, setSetting } from './db.js';
 import { validateManifest, validateConfig } from './plugin-spec.js';
 import { registerWorkerPlugin, unregisterWorkerPlugin, listWorkerPlugins } from './workers.js';
 
+/**
+ * 插件有两个来源：
+ * - 官方：<app>/plugins/，随 App 发布和在线升级，只读；
+ * - 我的：<data>/plugins/，用户安装、自己写或让静静写的，App 升级永远不会覆盖。
+ * 「我的」里出现和官方同 id 的插件时，加载「我的」那份（覆盖官方）；删掉它就恢复官方版本，
+ * 实例配置按插件 id 存，覆盖 / 恢复都不会丢。
+ */
 export const PLUGIN_DIR = path.join(ROOT, 'plugins');
 export const USER_PLUGIN_DIR = path.join(DATA_DIR, 'plugins');
+const MIGRATED_DIR = path.join(USER_PLUGIN_DIR, '.migrated');
 const MASK = '••••••••';
 
-/**
- * 首次启动把随安装包发布的插件复制到数据插件目录。
- * 之后所有插件都在同一个目录里，一视同仁，可以删除。
- */
-export function seedBuiltins() {
-  if (getSetting('builtinPluginsSeeded')) return;
-  fs.mkdirSync(USER_PLUGIN_DIR, { recursive: true });
-  if (fs.existsSync(PLUGIN_DIR)) {
-    for (const entry of fs.readdirSync(PLUGIN_DIR, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-      const source = path.join(PLUGIN_DIR, entry.name);
-      const destination = path.join(USER_PLUGIN_DIR, entry.name);
-      if (!fs.existsSync(destination)) fs.cpSync(source, destination, { recursive: true });
-    }
+function listFiles(dir, base = dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === '.DS_Store') continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listFiles(full, base));
+    else if (entry.isFile()) out.push(path.relative(base, full));
   }
-  setSetting('builtinPluginsSeeded', true);
+  return out.sort();
 }
 
-/** id -> { manifest, dir, module, loadedAt } */
+function sameContent(a, b) {
+  try {
+    const left = listFiles(a);
+    const right = listFiles(b);
+    if (left.join('\n') !== right.join('\n')) return false;
+    return left.every((file) => fs.readFileSync(path.join(a, file)).equals(fs.readFileSync(path.join(b, file))));
+  } catch {
+    return false;
+  }
+}
+
+/** 复制出来以后有没有被改过：所有文件的修改时间都在目录创建后 1 分钟内，就当没改过。 */
+function untouchedSinceCopy(dir) {
+  try {
+    const created = fs.statSync(dir).birthtimeMs;
+    if (!created) return false;
+    return listFiles(dir).every((file) => fs.statSync(path.join(dir, file)).mtimeMs - created < 60 * 1000);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 旧版本会在第一次启动时把官方插件复制到数据目录，之后官方更新就到不了用户手里。
+ * 迁移一次：没改过的副本挪到 plugins/.migrated/ 备份（不删除），改用官方版本；改过的保留，当作「我的」。
+ */
+export function migrateSeededCopies() {
+  if (getSetting('officialPluginsMigrated')) return [];
+  const moved = [];
+  if (fs.existsSync(USER_PLUGIN_DIR) && fs.existsSync(PLUGIN_DIR)) {
+    for (const entry of fs.readdirSync(PLUGIN_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const copy = path.join(USER_PLUGIN_DIR, entry.name);
+      if (!fs.existsSync(copy)) continue;
+      if (!sameContent(path.join(PLUGIN_DIR, entry.name), copy) && !untouchedSinceCopy(copy)) continue;
+      fs.mkdirSync(MIGRATED_DIR, { recursive: true });
+      fs.renameSync(copy, path.join(MIGRATED_DIR, `${entry.name}-${Date.now()}`));
+      moved.push(entry.name);
+    }
+  }
+  if (moved.length) console.log(`[plugin] 已改用官方版本：${moved.join('、')}（旧副本备份在 plugins/.migrated/）`);
+  setSetting('officialPluginsMigrated', true);
+  return moved;
+}
+
+/** 兼容旧调用：启动时执行一次迁移。 */
+export function seedBuiltins() {
+  return migrateSeededCopies();
+}
+
+/** id -> { manifest, dir, module, source: 'official' | 'user', shadows: officialManifest | null, loadedAt } */
 const registry = new Map();
 const loadErrors = [];
+/** 官方插件清单：id -> { manifest, dir }，包括被「我的」覆盖的那些。 */
+const officialCatalog = new Map();
 
 function ensureDefaultInstance(manifest) {
   const count = db.prepare('SELECT COUNT(*) AS c FROM source_plugins WHERE plugin_id = ?').get(manifest.id).c;
@@ -84,33 +137,54 @@ function parseFieldDefaults(fields = []) {
   return out;
 }
 
-/** 扫描数据目录的插件目录，重新加载所有插件。 */
+function scanDir(root, source) {
+  if (!fs.existsSync(root)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    const dir = path.join(root, entry.name);
+    if (!fs.existsSync(path.join(dir, 'plugin.json'))) continue;
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(dir, 'plugin.json'), 'utf8'));
+      out.push({ name: entry.name, dir, source, manifest: validateManifest(raw, { dir, dirName: entry.name }) });
+    } catch (err) {
+      loadErrors.push({ plugin: entry.name, source, error: err.message });
+      console.warn(`[plugin] ${source === 'official' ? '官方' : ''}插件 ${entry.name} 不合规范：${err.message}`);
+    }
+  }
+  return out;
+}
+
+/** 扫描官方和「我的」两个插件目录，重新加载所有插件。 */
 export async function reloadPlugins() {
   loadErrors.length = 0;
   fs.mkdirSync(USER_PLUGIN_DIR, { recursive: true });
-  const seen = new Map();
   const loaded = new Set();
   const loadedWorkers = new Set();
-  const dirs = fs.readdirSync(USER_PLUGIN_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-    .map((entry) => entry.name);
 
-  for (const name of dirs) {
-    const dir = path.join(USER_PLUGIN_DIR, name);
-    const manifestPath = path.join(dir, 'plugin.json');
-    if (!fs.existsSync(manifestPath)) continue;
+  // 官方在前，「我的」同 id 的覆盖官方。
+  officialCatalog.clear();
+  const candidates = new Map();
+  for (const item of scanDir(PLUGIN_DIR, 'official')) {
+    officialCatalog.set(item.manifest.id, { manifest: item.manifest, dir: item.dir });
+    candidates.set(item.manifest.id, { ...item, shadows: null });
+  }
+  for (const item of scanDir(USER_PLUGIN_DIR, 'user')) {
+    const existing = candidates.get(item.manifest.id);
+    if (existing && existing.source === 'user') {
+      loadErrors.push({ plugin: item.name, source: 'user', error: `插件 id「${item.manifest.id}」已被目录「${existing.name}」占用` });
+      continue;
+    }
+    candidates.set(item.manifest.id, { ...item, shadows: existing?.source === 'official' ? existing.manifest : null });
+  }
+
+  for (const { name, dir, source, manifest, shadows } of candidates.values()) {
     try {
-      const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      const manifest = validateManifest(raw, { dir, dirName: name });
-      if (seen.has(manifest.id)) {
-        throw new Error(`插件 id「${manifest.id}」已被目录「${seen.get(manifest.id)}」占用`);
-      }
-      seen.set(manifest.id, name);
       const stat = fs.statSync(path.join(dir, manifest.entry));
       const url = `${pathToFileURL(path.join(dir, manifest.entry)).href}?v=${stat.mtimeMs}`;
       const module = await import(url);
       if (manifest.kind === 'worker') {
-        registerWorkerPlugin({ manifest, module, dir });
+        registerWorkerPlugin({ manifest, module, dir, origin: source });
         loadedWorkers.add(manifest.id);
         continue;
       }
@@ -118,11 +192,11 @@ export async function reloadPlugins() {
       if (manifest.webhook && typeof module.webhook !== 'function') throw new Error('声明了 webhook 但没有导出 webhook()');
       if (manifest.lifecycle && typeof module.start !== 'function') throw new Error('声明了 lifecycle 但没有导出 start()');
       if (module.test !== undefined && typeof module.test !== 'function') throw new Error('test 必须是一个函数');
-      registry.set(manifest.id, { manifest, dir, module, source: 'user', loadedAt: new Date().toISOString() });
+      registry.set(manifest.id, { manifest, dir, module, source, shadows, loadedAt: new Date().toISOString() });
       ensureDefaultInstance(manifest);
       loaded.add(manifest.id);
     } catch (err) {
-      loadErrors.push({ plugin: name, source: 'user', error: err.message });
+      loadErrors.push({ plugin: name, source, error: err.message });
       console.warn(`[plugin] 加载 ${name} 失败：${err.message}`);
     }
   }
@@ -158,12 +232,23 @@ export function findWebhookPlugin(token) {
   return plugin;
 }
 
-/** 删除插件：文件、配置和启用状态一起移除；已建任务保留。 */
+/** 删除插件：文件、配置和启用状态一起移除；已建任务保留。官方插件只能删多出来的实例，默认实例只能停用。 */
 export function uninstallPlugin(id) {
   const plugin = getPlugin(id);
   if (!plugin) throw new Error('插件不存在');
+  if (plugin.source === 'official' && id === plugin.pluginId) {
+    const err = new Error('官方插件不能删除，不用的话停用就好；想改它可以「复制为我的插件」');
+    err.statusCode = 400;
+    throw err;
+  }
   const remaining = db.prepare('SELECT COUNT(*) AS c FROM source_plugins WHERE plugin_id = ? AND id <> ?')
     .get(plugin.pluginId, id).c;
+  if (plugin.source === 'official') {
+    db.prepare('DELETE FROM source_plugins WHERE id = ?').run(id);
+    db.prepare('DELETE FROM plugin_state WHERE instance_id = ?').run(id);
+    db.prepare('DELETE FROM plugin_runs WHERE instance_id = ?').run(id);
+    return { ok: true, purged: false };
+  }
   db.prepare('DELETE FROM source_plugins WHERE id = ?').run(id);
   db.prepare('DELETE FROM plugin_state WHERE instance_id = ?').run(id);
   db.prepare('DELETE FROM plugin_runs WHERE instance_id = ?').run(id);
@@ -184,11 +269,66 @@ export function removeWorkerPlugin(id) {
   if (!worker) throw new Error('Worker 插件不存在');
   const root = path.resolve(USER_PLUGIN_DIR) + path.sep;
   const target = path.resolve(worker.dir);
-  if (!target.startsWith(root)) throw new Error('Worker 目录不在数据插件目录内');
+  if (!target.startsWith(root)) throw new Error('官方 Worker 插件不能删除，可以停用或隐藏');
   fs.rmSync(target, { recursive: true, force: true });
   unregisterWorkerPlugin(id);
   db.prepare('DELETE FROM worker_configs WHERE id = ?').run(id);
   return { ok: true };
+}
+
+function userCopyOf(pluginId) {
+  const dir = path.join(USER_PLUGIN_DIR, pluginId);
+  return fs.existsSync(path.join(dir, 'plugin.json')) ? dir : null;
+}
+
+/**
+ * 把官方插件复制一份到「我的」，换一个新 id，之后可以随便改；官方版本照常保留和更新。
+ * 返回新插件的 id。
+ */
+export function forkOfficial(pluginId) {
+  const official = officialCatalog.get(pluginId);
+  if (!official) throw Object.assign(new Error('没有这个官方插件'), { statusCode: 404 });
+  const base = `${pluginId.slice(0, 26)}-mine`;
+  let id = base;
+  for (let i = 2; fs.existsSync(path.join(USER_PLUGIN_DIR, id)) || officialCatalog.has(id); i += 1) id = `${base}${i}`;
+  const target = path.join(USER_PLUGIN_DIR, id);
+  fs.cpSync(official.dir, target, { recursive: true });
+  const manifestPath = path.join(target, 'plugin.json');
+  const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  raw.id = id;
+  raw.name = `${raw.name}（我的）`.slice(0, 60);
+  fs.writeFileSync(manifestPath, `${JSON.stringify(raw, null, 2)}\n`);
+  return id;
+}
+
+/** 删掉「我的」里覆盖官方的那一份，恢复官方版本。实例配置保留。旧文件挪到 .migrated/ 备份。 */
+export function restoreOfficial(pluginId) {
+  if (!officialCatalog.has(pluginId)) throw Object.assign(new Error('没有这个官方插件'), { statusCode: 404 });
+  const copy = userCopyOf(pluginId);
+  if (!copy) throw Object.assign(new Error('当前用的已经是官方版本'), { statusCode: 400 });
+  fs.mkdirSync(MIGRATED_DIR, { recursive: true });
+  fs.renameSync(copy, path.join(MIGRATED_DIR, `${pluginId}-${Date.now()}`));
+  return { ok: true };
+}
+
+export function isOfficialPlugin(pluginId) {
+  return officialCatalog.has(pluginId);
+}
+
+/** 官方插件的清单列表（含被「我的」覆盖的），给「静静写插件」查有没有现成的用。 */
+export function officialManifests() {
+  return [...officialCatalog.values()].map((item) => item.manifest);
+}
+
+/** 所有插件 id（官方 + 我的，含 Worker），给「静静写插件」查重用。 */
+export function knownPluginIds() {
+  const ids = new Set(officialCatalog.keys());
+  if (fs.existsSync(USER_PLUGIN_DIR)) {
+    for (const entry of fs.readdirSync(USER_PLUGIN_DIR, { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.name.startsWith('.')) ids.add(entry.name);
+    }
+  }
+  return ids;
 }
 
 export function createInstance(pluginId, label = '') {
@@ -273,7 +413,10 @@ export function listPlugins() {
       configSchema: manifest.config || [],
       enabled: Boolean(row.enabled),
       source: item.source || 'user',
-      removable: true,
+      // 「我的」覆盖了官方同 id 插件时，带上官方版本号，界面上可以提示「官方有更新」并一键恢复。
+      overridesOfficial: Boolean(item.shadows),
+      officialVersion: item.shadows?.version || (item.source === 'official' ? manifest.version : null),
+      removable: item.source !== 'official' || row.id !== pluginId,
       webhook: manifest.type === 'webhook',
       lifecycle: manifest.type === 'stream',
       webhookPath: token ? `/api/hooks/${token}` : null,
@@ -313,7 +456,8 @@ export function getPlugin(instanceId) {
     config: readConfig(item.manifest, row),
     enabled: Boolean(row.enabled),
     source: item.source || 'user',
-    removable: true,
+    overridesOfficial: Boolean(item.shadows),
+    removable: item.source !== 'official' || row.id !== pluginId,
     workspaceId: row.workspace_id || null,
     type: item.manifest.type || 'poll',
     multiInstance: Boolean(item.manifest.multiInstance),

@@ -9,7 +9,7 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon-192.png" />
-  <link rel="stylesheet" href="/style.css?v=20261116-1" />
+  <link rel="stylesheet" href="/style.css?v=20261116-2" />
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
@@ -236,6 +236,7 @@
               <h2 id="settings-title">—</h2>
               <p id="settings-desc"></p>
             </div>
+            <span class="dirty-hint" id="settings-dirty" hidden>有改动还没保存</span>
             <button class="solid-btn" id="save-settings">保存</button>
           </div>
 
@@ -313,6 +314,7 @@
             <div class="install-actions" style="margin-top:10px">
               <input type="file" id="worker-file" accept=".zip,application/zip" hidden />
               <label class="mini-btn primary" for="worker-file" id="install-worker-btn" role="button" tabindex="0">安装 Worker 插件</label>
+              <button type="button" class="mini-btn" data-forge="worker">让静静写一个</button>
               <button type="button" class="mini-btn" id="restore-workers">恢复内置 Worker</button>
             </div>
             <div class="worker-rule-head">
@@ -404,6 +406,7 @@
                 <h3>任务来源插件</h3>
                 <div class="plugin-head-actions">
                   <label for="plugin-file" class="mini-btn primary" id="install-plugin-btn" role="button" tabindex="0">安装插件</label>
+                  <button type="button" class="mini-btn" data-forge="source">让静静写一个</button>
                   <button type="button" class="mini-btn" id="reload-plugins">重新加载</button>
                 </div>
               </div>
@@ -502,12 +505,24 @@
       <p id="dialog-desc" class="dialog-desc"></p>
       <div id="dialog-body"></div>
       <div class="dialog-actions">
-        <button value="cancel" class="ghost-btn" type="submit">取消</button>
+        <button value="cancel" class="ghost-btn" type="submit" formnovalidate>取消</button>
         <button value="ok" class="solid-btn" type="submit">确定</button>
       </div>
     </form>
   </dialog>
 
-  <script type="module" src="/app.js?v=20261116-1"></script>
+  <dialog class="dialog" id="unsaved-dialog">
+    <form method="dialog">
+      <h3>设置还没保存</h3>
+      <p class="dialog-desc">你改了设置但还没保存，不保存的话这些改动不会生效。</p>
+      <div class="dialog-actions">
+        <button value="stay" class="ghost-btn" type="submit">继续编辑</button>
+        <button value="discard" class="ghost-btn" type="submit">不保存</button>
+        <button value="save" class="solid-btn" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/app.js?v=20261116-2"></script>
 </body>
 </html>

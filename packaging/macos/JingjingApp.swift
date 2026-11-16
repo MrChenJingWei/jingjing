@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
     private var pendingApprovals = 0
     private var sigterm: DispatchSourceSignal?
+    private var openedOnStart = false
 
     private let fm = FileManager.default
 
@@ -297,8 +298,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.updateStatus()
                 self.mainWindow.setServerReady(ok)
                 if ok { self.events.start() }
-                let suppress = ProcessInfo.processInfo.environment["JINGJING_NO_AUTO_OPEN"] == "1"
-                if ok && !suppress && !UserDefaults.standard.bool(forKey: "didAutoOpenWindow") {
+                let env = ProcessInfo.processInfo.environment
+                let suppress = env["JINGJING_NO_AUTO_OPEN"] == "1"
+                // 开发时（dev.sh）每次启动都打开窗口；正式安装只在第一次启动时自动打开。
+                let alwaysOpen = env["JINGJING_OPEN_WINDOW"] == "1"
+                if ok && !suppress && !self.openedOnStart
+                    && (alwaysOpen || !UserDefaults.standard.bool(forKey: "didAutoOpenWindow")) {
+                    self.openedOnStart = true
                     UserDefaults.standard.set(true, forKey: "didAutoOpenWindow")
                     self.openWindow()
                 }

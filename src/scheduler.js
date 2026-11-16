@@ -99,7 +99,9 @@ export function createTask({
   groupKey = '',
   hops = 0,
   workflowId = null,
-  workflowName = ''
+  workflowName = '',
+  // 传给 Worker 的运行选项（ctx.options），比如插件草稿任务的 { allowEdits: true }。
+  options = null
 }) {
   const chosen = worker || defaultWorker();
   if (!chosen) {
@@ -117,12 +119,13 @@ export function createTask({
   const stamp = now();
   const cleanTitle = String(title || prompt || '未命名任务').slice(0, 80);
   db.prepare(`
-    INSERT INTO tasks(id, title, prompt, worker, cwd, status, priority, origin, rule_id, session_id, group_key, hops, workflow_id, recoveries, created_at, updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
+    INSERT INTO tasks(id, title, prompt, worker, cwd, status, priority, origin, rule_id, session_id, group_key, hops, workflow_id, options, recoveries, created_at, updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
   `).run(
     id, cleanTitle, String(prompt || cleanTitle), chosen,
     cwd || settings.defaultCwd || '', 'queued', priority, origin, ruleId, sessionId,
-    groupKey || null, Math.max(0, Number(hops) || 0), workflowId || null, stamp, stamp
+    groupKey || null, Math.max(0, Number(hops) || 0), workflowId || null,
+    options ? JSON.stringify(options) : null, stamp, stamp
   );
   event(id, 'task/created', { worker: chosen, origin, title: cleanTitle, source, ...(workflowId ? { workflowId, workflow: workflowName } : {}) });
   const task = getTask(id);

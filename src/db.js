@@ -219,6 +219,7 @@ ensureColumn('tasks', 'workflow_id', 'TEXT');
 ensureColumn('messages', 'meta', 'TEXT');
 ensureColumn('tasks', 'run_id', 'TEXT');
 ensureColumn('tasks', 'recoveries', 'INTEGER');
+ensureColumn('tasks', 'options', 'TEXT');
 ensureColumn('approvals', 'kind', 'TEXT');
 db.exec(`
   -- 每次执行一条运行记录：任务的生命周期由「任务状态 + 运行记录 + 事件」三者在本地还原。

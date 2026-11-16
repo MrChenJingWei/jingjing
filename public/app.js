@@ -51,6 +51,7 @@ const state = {
   settings: null,
   workers: {},
   workflows: { workflows: [], dirs: [], errors: [], root: '' },
+  pluginDrafts: [],
   stats: {},
   tasks: [],
   approvals: [],
@@ -313,7 +314,15 @@ $('#conn')?.setAttribute('title', '点击刷新页面并重新连接');
 
 /* ------------------------------- views -------------------------------- */
 
-function switchView(name) {
+function switchView(name, { force = false } = {}) {
+  // 设置页有没保存的改动时，离开前先问。
+  if (!force && state.view === 'settings' && settingsDirty()) {
+    confirmLeaveSettings().then((ok) => {
+      if (ok) switchView(name, { force: true });
+      else if (location.hash !== '#settings') history.replaceState(null, '', '#settings');
+    });
+    return;
+  }
   state.view = name;
   $$('.view').forEach((v) => v.classList.toggle('is-active', v.dataset.view === name));
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
@@ -425,6 +434,135 @@ function approvalBlock(task, approval) {
     </div>`;
 }
 
+/* ------------------------- 插件工坊：静静写的插件 ------------------------- */
+
+const DRAFT_STATUS = { writing: '正在写', checking: '正在检查', ready: '检查通过，待你确认', failed: '没通过检查', installed: '已安装', discarded: '已放弃' };
+const CAPABILITY_LABEL = { network: '联网', read: '读文件', write: '写文件' };
+
+function pluginDraftCard(msg) {
+  const d = (state.pluginDrafts || []).find((item) => item.id === msg.meta?.draftId);
+  if (!d) return '';
+  const report = d.report || {};
+  const info = report.info || {};
+  const caps = Object.entries(info.capabilities || {}).filter(([, on]) => on).map(([key]) => CAPABILITY_LABEL[key] || key);
+  const facts = [
+    info.description,
+    info.files?.length ? `${info.files.length} 个文件：${info.files.map((f) => f.name).join('、')}` : '',
+    info.kind === 'source' ? `需要的权限：${caps.length ? caps.join('、') : '无'}` : '',
+    info.abilities?.length ? `能力：${info.abilities.map((a) => ABILITY_LABEL[a] || a).join('、')}` : '',
+    info.config?.length ? `需要你填的配置：${info.config.map((f) => f.label + (f.required ? '（必填）' : '')).join('、')}` : '',
+    info.testSkipped || ''
+  ].filter(Boolean);
+  const errors = (report.errors || []).map((e) => `<li class="is-error">${esc(e)}</li>`).join('');
+  const warnings = (report.warnings || []).map((w) => `<li class="is-warn">${esc(w)}</li>`).join('');
+  const busy = d.status === 'writing' || d.status === 'checking';
+  const actions = {
+    ready: `<button class="mini-btn primary" data-action="draft-install" data-id="${d.id}">安装</button>
+            <button class="mini-btn" data-action="draft-files" data-id="${d.id}">查看代码</button>
+            <button class="mini-btn" data-action="draft-discard" data-id="${d.id}">放弃</button>`,
+    failed: `<button class="mini-btn" data-action="draft-retry" data-id="${d.id}">再试一次</button>
+             <button class="mini-btn" data-action="draft-files" data-id="${d.id}">查看代码</button>
+             <button class="mini-btn" data-action="draft-discard" data-id="${d.id}">放弃</button>`,
+    installed: `<button class="mini-btn" data-action="draft-open-plugin" data-id="${d.id}">去配置</button>
+                <button class="mini-btn" data-action="draft-files" data-id="${d.id}">查看代码</button>`,
+    writing: `${d.taskId ? `<button class="mini-btn" data-action="open-task" data-id="${d.taskId}">看进度</button>` : ''}
+              <button class="mini-btn" data-action="draft-discard" data-id="${d.id}">放弃</button>`,
+    checking: ''
+  }[d.status] || '';
+  return `
+    <div class="task-card draft-card" data-draft-id="${d.id}">
+      <div class="task-card-head">
+        <div class="task-card-icon">${d.kind === 'worker' ? '工' : '插'}</div>
+        <div class="task-card-main">
+          <div class="task-card-title">${esc(d.name || info.name || d.request.slice(0, 40))}</div>
+          <div class="task-card-meta">
+            <span>${esc(d.kindLabel)}</span><span>·</span>
+            <span>${esc(DRAFT_STATUS[d.status] || d.status)}${busy && d.rounds > 1 ? `（第 ${d.rounds}/${d.maxRounds} 轮）` : ''}</span>
+            ${info.id ? `<span>·</span><span>${esc(info.id)} v${esc(info.version || '')}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      ${facts.length ? `<div class="task-card-body">${facts.map((f) => `<div>${esc(f)}</div>`).join('')}</div>` : ''}
+      ${errors || warnings ? `<ul class="draft-checks">${errors}${warnings}</ul>` : ''}
+      ${d.status === 'ready' ? '<div class="approval-note">插件会以你的账户权限在静静里运行，安装前建议先看一眼代码。</div>' : ''}
+      <div class="task-card-actions">${actions}</div>
+    </div>`;
+}
+
+async function handleDraftAction(action, el) {
+  const id = el.dataset.id;
+  const draft = (state.pluginDrafts || []).find((item) => item.id === id);
+  try {
+    if (action === 'draft-files') {
+      const { files } = await api(`/api/plugin-drafts/${id}/files`);
+      openDialog({
+        title: `代码：${draft?.name || id}`,
+        desc: '只读预览。插件会以你的账户权限运行，看到可疑的地方就别装。',
+        body: files.map((f) => `<div class="draft-file"><b>${esc(f.name)}</b> <small>${f.size} 字节</small><pre>${esc(f.content)}</pre></div>`).join('') || '<p>没有文件。</p>',
+        onSubmit: async () => {}
+      });
+      return;
+    }
+    if (action === 'draft-install') {
+      if (!confirm(`安装「${draft?.name || id}」？它会以你的账户权限在静静里运行。`)) return;
+      el.disabled = true;
+      const data = await api(`/api/plugin-drafts/${id}/install`, { method: 'POST', timeoutMs: 30000 });
+      state.pluginDrafts = data.drafts || state.pluginDrafts;
+      if (data.plugins) state.plugins = data.plugins;
+      if (data.workers) state.workers = data.workers;
+      renderChat();
+      toast(data.kind === 'worker' ? '已安装，在设置 → Worker 里可以看到它。' : '已安装，默认停用：去设置 → 任务来源插件里填好配置再启用。', 4200);
+      return;
+    }
+    if (action === 'draft-discard') {
+      if (!confirm('放弃这个插件草稿？草稿文件会删除，还在写的任务会停掉。')) return;
+      const data = await api(`/api/plugin-drafts/${id}/discard`, { method: 'POST' });
+      state.pluginDrafts = data.drafts || state.pluginDrafts;
+      renderChat();
+      return;
+    }
+    if (action === 'draft-retry') {
+      const data = await api(`/api/plugin-drafts/${id}/retry`, { method: 'POST' });
+      state.pluginDrafts = data.drafts || state.pluginDrafts;
+      renderChat();
+      toast('好，再让它改一轮。');
+      return;
+    }
+    if (action === 'draft-open-plugin') {
+      if (draft?.kind === 'worker') { switchView('settings'); openSettingsPage('worker'); return; }
+      switchView('settings');
+      openSettingsPage('plugins');
+      if (draft?.pluginId && (state.plugins || []).some((p) => p.id === draft.pluginId)) openPluginPage(draft.pluginId);
+    }
+  } catch (err) {
+    el.disabled = false;
+    toast(err.message);
+  }
+}
+
+// 插件页 / Worker 页的「让静静写一个」
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-forge]');
+  if (!button) return;
+  const kind = button.dataset.forge;
+  openDialog({
+    title: '让静静写一个插件',
+    desc: '说清楚要从哪里拿数据 / 让它干什么。静静会交给能写代码的 Worker 去写，自动检查通过后再请你确认安装。',
+    body: `
+      <label class="field"><span>类型</span><select name="kind">
+        <option value="source" ${kind === 'source' ? 'selected' : ''}>任务来源插件：接收 / 拉取外部消息、事件</option>
+        <option value="worker" ${kind === 'worker' ? 'selected' : ''}>Worker 插件：执行任务</option>
+      </select></label>
+      <label class="field span-2"><span>需求</span><textarea name="request" rows="5" required placeholder="${kind === 'worker' ? '例如：调用本机的 aider 命令行，在任务工作区里改代码' : '例如：每 30 分钟拉一次某个 RSS 地址，新文章交给静静判断'}"></textarea></label>`,
+    onSubmit: async (values) => {
+      const data = await api('/api/plugin-drafts', { method: 'POST', body: { kind: values.kind, request: values.request } });
+      state.pluginDrafts = data.drafts || state.pluginDrafts;
+      toast('开始写了，进度在对话里。', 3200);
+      switchView('chat');
+    }
+  });
+});
+
 function workflowById(id) {
   return (state.workflows?.workflows || []).find((w) => w.id === id) || null;
 }
@@ -468,6 +606,7 @@ function messageHtml(msg, index) {
         <div class="bubble">${body}</div>
         ${task ? inlineTaskCard(task) : ''}
         ${msg.kind === 'workflow' ? workflowCard(msg) : ''}
+        ${msg.kind === 'plugin-draft' ? pluginDraftCard(msg) : ''}
         ${index === state.messages.length - 1 ? `<div class="msg-time">${clock(msg.created_at)}</div>` : ''}
       </div>
     </div>`;
@@ -978,6 +1117,7 @@ function openSettingsPage(id) {
   const desc = $('#settings-desc');
   if (title) title.textContent = page.title;
   if (desc) desc.textContent = page.desc;
+  settingsBaseline = null;
   fillSettings();
   const save = $('#save-settings');
   if (save) save.hidden = !page.needsSave;
@@ -993,6 +1133,7 @@ function openSettingsPage(id) {
   if (id === 'about') refreshUpdateStatus();
   if (id === 'worker') { renderWorkerGrid(); renderWorkerRules(); }
   if (id === 'channels') renderChannelBadges();
+  markSettingsClean();
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
@@ -1000,7 +1141,73 @@ $('#settings-list')?.addEventListener('click', (event) => {
   const item = event.target.closest('[data-settings-page]');
   if (item) openSettingsPage(item.dataset.settingsPage);
 });
-$('#settings-back')?.addEventListener('click', showSettingsIndex);
+$('#settings-back')?.addEventListener('click', async () => {
+  if (await confirmLeaveSettings()) showSettingsIndex();
+});
+
+/* ------------------------- 设置：未保存的改动提醒 ------------------------- */
+
+// 打开设置页时记下表单的样子，之后和它比较，判断有没有没保存的改动。
+let settingsBaseline = null;
+
+function settingsFormValues() {
+  const page = SETTINGS_PAGES.find((item) => item.id === state.settingsPage);
+  if (!page?.needsSave) return null;
+  const panel = document.querySelector(`[data-settings-panel="${page.id}"]`);
+  if (!panel) return null;
+  return JSON.stringify($$('[name]', panel).map((input) => [input.name, input.type === 'checkbox' ? input.checked : input.value]));
+}
+
+function settingsDirty() {
+  if (settingsBaseline === null) return false;
+  const current = settingsFormValues();
+  return current !== null && current !== settingsBaseline;
+}
+
+function markSettingsClean() {
+  settingsBaseline = settingsFormValues();
+  updateSettingsDirty();
+}
+
+function updateSettingsDirty() {
+  const dirty = settingsDirty();
+  $('#save-settings')?.classList.toggle('is-dirty', dirty);
+  const hint = $('#settings-dirty');
+  if (hint) hint.hidden = !dirty;
+}
+
+function askUnsaved() {
+  const dialog = $('#unsaved-dialog');
+  if (!dialog?.showModal) return Promise.resolve(confirm('设置还没保存，要保存吗？') ? 'save' : 'discard');
+  return new Promise((resolve) => {
+    dialog.returnValue = '';
+    dialog.addEventListener('close', () => resolve(dialog.returnValue || 'stay'), { once: true });
+    dialog.showModal();
+  });
+}
+
+/** 离开设置页前调用：没有改动直接放行；有改动时问「保存 / 不保存 / 继续编辑」。返回是否可以离开。 */
+async function confirmLeaveSettings() {
+  if (state.view !== 'settings' || !settingsDirty()) return true;
+  const choice = await askUnsaved();
+  if (choice === 'save') return saveSettings();
+  if (choice === 'discard') {
+    settingsBaseline = null;
+    fillSettings();
+    markSettingsClean();
+    return true;
+  }
+  return false;
+}
+
+$('#settings-form')?.addEventListener('input', updateSettingsDirty);
+$('#settings-form')?.addEventListener('change', updateSettingsDirty);
+window.addEventListener('beforeunload', (event) => {
+  if (state.view === 'settings' && settingsDirty()) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
 
 /* --------------------------- 在线更新（GitHub） -------------------------- */
 
@@ -1097,11 +1304,14 @@ $('#update-rollback')?.addEventListener('click', () => runUpdate('/api/update/ro
 function fillSettings() {
   if (!state.settings) return;
   const form = $('#settings-form');
-  $$('[name]', form).forEach((input) => {
-    const value = getPath(state.settings, input.name);
-    if (input.type === 'checkbox') input.checked = Boolean(value);
-    else input.value = value ?? '';
-  });
+  // 正在编辑、还没保存时，后台同步过来的数据不覆盖表单。
+  if (!settingsDirty()) {
+    $$('[name]', form).forEach((input) => {
+      const value = getPath(state.settings, input.name);
+      if (input.type === 'checkbox') input.checked = Boolean(value);
+      else input.value = value ?? '';
+    });
+  }
   renderWorkerGrid();
   renderChannelBadges();
   renderPlugins();
@@ -1149,7 +1359,8 @@ function renderWorkerGrid() {
   const entries = Object.entries(state.workers || {});
   $('#worker-grid').innerHTML = entries.map(([key, w]) => {
     const abilities = (w.abilities || []).map((a) => ABILITY_LABEL[a] || a).join(' · ');
-    const origin = w.source === 'plugin' ? 'Worker 插件' : '内置';
+    const origin = { builtin: '内置', official: '官方插件', user: '我的插件' }[w.origin] || 'Worker 插件';
+    const shipped = w.origin === 'builtin' || w.origin === 'official';
     const status = w.available ? w.detail || '可用' : w.detail || '不可用';
     return `
     <div class="worker-item ${w.available ? '' : 'is-off'}" data-worker="${key}" title="${esc(w.description || '')}">
@@ -1158,7 +1369,7 @@ function renderWorkerGrid() {
       <span class="worker-item-actions">
         <button type="button" class="mini-btn" data-worker-config="${key}">配置</button>
         <button type="button" class="mini-btn" data-worker-test="${key}">检测</button>
-        <button type="button" class="mini-btn danger" data-worker-delete="${key}">删除</button>
+        <button type="button" class="mini-btn danger" data-worker-delete="${key}">${shipped ? '隐藏' : '删除'}</button>
       </span>
     </div>`;
   }).join('');
@@ -1331,13 +1542,15 @@ $('#worker-grid')?.addEventListener('click', async (event) => {
   if (del) {
     const id = del.dataset.workerDelete;
     const worker = state.workers[id];
-    const builtin = worker?.source === 'builtin';
-    if (!confirm(`删除 Worker「${worker?.label || id}」？${builtin ? '删除后可以点「恢复内置 Worker」找回。' : '插件文件会一起移除。'}`)) return;
+    const shipped = worker?.origin === 'builtin' || worker?.origin === 'official';
+    if (!confirm(shipped
+      ? `隐藏 Worker「${worker?.label || id}」？它随静静发布，隐藏后可以点「恢复内置 Worker」找回。`
+      : `删除 Worker「${worker?.label || id}」？插件文件会一起移除。`)) return;
     try {
       const data = await api(`/api/workers/${id}`, { method: 'DELETE' });
       state.workers = data.workers;
       renderWorkerGrid();
-      toast(builtin ? '内置 Worker 已隐藏。' : 'Worker 已删除。');
+      toast(shipped ? 'Worker 已隐藏。' : 'Worker 已删除。');
     } catch (err) {
       toast(err.message);
     }
@@ -1627,7 +1840,9 @@ function pluginCardHtml(plugin, { detail = false } = {}) {
           ${((plugin.configSchema || []).length || type === 'poll') ? `<button type="button" class="mini-btn" data-plugin-action="save" data-id="${plugin.id}">保存配置</button>` : ''}
           <button type="button" class="mini-btn" data-plugin-action="test" data-id="${plugin.id}">测试连接</button>
           ${(type === 'poll' || type === 'manual') ? `<button type="button" class="mini-btn" data-plugin-action="scan" data-id="${plugin.id}">立即扫描</button>` : ''}
-          <button type="button" class="mini-btn danger" data-plugin-uninstall="${plugin.id}">删除来源</button>
+          ${plugin.source === 'official' ? `<button type="button" class="mini-btn" data-plugin-fork="${plugin.id}">复制为我的插件</button>` : ''}
+          ${plugin.overridesOfficial ? `<button type="button" class="mini-btn" data-plugin-restore="${plugin.id}">恢复官方版本</button>` : ''}
+          ${plugin.removable ? `<button type="button" class="mini-btn danger" data-plugin-uninstall="${plugin.id}">删除来源</button>` : ''}
           <span class="test-result" data-plugin-result="${plugin.id}"></span>
         </div>
         <div class="plugin-status ${status.lastStatus === 'error' ? 'is-error' : ''}">
@@ -1735,20 +1950,39 @@ function renderPluginList() {
     container.innerHTML = notice + `<div class="empty"><p>还没有插件。点右上角「安装插件」上传 zip，或把插件目录放进数据目录的 <code>plugins/</code>。</p></div>`;
     return;
   }
-  container.innerHTML = notice + list.map((plugin) => {
+  const row = (plugin) => {
     const status = plugin.status || {};
     const broken = status.lastStatus === 'error';
     const subName = plugin.label && plugin.label !== plugin.name ? `${plugin.name} · ` : '';
+    const override = plugin.overridesOfficial
+      ? ` · 覆盖了官方版本${versionNewer(plugin.officialVersion, plugin.version) ? '（官方有更新）' : ''}`
+      : '';
     return `<button type="button" class="plugin-row ${plugin.enabled ? 'is-enabled' : ''}${broken ? ' is-error' : ''}" data-open-plugin="${plugin.id}">
       <span class="plugin-row-glyph">${esc(plugin.icon || '插')}</span>
       <span class="plugin-row-main">
         <b>${esc(plugin.label || plugin.name)}</b>
-        <small>${esc(subName)}${esc(pluginTypeLabel(plugin))}${status.lastRun ? ` · ${esc(timeAgo(status.lastRun))}运行` : ''}${broken ? ` · ${esc(status.lastError || '上次失败')}` : ''}</small>
+        <small>${esc(subName)}${esc(pluginTypeLabel(plugin))} · v${esc(plugin.version)}${esc(override)}${status.lastRun ? ` · ${esc(timeAgo(status.lastRun))}运行` : ''}${broken ? ` · ${esc(status.lastError || '上次失败')}` : ''}</small>
       </span>
       <span class="plugin-row-state">${plugin.enabled ? '已启用' : '未启用'}</span>
       <span class="plugin-row-arrow">›</span>
     </button>`;
-  }).join('');
+  };
+  const official = list.filter((plugin) => plugin.source === 'official');
+  const mine = list.filter((plugin) => plugin.source !== 'official');
+  container.innerHTML = notice
+    + (official.length ? `<div class="settings-group-label">官方 · 随静静更新</div>${official.map(row).join('')}` : '')
+    + `<div class="settings-group-label">我的 · 自己安装或让静静写的，升级不会覆盖</div>`
+    + (mine.length ? mine.map(row).join('') : '<div class="admin-note">还没有。可以「安装插件」上传 zip、把官方插件「复制为我的插件」来改，或者让静静帮你写一个。</div>');
+}
+
+/** a 的版本号比 b 新。 */
+function versionNewer(a, b) {
+  const pa = String(a || '0').split('.').map(Number);
+  const pb = String(b || '0').split('.').map(Number);
+  for (let i = 0; i < 3; i += 1) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  }
+  return false;
 }
 
 function renderPlugins() {
@@ -1930,6 +2164,28 @@ onPluginContainers('click', async (event) => {
     }
     return;
   }
+  const fork = event.target.closest('[data-plugin-fork]');
+  const restore = event.target.closest('[data-plugin-restore]');
+  if (fork || restore) {
+    const id = (fork || restore).dataset.pluginFork || (fork || restore).dataset.pluginRestore;
+    const plugin = state.plugins.find((item) => item.id === id);
+    const question = fork
+      ? `把官方插件「${plugin?.name}」复制一份到「我的」？复制出来的是一个新插件（新 id），可以随便改；官方版本照常保留和更新。`
+      : `恢复「${plugin?.name}」的官方版本？你改过的那份会挪到数据目录的 plugins/.migrated/ 备份，配置保留。`;
+    if (!confirm(question)) return;
+    try {
+      const data = await api(`/api/plugins/${encodeURIComponent(id)}/${fork ? 'fork' : 'restore-official'}`, { method: 'POST' });
+      state.plugins = data.plugins || [];
+      state.pluginErrors = data.errors || [];
+      if (data.workers) state.workers = data.workers;
+      state.pluginPage = fork && data.forkedId ? data.forkedId : 'list';
+      renderPlugins();
+      toast(fork ? '已复制到「我的」，现在可以改它了（文件在数据目录的 plugins/ 里）。' : '已恢复官方版本。');
+    } catch (err) {
+      toast(err.message);
+    }
+    return;
+  }
   const uninstall = event.target.closest('[data-plugin-uninstall]');
   if (!uninstall) return;
   const id = uninstall.dataset.pluginUninstall;
@@ -2026,7 +2282,9 @@ async function saveSettings({ silent = false } = {}) {
     state.settings = data.settings;
     state.workers = data.workers;
     renderWorkerGrid();
+    settingsBaseline = null;
     fillSettings();
+    markSettingsClean();
     if (!silent) toast('设置已保存。');
     return true;
   } catch (err) {
@@ -2587,6 +2845,11 @@ function connectEvents() {
     }
   });
 
+  on('plugin-drafts/updated', ({ drafts }) => {
+    state.pluginDrafts = drafts || [];
+    renderChat();
+  });
+
   on('workflows/updated', (payload) => {
     state.workflows = payload;
     renderWorkflows();
@@ -2824,6 +3087,8 @@ document.addEventListener('click', async (e) => {
     } catch (err) {
       toast(err.message);
     }
+  } else if (action.startsWith('draft-')) {
+    await handleDraftAction(action, el);
   } else if (action === 'workflow-status') {
     await setWorkflowStatus(el.dataset.id, el.dataset.status);
   } else if (action === 'workflow-open') {
@@ -2875,6 +3140,7 @@ function applySnapshot(data, { initial = false } = {}) {
     rules: data.rules,
     workerRules: data.workerRules || [],
     workflows: data.workflows || { workflows: [], dirs: [], errors: [], root: '' },
+    pluginDrafts: data.pluginDrafts || [],
     plugins: data.plugins || [],
     pluginErrors: data.pluginErrors || [],
     channels: data.channels,
@@ -2963,10 +3229,8 @@ $('#logout-btn')?.addEventListener('click', async () => {
 window.jingjing = {
   desktop: /JingjingDesktop\//.test(navigator.userAgent),
   openTask: (id) => openTask(id),
-  openView: (name) => {
-    if (name === 'settings') { switchView('settings'); showSettingsIndex(); return; }
-    switchView(name);
-  }
+  // 经过 switchView，设置页有没保存的改动时同样会先问。
+  openView: (name) => switchView(name)
 };
 if (window.jingjing.desktop) document.documentElement.classList.add('is-desktop');
 

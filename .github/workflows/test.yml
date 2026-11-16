@@ -30,6 +30,9 @@ jobs:
       - name: 检查插件与内置 Worker 清单
         run: npm run plugin:check
 
+      - name: 检查官方插件的构建产物是最新的
+        run: npm run plugins:check-built
+
       - name: 检查升级包能正常打出
         run: |
           command -v zip >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y zip)
