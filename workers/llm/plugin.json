@@ -1,0 +1,20 @@
+{
+  "$schema": "../../plugins/plugin.schema.json",
+  "id": "llm",
+  "apiVersion": 1,
+  "kind": "worker",
+  "name": "问答",
+  "version": "1.0.0",
+  "icon": "事",
+  "description": "调用当前配置的模型直接交付文本结果：写作、总结、分析、答疑、出方案。只处理文本，不读写文件、不执行命令。",
+  "entry": "index.js",
+  "worker": {
+    "abilities": [
+      "text"
+    ],
+    "cost": 1,
+    "timeoutMinutes": 10,
+    "concurrency": 2,
+    "retries": 1
+  }
+}

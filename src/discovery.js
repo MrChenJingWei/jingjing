@@ -2,6 +2,8 @@ import { db, now, uid, getSettings } from './db.js';
 import { bus } from './events.js';
 import * as plugins from './plugins.js';
 import { matchWorkerRule } from './worker-rules.js';
+import { defaultWorker, workerCatalog } from './workers.js';
+import * as workflows from './workflows.js';
 import { postAssistant } from './router.js';
 import { chat as llmChat } from './llm.js';
 import * as scheduler from './scheduler.js';
@@ -213,26 +215,30 @@ export async function ingestItems(id, rawItems, { verb = '接收' } = {}) {
       details.push({ externalId: item.externalId, title: item.title, status: 'skipped', taskId: null, reason });
       continue;
     }
+    // 事项命中工作流程时，按流程指定的 Worker / 工作区派活，并把步骤附进指令。
+    const flow = workflows.matchWorkflow(`${item.title}\n${item.content || ''}`)?.workflow || null;
+    const flowWorker = flow?.worker ? workerCatalog().find((w) => w.id === flow.worker && w.available) : null;
+    const taskWorkspace = workflows.resolveWorkspace(flow) || workspace;
     const prompt = [
       decision.prompt || `处理来自「${plugin.manifest.name}」的这条事项。`,
       '',
       '---',
       `来源：${plugin.manifest.name}`,
-      `工作区：${workspace.name}（${workspace.path}）`,
+      `工作区：${taskWorkspace.name}（${taskWorkspace.path}）`,
       `判断理由：${decision.reason || '需要跟进'}`,
       `标题：${item.title}`,
       item.url ? `链接：${item.url}` : '',
       item.content ? `内容：\n${item.content}` : ''
-    ].filter(Boolean).join('\n');
+    ].filter(Boolean).join('\n') + workflows.promptSection(flow);
     const matchedRule = matchWorkerRule({
       text: `${item.title}\n${item.content || ''}`,
       source: `plugin:${id}`,
       eventType: item.eventType,
       workspaceId: workspace.id
     });
-    const worker = matchedRule?.worker || 'llm';
+    const worker = flowWorker?.id || matchedRule?.worker || defaultWorker();
     if (item.groupKey) {
-      const existing = scheduler.findMergeableTask({ groupKey: item.groupKey, worker, cwd: workspace.path });
+      const existing = scheduler.findMergeableTask({ groupKey: item.groupKey, worker, cwd: taskWorkspace.path });
       if (existing) {
         scheduler.mergeTask(existing.id, { title: item.title, text: item.content || item.title, source: id });
         const reason = decision.reason || '同一事项合并到已有任务';
@@ -245,13 +251,15 @@ export async function ingestItems(id, rawItems, { verb = '接收' } = {}) {
       title: decision.title || item.title,
       prompt,
       worker,
-      cwd: workspace.path,
+      cwd: taskWorkspace.path,
       origin: `plugin:${id}`,
       sessionId: 'main',
       priority: decision.priority || 2,
       source: id,
       groupKey: item.groupKey,
-      hops: item.hops
+      hops: item.hops,
+      workflowId: flow?.id || null,
+      workflowName: flow?.name || ''
     });
     recordItem(id, item, 'task', task.id, decision.reason || '需要处理');
     details.push({ externalId: item.externalId, title: task.title, status: 'task', taskId: task.id, reason: decision.reason || '需要处理' });

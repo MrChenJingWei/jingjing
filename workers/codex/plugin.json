@@ -1,0 +1,24 @@
+{
+  "$schema": "../../plugins/plugin.schema.json",
+  "id": "codex",
+  "apiVersion": 1,
+  "kind": "worker",
+  "name": "Codex",
+  "version": "1.0.0",
+  "icon": "码",
+  "description": "调用本机的 codex CLI（codex exec），在任务工作区里读写代码、执行命令。",
+  "entry": "index.js",
+  "worker": {
+    "abilities": [
+      "code",
+      "write-file",
+      "manage-files",
+      "text"
+    ],
+    "cost": 4,
+    "keywords": "codex",
+    "timeoutMinutes": 60,
+    "concurrency": 1,
+    "retries": 0
+  }
+}

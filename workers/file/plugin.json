@@ -1,0 +1,20 @@
+{
+  "$schema": "../../plugins/plugin.schema.json",
+  "id": "file",
+  "apiVersion": 1,
+  "kind": "worker",
+  "name": "文件生成",
+  "version": "1.0.0",
+  "icon": "文",
+  "description": "让模型生成一份文本文件（txt / md / json / csv / html 等），保存到任务工作区。",
+  "entry": "index.js",
+  "worker": {
+    "abilities": [
+      "write-file"
+    ],
+    "cost": 1,
+    "timeoutMinutes": 10,
+    "concurrency": 2,
+    "retries": 1
+  }
+}

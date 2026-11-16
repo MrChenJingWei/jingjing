@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 校验 plugins/ 下的所有来源插件清单与入口。
+ * 校验插件清单与入口：数据目录（或仓库 plugins/）里的插件，以及仓库 workers/ 里的内置 Worker。
  * 用法：npm run plugin:check
  */
 import fs from 'node:fs';
@@ -14,9 +14,10 @@ const USER_DIR = path.join(DATA_DIR, 'plugins');
 const userDirs = fs.existsSync(USER_DIR)
   ? fs.readdirSync(USER_DIR, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
   : [];
-const ROOTS = userDirs.length
-  ? [{ dir: USER_DIR, label: '插件' }]
-  : [{ dir: path.join(ROOT, 'plugins'), label: '插件' }];
+const ROOTS = [
+  userDirs.length ? { dir: USER_DIR, label: '插件' } : { dir: path.join(ROOT, 'plugins'), label: '插件' },
+  { dir: path.join(ROOT, 'workers'), label: '内置Worker', workerOnly: true }
+];
 const errors = [];
 const ok = [];
 const seen = new Map();
@@ -41,6 +42,7 @@ for (const root of ROOTS) {
       }
       seen.set(manifest.id, `${root.label}/${name}`);
       const module = await import(`${pathToFileURL(path.join(dir, manifest.entry)).href}?v=${Date.now()}`);
+      if (root.workerOnly && manifest.kind !== 'worker') throw new Error('workers/ 下只能放 kind 为 worker 的插件');
       if (manifest.kind === 'worker') {
         if (typeof module.execute !== 'function') throw new Error('Worker 入口没有导出 execute()');
         if (module.detect !== undefined && typeof module.detect !== 'function') throw new Error('detect 必须是一个函数');
@@ -52,7 +54,8 @@ for (const root of ROOTS) {
       if (module.test !== undefined && typeof module.test !== 'function') throw new Error('test 必须是一个函数');
       validateConfig(manifest, {}, { requireAll: false });
       ok.push(`${name}  ${manifest.name} v${manifest.version}`);
-      console.log(`✓ ${(root.label + '/' + name).padEnd(22)} ${manifest.name} v${manifest.version}`);
+      const extra = manifest.worker ? `  [${manifest.worker.abilities.join(', ')}]` : '';
+      console.log(`✓ ${(root.label + '/' + name).padEnd(22)} ${manifest.name} v${manifest.version}${extra}`);
     } catch (err) {
       errors.push({ plugin: `${root.label}/${name}`, error: err.message });
       console.error(`✗ ${(root.label + '/' + name).padEnd(22)} ${err.message}`);

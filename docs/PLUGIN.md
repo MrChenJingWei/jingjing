@@ -346,7 +346,7 @@ Webhook 的 `ctx` 还包含 `rawBody`、`headers`、`query`，方便插件做签
 1. 过滤已见过的 `externalId`；
 2. 把新条目批量交给模型判断：要不要行动、优先级、任务标题、执行提示；
 3. 模型不可用时退回关键词规则；
-4. 需要行动的建任务（Worker 默认 `llm`），并在主对话里留一条汇总；
+4. 需要行动的建任务（Worker 先看分配规则，没命中就用开销最低的文本 Worker，通常是 `llm`），并在主对话里留一条汇总；
 5. 不需要行动的记为 `skipped`，不打扰你；
 6. 更新插件的「上次运行 / 结果 / 错误」，设置页可见。
 
@@ -375,28 +375,120 @@ tail -f data/logs/server.log
 
 ## Worker 插件
 
-Worker 插件和来源插件共用安装/删除机制，但 manifest 用 `kind: "worker"`：
+Worker 是执行器：拿到一个任务，跑一轮，返回结果。它和来源插件共用安装/删除机制，manifest 用 `kind: "worker"`。
+
+**内置 Worker 也是这种插件包**：`问答`、`文件生成`、`文件操作`、`记忆整理`、`Claude Code`、`Codex`、`DeepSeek Harness` 都在仓库的 `workers/<id>/` 里，和你写的 Worker 插件走同一个加载器、同一份规范、同一个 `ctx`。想看完整例子直接读它们；新插件可以从 `plugins/.template-worker/` 复制。
+
+| | 内置 Worker | Worker 插件 |
+| --- | --- | --- |
+| 位置 | `<app>/workers/<id>/`，随在线升级更新 | `<数据目录>/plugins/<id>/` |
+| 删除 | 隐藏，可「恢复内置 Worker」 | 文件和配置一起删除 |
+| id 冲突 | — | 不能和内置 Worker 同名 |
+
+### plugin.json
 
 ```json
 {
   "id": "my-worker",
   "kind": "worker",
   "name": "我的 Agent",
+  "description": "一句话说清它能做什么——Router 会把这段描述交给模型来挑 Worker。",
   "entry": "index.js",
+  "worker": {
+    "abilities": ["code", "write-file", "text"],
+    "cost": 3,
+    "keywords": "my-agent|我的agent",
+    "timeoutMinutes": 30,
+    "concurrency": 1,
+    "retries": 0
+  },
   "config": [{ "key": "bin", "label": "CLI 路径", "type": "text" }]
 }
 ```
 
-入口导出：
+`worker` 段可以整段省略，全部取默认值：
+
+| 字段 | 默认 | 作用 |
+| --- | --- | --- |
+| `abilities` | `["text"]` | 能做什么，Router 只按能力派活。可选：`text` 文本问答 / `write-file` 在工作区生成文件 / `manage-files` 整理移动文件 / `code` 读写代码仓库、执行命令 / `memory` 整理记忆 |
+| `cost` | `3` | 相对开销 1–5。多个 Worker 都具备所需能力时，选开销最低的（同开销内置优先） |
+| `keywords` | `""` | 正则（忽略大小写）。任务文本命中时优先派给它，比如用户说「发到飞书」就交给飞书 Worker |
+| `timeoutMinutes` | `30` | 超过就中止，任务标记失败，**不自动重试** |
+| `concurrency` | `2` | 这个 Worker 最多同时跑几个任务（1–4），同时受全局并发上限约束 |
+| `retries` | `0` | 失败后自动重试几次（0–3）。对外部有副作用或很贵的 Agent 建议保持 0 |
+
+`timeoutMinutes` / `concurrency` / `retries` 只是默认值，用户可以在「设置 → Worker → 配置」里按主机覆盖。
+
+### Router 怎么挑 Worker
+
+按顺序：
+
+1. 命中用户的工作流程（或确认过的习惯）且流程指定了 Worker，就用流程的；
+2. 用户的「Worker 分配规则」命中就用规则指定的；
+3. 任务文本命中某个可用 Worker 的 `keywords`，交给它；
+4. 云端模型判断时会看到每个 Worker 的 `name`、`description` 和 `abilities`，先按它的选择；
+5. 文本明确需要某种能力（写文件、操作仓库、整理文件夹）而选中的 Worker 不具备时，改派给具备该能力、开销最低的可用 Worker；
+6. 都没有就交给开销最低的 `text` Worker。
+
+按工作流程派活时，流程步骤附在 `task.prompt` 末尾的 `---` 分隔线之后；Worker 判断「用户要求了什么」时只看分隔线之前的部分。
+
+被点名的 Worker 在本机不可用时，对话回复里会说明改派给了谁。
+
+### index.js
 
 ```js
-export function detect(config) {
-  return { available: true, detail: '已检测到 CLI' };
+export function detect(config, { settings, which }) {
+  const bin = config.bin || which('my-agent');
+  return bin ? { available: true, detail: bin } : { available: false, detail: '没有找到 my-agent' };
 }
 
 export async function execute(task, ctx) {
-  return { status: 'done', summary: '执行结果' };
+  await ctx.emit('已启动…');
+  const r = await ctx.exec(ctx.config.bin || ctx.which('my-agent'), ['run', task.prompt], { cwd: ctx.workspace });
+  if (r.error === 'aborted') return { status: 'cancelled', summary: '任务已停止。' };
+  if (r.code !== 0) return { status: 'failed', summary: r.stderr.slice(-1200) };
+  return { status: 'done', summary: r.stdout.trim() };
 }
 ```
 
-`detect`、`test` 可选；`execute` 必须返回结果对象。配置按 Worker id 存在 `worker_configs`，每个主机可以不同。内置 Worker 删除后可用「恢复内置 Worker」恢复。
+`execute` 必须导出；`detect(config, ctx)`、`test(config, ctx)` 可选，返回 `{ available, detail }`（也可以返回布尔值）。`detect` 每次刷新 Worker 列表都会调用，必须同步且足够快；耗时的连通性检查放进 `test`，它只在用户点「检测」时运行，可以是 async。
+
+### ctx：宿主能力
+
+Worker 只通过 `ctx` 使用宿主能力，不要 import 静静的核心模块。
+
+| 字段 | 说明 |
+| --- | --- |
+| `signal` | `AbortSignal`。任务被取消或超时会触发，`signal.reason` 是 `'cancelled'` 或 `'timeout'` |
+| `emit(message, meta?)` | 上报进度，显示在任务卡和对话里 |
+| `log(message)` | 写服务日志 |
+| `config` | 这个 Worker 在本机的配置（按 manifest 的 `config` 校验过） |
+| `settings` | 静静的全局设置快照（只读） |
+| `workspace` | 任务工作目录的绝对路径 |
+| `paths.sandbox` | 静静的沙箱目录 |
+| `resume` | 从审批恢复时是 `{ question, options, choice }`，`choice < 0` 表示用户取消；否则为 `null` |
+| `sessionId` | 上一轮返回的 `sessionId`，用于续跑 |
+| `memories` / `tasks` | 与任务相关的记忆、最近的任务板 |
+| `workers` | 当前可用的 Worker 列表（`id`、`label`、`abilities`…） |
+| `llm.mode` | `'demo'` / `'deepseek'` / `'ollama'` |
+| `llm.chat({ system, messages, json, temperature, maxTokens })` | 调用用户配置的模型，自动跟随 `signal` 中止；返回 `{ text, tokens, cost }` |
+| `exec(cmd, args, { cwd, env, onOutput, timeoutMs })` | 运行外部命令；`signal` 触发时自动 SIGTERM → SIGKILL 并返回 `{ error: 'aborted' }`。`env` 里值为 `null` 的键会被删除 |
+| `which(bin)` | 在 PATH 和常见安装目录里找可执行文件 |
+| `sleep(ms)` | 可被取消的等待 |
+| `parseApproval(text)` | 解析输出末尾的 `[[APPROVAL]] {...}` 标记 |
+| `estimateTokens(text)` | 粗略估算 token 数 |
+
+### 返回结果
+
+```js
+{ status: 'done', summary: '交付内容', tokens, cost, sessionId }
+{ status: 'needs_approval', summary: '目前进展', approval: { question: '要覆盖吗？', options: ['覆盖', '换个名字'] }, sessionId }
+{ status: 'failed', summary: '原因', retryable: false }  // retryable: false 表示重试也没用（缺配置、没装 CLI…）
+{ status: 'cancelled', summary: '已停止' }
+```
+
+- 返回 `needs_approval` 后任务挂起、Worker 退出；用户拍板后会重新调用 `execute`，`ctx.resume` 里带着选择。
+- 抛出异常或返回非法结果都按 `failed` 处理，不会卡住队列。
+- 取消和超时由调度器负责：`signal` 触发后调度器立刻释放槽位，**之后 `execute` 返回的任何结果都会被丢弃**。请尽快响应 `signal`，尤其是自己启动的子进程（用 `ctx.exec` 就不用操心）。
+
+配置和运行限制按 Worker id 存在 `worker_configs`，每个主机可以不同。`npm run plugin:check` 会同时检查数据目录里的插件和仓库 `workers/` 里的内置 Worker。

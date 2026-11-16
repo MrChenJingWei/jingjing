@@ -1,0 +1,20 @@
+{
+  "$schema": "../../plugins/plugin.schema.json",
+  "id": "memory",
+  "apiVersion": 1,
+  "kind": "worker",
+  "name": "记忆整理",
+  "version": "1.0.0",
+  "icon": "忆",
+  "description": "整理静静本机的记忆库（画像 / 语义 / 情景）。",
+  "entry": "index.js",
+  "worker": {
+    "abilities": [
+      "memory"
+    ],
+    "cost": 1,
+    "timeoutMinutes": 5,
+    "concurrency": 1,
+    "retries": 0
+  }
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 生成在线升级用的代码包（含 server.js / src / public 等），以及 latest.json 清单。
+# 生成在线升级用的代码包（含 server.js / src / public / workers 等），以及 latest.json 清单。
 # 产物：dist/jingjing-app-<version>.zip、dist/latest.json
 set -euo pipefail
 
@@ -22,7 +22,7 @@ rsync -a \
   --exclude 'node_modules' --exclude 'plugin-src' --exclude 'inbox' --exclude '.DS_Store' \
   "$ROOT/" "$STAGE/app/"
 
-for required in server.js package.json src public plugins; do
+for required in server.js package.json src public plugins workers; do
   if [[ ! -e "$STAGE/app/$required" ]]; then
     echo "升级包缺少 $required，打包中止" >&2
     exit 1

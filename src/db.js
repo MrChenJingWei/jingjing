@@ -214,6 +214,9 @@ db.exec(`
 // Tables above may have been created by an older version without these columns.
 ensureColumn('worker_rules', 'event_type', 'TEXT');
 ensureColumn('worker_configs', 'deleted', 'INTEGER');
+ensureColumn('worker_configs', 'limits', 'TEXT');
+ensureColumn('tasks', 'workflow_id', 'TEXT');
+ensureColumn('messages', 'meta', 'TEXT');
 
 export const now = () => new Date().toISOString();
 export const uid = (prefix = '') => prefix + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);

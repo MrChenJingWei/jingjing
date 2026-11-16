@@ -110,9 +110,6 @@ export async function reloadPlugins() {
       const url = `${pathToFileURL(path.join(dir, manifest.entry)).href}?v=${stat.mtimeMs}`;
       const module = await import(url);
       if (manifest.kind === 'worker') {
-        if (typeof module.execute !== 'function') throw new Error('Worker 插件没有导出 execute()');
-        if (module.detect !== undefined && typeof module.detect !== 'function') throw new Error('detect 必须是一个函数');
-        if (module.test !== undefined && typeof module.test !== 'function') throw new Error('test 必须是一个函数');
         registerWorkerPlugin({ manifest, module, dir });
         loadedWorkers.add(manifest.id);
         continue;

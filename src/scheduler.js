@@ -1,10 +1,11 @@
 import { db, now, uid, getSettings, rowTask, rowApproval, event } from './db.js';
 import { bus } from './events.js';
 import * as memory from './memory.js';
-import { runWorker, availability, isWorker } from './workers.js';
+import { runWorker, availability, isWorker, workerLimits } from './workers.js';
 import * as channels from './channels.js';
 
-const running = new Map(); // taskId -> { controller, startedAt }
+const running = new Map(); // taskId -> { controller, startedAt, worker }
+const ABORTED = Symbol('aborted');
 let pumping = false;
 
 function emitTask(task) {
@@ -87,7 +88,9 @@ export function createTask({
   priority = 2,
   source = null,
   groupKey = '',
-  hops = 0
+  hops = 0,
+  workflowId = null,
+  workflowName = ''
 }) {
   if (!isWorker(worker)) {
     const err = new Error('未知的 Worker');
@@ -99,14 +102,14 @@ export function createTask({
   const stamp = now();
   const cleanTitle = String(title || prompt || '未命名任务').slice(0, 80);
   db.prepare(`
-    INSERT INTO tasks(id, title, prompt, worker, cwd, status, priority, origin, rule_id, session_id, group_key, hops, created_at, updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO tasks(id, title, prompt, worker, cwd, status, priority, origin, rule_id, session_id, group_key, hops, workflow_id, created_at, updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, cleanTitle, String(prompt || cleanTitle), worker,
     cwd || settings.defaultCwd || '', 'queued', priority, origin, ruleId, sessionId,
-    groupKey || null, Math.max(0, Number(hops) || 0), stamp, stamp
+    groupKey || null, Math.max(0, Number(hops) || 0), workflowId || null, stamp, stamp
   );
-  event(id, 'task/created', { worker, origin, title: cleanTitle, source });
+  event(id, 'task/created', { worker, origin, title: cleanTitle, source, ...(workflowId ? { workflowId, workflow: workflowName } : {}) });
   const task = getTask(id);
   bus.emit('task/created', { task });
   pump();
@@ -145,34 +148,72 @@ function setStatus(taskId, patch) {
   return getTask(taskId);
 }
 
+function finishCancelled(taskId) {
+  // cancel() 已经把状态写成 cancelled；这里只兜底，绝不覆盖成其他状态。
+  const current = getTask(taskId);
+  if (current?.status === 'running') {
+    setStatus(taskId, { status: 'cancelled', result: '已停止', progress: null, finished_at: now() });
+    event(taskId, 'task/cancelled', { reason: 'aborted' });
+  }
+  emitTask(getTask(taskId));
+}
+
+function finishTimeout(task, limits) {
+  const message = `超过 ${limits.timeoutMinutes} 分钟还没跑完，已停止。超时不会自动重试；可以在 Worker 配置里调大超时后手动重试。`;
+  setStatus(task.id, {
+    status: 'failed',
+    attempts: (task.attempts || 0) + 1,
+    error: message,
+    result: message,
+    progress: null,
+    finished_at: now()
+  });
+  event(task.id, 'task/failed', { error: message, timeout: true });
+  emitTask(getTask(task.id));
+  bus.emit('task/finished', { task: getTask(task.id) });
+  channels.notifyTask(getTask(task.id)).catch(() => {});
+}
+
 async function execute(task) {
   const settings = getSettings();
+  const limits = workerLimits(task.worker);
   const controller = new AbortController();
-  running.set(task.id, { controller, startedAt: Date.now() });
+  running.set(task.id, { controller, startedAt: Date.now(), worker: task.worker });
+  const timer = setTimeout(() => controller.abort('timeout'), limits.timeoutMinutes * 60 * 1000);
   setStatus(task.id, { status: 'running', started_at: now(), progress: '启动中…', error: null });
   event(task.id, 'task/started', { worker: task.worker, attempt: task.attempts + 1 });
   emitTask(getTask(task.id));
 
-  const resume = task.resume_payload?.approval || null;
-  const contextMemories = memory.context(`${task.title} ${task.prompt}`, { limit: 6 });
-  const taskSnapshot = listTasks({ limit: 10 });
   let lastProgress = '';
-
   const onProgress = (message, meta = {}) => {
-    if (lastProgress === message) return;
+    if (controller.signal.aborted || lastProgress === message) return;
     lastProgress = message;
     db.prepare('UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?').run(message, now(), task.id);
     bus.emit('task/progress', { taskId: task.id, message, meta });
   };
 
+  // 取消或超时时不再等 Worker：即使插件不理会 signal，也能立刻释放槽位，且不会回头覆盖状态。
+  const aborted = new Promise((resolve) => {
+    controller.signal.addEventListener('abort', () => resolve(ABORTED), { once: true });
+  });
+
   try {
-    const result = await runWorker(task, {
+    const resume = task.resume_payload?.approval || null;
+    const work = Promise.resolve().then(() => runWorker(task, {
       signal: controller.signal,
       resume,
-      memories: contextMemories,
-      tasks: taskSnapshot,
+      memories: memory.context(`${task.title} ${task.prompt}`, { limit: 6 }),
+      tasks: listTasks({ limit: 10 }),
       onProgress
-    });
+    }));
+    work.catch(() => {});
+    const result = await Promise.race([work, aborted]);
+
+    if (result === ABORTED || controller.signal.aborted) {
+      if (controller.signal.reason === 'timeout') finishTimeout(task, limits);
+      else finishCancelled(task.id);
+      return;
+    }
 
     if (result.status === 'needs_approval') {
       const approvalId = uid('a_');
@@ -216,14 +257,19 @@ async function execute(task) {
 
     if (result.status === 'failed') {
       const attempts = (task.attempts || 0) + 1;
-      if (attempts < 2) {
+      const usage = {
+        tokens: task.tokens + (result.tokens || 0),
+        cost: (task.cost || 0) + (result.cost || 0)
+      };
+      // 只有 Worker 声明了重试次数、且没有标记 retryable: false 时才自动重试。
+      if (result.retryable !== false && attempts <= limits.retries) {
         setStatus(task.id, {
           status: 'queued',
           attempts,
           error: result.summary,
           progress: '准备重试…',
           started_at: null,
-          tokens: task.tokens + (result.tokens || 0)
+          ...usage
         });
         event(task.id, 'task/retry', { attempt: attempts, error: result.summary });
         emitTask(getTask(task.id));
@@ -234,10 +280,12 @@ async function execute(task) {
           error: result.summary,
           result: result.summary,
           progress: null,
-          finished_at: now()
+          finished_at: now(),
+          ...usage
         });
         event(task.id, 'task/failed', { error: result.summary });
         emitTask(getTask(task.id));
+        bus.emit('task/finished', { task: getTask(task.id) });
         channels.notifyTask(getTask(task.id)).catch(() => {});
       }
       return;
@@ -272,44 +320,56 @@ async function execute(task) {
     }
 
     emitTask(getTask(task.id));
+    bus.emit('task/finished', { task: getTask(task.id) });
     channels.notifyTask(getTask(task.id)).catch(() => {});
     bus.emit('stats/updated', stats());
   } catch (err) {
-    const aborted = err.message === 'aborted' || err.name === 'AbortError';
-    setStatus(task.id, {
-      status: aborted ? 'cancelled' : 'failed',
-      error: err.message,
-      result: aborted ? '已停止' : `执行出错：${err.message}`,
-      progress: null,
-      finished_at: now()
-    });
-    event(task.id, aborted ? 'task/cancelled' : 'task/failed', { error: err.message });
-    emitTask(getTask(task.id));
+    if (controller.signal.aborted) {
+      if (controller.signal.reason === 'timeout') finishTimeout(task, limits);
+      else finishCancelled(task.id);
+    } else {
+      setStatus(task.id, {
+        status: 'failed',
+        error: err.message,
+        result: `执行出错：${err.message}`,
+        progress: null,
+        finished_at: now()
+      });
+      event(task.id, 'task/failed', { error: err.message });
+      emitTask(getTask(task.id));
+    }
   } finally {
+    clearTimeout(timer);
     running.delete(task.id);
     pump();
     bus.emit('stats/updated', stats());
   }
 }
 
-async function pump() {
+function pump() {
   if (pumping) return;
   const settings = getSettings();
   if (settings.queuePaused) return;
   pumping = true;
   try {
     const limit = Math.max(1, Math.min(4, settings.concurrency || 2));
-    while (running.size < limit) {
-      const row = db.prepare(
-        "SELECT * FROM tasks WHERE status = 'queued' ORDER BY priority ASC, created_at ASC LIMIT 1"
-      ).get();
-      if (!row) break;
-      const task = rowTask(row);
+    if (running.size >= limit) return;
+    const perWorker = new Map();
+    for (const item of running.values()) perWorker.set(item.worker, (perWorker.get(item.worker) || 0) + 1);
+    const queued = db.prepare(
+      "SELECT * FROM tasks WHERE status = 'queued' ORDER BY priority ASC, created_at ASC LIMIT 200"
+    ).all();
+    for (const row of queued) {
+      if (running.size >= limit) break;
+      // 某个 Worker 满了就跳过它的任务，让后面别的 Worker 的任务先跑。
+      if ((perWorker.get(row.worker) || 0) >= workerLimits(row.worker).concurrency) continue;
       // 原子占位，避免重复调度
       const changed = db.prepare(
         "UPDATE tasks SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'"
-      ).run(now(), task.id).changes;
-      if (changed) execute(task);
+      ).run(now(), row.id).changes;
+      if (!changed) continue;
+      perWorker.set(row.worker, (perWorker.get(row.worker) || 0) + 1);
+      execute(rowTask(row));
     }
   } finally {
     pumping = false;
@@ -383,7 +443,10 @@ export function updateTask(taskId, patch = {}) {
   if (!Object.keys(fields).length) return task;
   db.prepare(`UPDATE tasks SET ${Object.keys(fields).map((key) => `${key} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
     .run(...Object.values(fields), now(), taskId);
-  event(taskId, 'task/edited', { fields: Object.keys(fields) });
+  event(taskId, 'task/edited', {
+    fields: Object.keys(fields),
+    ...(fields.worker && fields.worker !== task.worker ? { from: { worker: task.worker }, to: { worker: fields.worker } } : {})
+  });
   const updated = getTask(taskId);
   emitTask(updated);
   return updated;
@@ -434,7 +497,7 @@ export function cancel(taskId, reason = '用户取消') {
   if (['done', 'failed', 'cancelled'].includes(task.status)) return task;
 
   const live = running.get(taskId);
-  if (live) live.controller.abort();
+  if (live) live.controller.abort('cancelled');
   if (task.approval_id) {
     db.prepare("UPDATE approvals SET status = 'expired', resolved_at = ? WHERE id = ? AND status = 'pending'")
       .run(now(), task.approval_id);

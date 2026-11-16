@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { validateManifest, validateConfig, PluginSpecError } from '../src/plugin-spec.js';
+import { validateManifest, validateConfig, validateWorkerLimits, PluginSpecError, WORKER_DEFAULTS } from '../src/plugin-spec.js';
 
 function tempPlugin(manifest = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-plugin-'));
@@ -121,4 +121,50 @@ test('multiInstance 必须是布尔值并归一化', () => {
   assert.equal(validateManifest(raw2, { dir: dir2, dirName: 'demo' }).multiInstance, false);
   const { dir: dir3, raw: raw3 } = tempPlugin({ multiInstance: 'yes' });
   assert.throws(() => validateManifest(raw3, { dir: dir3, dirName: 'demo' }), /multiInstance/);
+});
+
+test('Worker manifest：worker 段缺省时补默认值，来源插件不能写 worker 段', () => {
+  const { dir, raw } = tempPlugin({ kind: 'worker' });
+  const manifest = validateManifest(raw, { dir, dirName: 'demo' });
+  assert.deepEqual(manifest.worker, { ...WORKER_DEFAULTS, abilities: ['text'] });
+  const { dir: dir2, raw: raw2 } = tempPlugin({ worker: { cost: 1 } });
+  assert.throws(() => validateManifest(raw2, { dir: dir2, dirName: 'demo' }), /只有 kind 为 worker/);
+});
+
+test('Worker manifest：校验能力词表、关键词正则和运行限制范围', () => {
+  const ok = (worker) => {
+    const { dir, raw } = tempPlugin({ kind: 'worker', worker });
+    return validateManifest(raw, { dir, dirName: 'demo' }).worker;
+  };
+  assert.deepEqual(ok({ abilities: ['code', 'text', 'code'], cost: 4, keywords: '飞书|lark', timeoutMinutes: 90, concurrency: 1, retries: 0 }), {
+    abilities: ['code', 'text'], cost: 4, keywords: '飞书|lark', timeoutMinutes: 90, concurrency: 1, retries: 0
+  });
+  assert.throws(() => ok({ abilities: ['fly'] }), /abilities 不支持/);
+  assert.throws(() => ok({ abilities: [] }), /非空数组/);
+  assert.throws(() => ok({ keywords: '(' }), /不是合法正则/);
+  assert.throws(() => ok({ timeoutMinutes: 0 }), /timeoutMinutes/);
+  assert.throws(() => ok({ concurrency: 9 }), /concurrency/);
+  assert.throws(() => ok({ retries: 1.5 }), /retries/);
+  assert.throws(() => ok({ speed: 1 }), /未知字段/);
+});
+
+test('本机运行限制覆盖：空值沿用默认，越界报错', () => {
+  assert.deepEqual(validateWorkerLimits({ timeoutMinutes: '120', concurrency: '', retries: null }), { timeoutMinutes: 120 });
+  assert.deepEqual(validateWorkerLimits(undefined), {});
+  assert.throws(() => validateWorkerLimits({ retries: 4 }), /失败自动重试次数/);
+});
+
+test('仓库里的内置 Worker 和 Worker 模板都符合规范', () => {
+  const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const builtinDir = path.join(root, 'workers');
+  const ids = fs.readdirSync(builtinDir).filter((name) => !name.startsWith('.')).sort();
+  assert.deepEqual(ids, ['claude', 'codex', 'dsh', 'file', 'llm', 'memory', 'shell']);
+  for (const id of ids) {
+    const dir = path.join(builtinDir, id);
+    const manifest = validateManifest(JSON.parse(fs.readFileSync(path.join(dir, 'plugin.json'), 'utf8')), { dir, dirName: id });
+    assert.equal(manifest.kind, 'worker', id);
+  }
+  const templateDir = path.join(root, 'plugins', '.template-worker');
+  const template = validateManifest(JSON.parse(fs.readFileSync(path.join(templateDir, 'plugin.json'), 'utf8')), { dir: templateDir });
+  assert.equal(template.kind, 'worker');
 });

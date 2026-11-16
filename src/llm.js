@@ -6,7 +6,12 @@ export function estimateTokens(text) {
   return Math.max(1, Math.round(String(text || '').length / 1.8));
 }
 
-async function callDeepSeek({ messages, temperature, maxTokens, json }) {
+function withTimeout(signal, ms) {
+  const timeout = AbortSignal.timeout(ms);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+async function callDeepSeek({ messages, temperature, maxTokens, json, signal }) {
   const cfg = getSettings();
   const base = (cfg.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
   const body = {
@@ -24,7 +29,7 @@ async function callDeepSeek({ messages, temperature, maxTokens, json }) {
       Authorization: `Bearer ${cfg.apiKey}`
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120000)
+    signal: withTimeout(signal, 120000)
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -39,7 +44,7 @@ async function callDeepSeek({ messages, temperature, maxTokens, json }) {
   };
 }
 
-async function callOllama({ messages, temperature, json }) {
+async function callOllama({ messages, temperature, json, signal }) {
   const cfg = getSettings();
   const url = (cfg.ollamaUrl || 'http://127.0.0.1:11434').replace(/\/+$/, '');
   const res = await fetch(`${url}/api/chat`, {
@@ -52,7 +57,7 @@ async function callOllama({ messages, temperature, json }) {
       format: json ? 'json' : undefined,
       options: { temperature: temperature ?? cfg.temperature ?? 0.6 }
     }),
-    signal: AbortSignal.timeout(180000)
+    signal: withTimeout(signal, 180000)
   });
   if (!res.ok) throw new Error(`Ollama ${res.status}: ${truncate(await res.text().catch(() => ''), 200)}`);
   const data = await res.json();
@@ -64,14 +69,22 @@ async function callOllama({ messages, temperature, json }) {
   };
 }
 
-export async function chat({ messages, system, temperature, maxTokens, json = false }) {
+/** 实际生效的模型通道：deepseek 没填 Key 时按演示模式处理。 */
+export function llmMode(cfg = getSettings()) {
+  if (cfg.provider === 'deepseek' && cfg.apiKey) return 'deepseek';
+  if (cfg.provider === 'ollama') return 'ollama';
+  return 'demo';
+}
+
+export async function chat({ messages, system, temperature, maxTokens, json = false, signal }) {
   const cfg = getSettings();
   const all = system ? [{ role: 'system', content: system }, ...messages] : messages;
-  if (cfg.provider === 'deepseek' && cfg.apiKey) {
-    return callDeepSeek({ messages: all, temperature, maxTokens, json });
+  const mode = llmMode(cfg);
+  if (mode === 'deepseek') {
+    return callDeepSeek({ messages: all, temperature, maxTokens, json, signal });
   }
-  if (cfg.provider === 'ollama') {
-    return callOllama({ messages: all, temperature, json });
+  if (mode === 'ollama') {
+    return callOllama({ messages: all, temperature, json, signal });
   }
   const text = demoChat(all);
   return { text, tokens: estimateTokens(text), cost: 0, model: 'demo' };
@@ -219,15 +232,22 @@ export function demoTaskOutput({ task, memories = [], tasks = [] }) {
 
 const INTENTS = new Set(['chat', 'remember', 'task', 'status', 'recall']);
 
+const ACTION_RE = /(帮我|帮忙|请|安排|提醒|整理|检查|修复|写|做一个|跑一下|执行|部署|总结|生成|清洗|归档|清理|重命名|移动|看看|看一下|处理)/;
+
+/**
+ * 离线意图识别。只判断意图和标题；具体派给哪个 Worker 由 worker-routing 按能力决定。
+ */
 export function heuristicClassify(text) {
   const t = String(text || '').trim();
-  const out = { intent: 'chat', worker: 'llm', title: '', reason: 'heuristic' };
+  const out = { intent: 'chat', worker: null, title: '', reason: 'heuristic' };
+  const isAction = ACTION_RE.test(t) && t.length >= 4;
 
   if (/(记住|记一下|记下|帮我记)/.test(t) || /我(?:更)?(?:喜欢|偏好|习惯|通常|一般|不喜欢|讨厌)/.test(t)) {
     out.intent = 'remember';
     return out;
   }
-  if (/(进度|状态|待办|任务板|在做什么|怎么样了|跑了哪些|今天该做)/.test(t)) {
+  // 「待办」「今天该做」既可能是问进度，也可能是要求做事：带动作词时按任务处理。
+  if (/(进度|状态|任务板|在做什么|怎么样了|跑了哪些)/.test(t) || (/(待办|今天该做)/.test(t) && !isAction)) {
     out.intent = 'status';
     return out;
   }
@@ -235,19 +255,9 @@ export function heuristicClassify(text) {
     out.intent = 'recall';
     return out;
   }
-
-  const action = /(帮我|帮忙|请|安排|提醒|整理|检查|修复|写|做一个|跑一下|执行|部署|总结|生成|清洗|归档|清理|重命名|移动|看看|看一下|处理)/;
-  if (action.test(t) && t.length >= 4) {
+  if (isAction) {
     out.intent = 'task';
-    if (/(?:生成|写|创建|新建|建|保存|导出|做一个|做一份).{0,40}(?:文件|文档|txt|md|markdown|tex|json|csv|html)/i.test(t) || /(?:文件|文档).{0,40}(?:写|内容|保存)/i.test(t) || /[A-Za-z0-9_\-\u4e00-\u9fa5]+\.(?:txt|md|markdown|tex|json|csv|html)/i.test(t)) {
-      out.worker = 'file';
-    } else if (/(文件夹|目录|下载|归档|清理|重命名|移动|复制|删除)/.test(t)) {
-      out.worker = 'shell';
-    } else if (/(代码|仓库|repo|bug|lint|测试|重构|提交|git|接口|函数|脚本|编译|报错|依赖|部署)/i.test(t)) {
-      out.worker = 'claude';
-    }
     out.title = makeTitle(t);
-    return out;
   }
   return out;
 }
@@ -259,16 +269,22 @@ export function makeTitle(text) {
   return truncate(t, 28);
 }
 
-export async function classify(text, { history = [], workers = [] } = {}) {
+export async function classify(text, { history = [], workers = [], workflows = [] } = {}) {
   const cfg = getSettings();
   if (cfg.provider === 'demo') return heuristicClassify(text);
 
   const system = [
     '你是个人 AI 管家「静静」的 Router。结合最近对话，把用户当前这句话分类成一个意图，只输出 JSON。',
     'intent 取值：chat（闲聊/咨询）、remember（要求记住事实或偏好）、task（要求执行一件事）、status（询问任务进度）、recall（检索记忆）。',
-    `worker 仅在 intent=task 时填写，可选：${(workers.length ? workers : [{ id: 'llm', label: '问答' }]).map((w) => `${w.id}（${w.label}）`).join('、')}。`,
+    'worker 仅在 intent=task 时填写，从下面的可用 Worker 里选最合适、开销最低的一个：',
+    ...(workers.length ? workers : [{ id: 'llm', label: '问答', description: '纯文本问答' }])
+      .map((w) => `- ${w.id}（${w.label}）${w.description ? `：${w.description}` : ''}${w.abilities?.length ? ` [能力：${w.abilities.join(', ')}]` : ''}`),
     'title 仅在 intent=task 时填写：不超过 24 字的任务名，不要带「帮我」等客套词。',
-    'JSON 结构：{"intent":"...","worker":"...","title":"..."}'
+    ...(workflows.length ? [
+      'workflow 仅在 intent=task 且请求明显属于下面某个用户配置的工作流程时填写它的 id，否则留空：',
+      ...workflows.map((w) => `- ${w.id}：${w.name}${w.when ? `（触发词：${w.when}）` : ''}${w.hint ? `，${w.hint}` : ''}`)
+    ] : []),
+    'JSON 结构：{"intent":"...","worker":"...","title":"...","workflow":""}'
   ].join('\n');
 
   try {
@@ -285,11 +301,13 @@ export async function classify(text, { history = [], workers = [] } = {}) {
     });
     const parsed = JSON.parse(res.text);
     if (!INTENTS.has(parsed.intent)) throw new Error('bad intent');
-    const allowed = new Set((workers.length ? workers : [{ id: 'llm' }]).map((w) => w.id));
+    const allowed = new Set(workers.map((w) => w.id));
     return {
       intent: parsed.intent,
-      worker: allowed.has(parsed.worker) ? parsed.worker : (allowed.has('llm') ? 'llm' : [...allowed][0]),
+      // 模型选了不存在的 Worker 时交给 worker-routing 按能力兜底。
+      worker: allowed.has(parsed.worker) ? parsed.worker : null,
       title: parsed.title ? truncate(String(parsed.title), 30) : makeTitle(text),
+      workflow: workflows.some((w) => w.id === parsed.workflow) ? parsed.workflow : null,
       reason: 'llm',
       tokens: res.tokens
     };

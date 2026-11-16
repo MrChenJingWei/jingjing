@@ -41,10 +41,10 @@ flowchart TB
     H["重试 / 熔断<br/>attempts / hops"]
   end
 
-  subgraph Workers["Worker · workers.js（无状态）"]
-    W1["llm 问答"]
+  subgraph Workers["Worker · workers/ 插件包（无状态）"]
+    W1["llm 问答 · file 文件生成"]
     W2["shell 文件操作<br/>按主机权限"]
-    W3["claude / codex 编码"]
+    W3["claude / codex / dsh 编码"]
     W4["memory 记忆整理"]
   end
 
@@ -163,7 +163,7 @@ export async function test(config) { return { ok: true, detail: '...' }; }
   → 截断到 10 条 → 过滤已见 externalId
   → 批量问模型：要行动吗？标题？执行提示？
   → 读取该来源绑定的工作区
-  → createTask(worker=llm, cwd=工作区路径, origin=plugin:<id>)
+  → createTask(worker=命中的分配规则，否则最便宜的文本 Worker, cwd=工作区路径, origin=plugin:<id>)
   → source_items 记 task / skipped
   → 主对话一条汇总 + 插件状态更新
 ```
@@ -193,7 +193,9 @@ export async function test(config) { return { ok: true, detail: '...' }; }
 Router **不碰** `approvals` 表，也**不启动** Worker。插件发现走的是 `discovery.js`，同样只通过 `scheduler.createTask` 进入执行层。Router 只做：
 
 - 意图判断（规则或模型 JSON）
-- 决定 Worker、标题、工作目录
+- 先查工作流程（`workflows.js`）：命中生效的流程就跳过模型判断，按流程的 Worker / 工作区派活，并把步骤附进指令
+- 决定 Worker（流程指定 > 分配规则 > 按能力 / 开销 / 关键词，见 `worker-routing.js`）、标题、工作目录
+- 任务结束时（调度器发出 `task/finished`）统计流程效果；值得记住的任务总结成候选习惯，等用户在对话里确认
 - 把任务交给 `scheduler.createTask`
 - 每日简报到点建任务，往对话里留一条说明
 
@@ -236,17 +238,17 @@ Router **不碰** `approvals` 表，也**不启动** Worker。插件发现走的
 
 ## 安全边界
 
-- `shell` Worker 的 `cwd` 必须在 `data/sandbox/` 内（`isInside` 校验），越界直接失败。
+- `shell` / `file` Worker 只在任务工作区里移动或写入文件，目标路径越出工作区（`isInside` 校验）直接失败；工作区本身可以是任意目录。
 - 服务默认只监听 `127.0.0.1`；开放到局域网需要显式设 `JINGJING_HOST=0.0.0.0`。
 - 页面渲染对模型输出做 HTML 转义，Markdown 只支持白名单语法。
-- 插件在服务进程内运行、拥有完整 Node 权限，没有沙箱；只安装可信插件。
+- 插件（包括 Worker 插件）在服务进程内运行、拥有完整 Node 权限，没有沙箱；只安装可信插件。manifest 里的 `capabilities` 只是声明，不做强制。
 - API Key 存在本机 SQLite；接口返回时打码，保存时保留原值。
-- Claude Code 默认 `acceptEdits` + 工具白名单，不使用 `--dangerously-skip-permissions`。
+- Claude Code 以 `claude -p` 运行，工具权限完全交给 Claude Code 自身的用户配置，静静不追加权限参数，也不使用 `--dangerously-skip-permissions`。
 
 ## 为什么这样切模块
 
 - `router.js` / `scheduler.js` / `workers.js` 三个文件分别对应架构图上的三层，读代码时不需要在层之间跳。
 - 插件和发现核心分离：新增来源不用改 Router、调度器或 Worker，只加一个目录。
-- Worker 只有 `runWorker(task, ctx)` 一个入口，新增一种 Agent 不需要改调度器。
+- Worker 只有 `execute(task, ctx)` 一个入口，内置的和第三方的是同一种插件包；新增一种 Agent 只加一个目录，不用改 Router 或调度器——Router 按 manifest 声明的能力派活，调度器按声明的超时 / 并发 / 重试执行。
 - 记忆是横切能力：Router 和 Worker 都通过 `memory.js` 读写，而不是各自持有上下文。
 - 事件日志和物化状态并存：查询快，审计全。代价是写任务时多一条 insert，个人场景完全可接受。

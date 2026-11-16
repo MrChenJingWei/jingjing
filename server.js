@@ -9,8 +9,9 @@ import * as memory from './src/memory.js';
 import * as scheduler from './src/scheduler.js';
 import * as router from './src/router.js';
 import * as channels from './src/channels.js';
-import { availability, testWorkerPlugin, saveWorkerPluginConfig, isBuiltinWorker, deleteBuiltinWorker, restoreBuiltinWorkers } from './src/workers.js';
+import { availability, testWorker, saveWorkerConfig, isBuiltinWorker, deleteBuiltinWorker, restoreBuiltinWorkers, loadBuiltinWorkers, defaultWorker } from './src/workers.js';
 import * as workerRules from './src/worker-rules.js';
+import * as workflows from './src/workflows.js';
 import { chat as llmChat } from './src/llm.js';
 import * as plugins from './src/plugins.js';
 import * as discovery from './src/discovery.js';
@@ -102,6 +103,7 @@ function bootstrap() {
     rules: router.listRules(),
     workerRules: workerRules.listWorkerRules(),
     workers: availability(),
+    workflows: workflows.overview(),
     stats: scheduler.stats(),
     plugins: plugins.listPlugins(),
     pluginErrors: plugins.pluginErrors(),
@@ -303,7 +305,7 @@ const server = http.createServer(async (req, res) => {
       const task = scheduler.createTask({
         title: body.title || body.prompt,
         prompt: body.prompt || body.title,
-        worker: body.worker || 'llm',
+        worker: body.worker || defaultWorker(),
         cwd: body.cwd,
         origin: 'manual',
         sessionId: router.MAIN_SESSION,
@@ -312,7 +314,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { task });
     }
 
-    const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(approve|cancel|retry))?$/);
+    const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(approve|cancel|retry|learn))?$/);
     if (taskMatch) {
       const [, id, action] = taskMatch;
       if (req.method === 'PATCH' && !action) {
@@ -341,6 +343,42 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && action === 'cancel') {
         return json(res, 200, { task: scheduler.cancel(id) });
       }
+      if (req.method === 'POST' && action === 'learn') {
+        const result = await router.proposeWorkflow(id, { force: true });
+        return json(res, 200, { ...result, ...workflows.overview() });
+      }
+    }
+
+    if (pathname === '/api/workflows' && req.method === 'GET') {
+      return json(res, 200, workflows.overview({ fresh: true }));
+    }
+    if (pathname === '/api/workflows/reload' && req.method === 'POST') {
+      const overview = workflows.overview({ fresh: true });
+      bus.emit('workflows/updated', overview);
+      return json(res, 200, overview);
+    }
+    if (pathname === '/api/workflows' && req.method === 'POST') {
+      const workflow = workflows.createWorkflow(await readBody(req));
+      const overview = workflows.overview();
+      bus.emit('workflows/updated', overview);
+      return json(res, 200, { workflow, ...overview });
+    }
+    const workflowMatch = pathname.match(/^\/api\/workflows\/([a-f0-9]{12})(?:\/(status))?$/);
+    if (workflowMatch) {
+      const [, id, action] = workflowMatch;
+      if (req.method === 'GET' && !action) {
+        const workflow = workflows.listWorkflows().find((item) => item.id === id);
+        if (!workflow) return fail(res, 404, '工作流程不存在');
+        return json(res, 200, { workflow, raw: workflows.readRaw(id) });
+      }
+      let workflow = null;
+      if (req.method === 'PUT' && !action) workflow = workflows.updateRaw(id, (await readBody(req)).raw);
+      else if (req.method === 'POST' && action === 'status') workflow = workflows.setStatus(id, (await readBody(req)).status);
+      else if (req.method === 'DELETE' && !action) workflows.deleteWorkflow(id);
+      else return fail(res, 405, 'method not allowed');
+      const overview = workflows.overview();
+      bus.emit('workflows/updated', overview);
+      return json(res, 200, { workflow, ...overview });
     }
 
     const approveMatch = pathname.match(/^\/api\/approvals\/([^/]+)\/resolve$/);
@@ -431,6 +469,7 @@ const server = http.createServer(async (req, res) => {
       }
       channels.restartTelegram();
       bus.emit('settings/updated', { settings: maskSettings(next) });
+      bus.emit('workflows/updated', workflows.overview({ fresh: true }));
       bus.emit('plugins/updated', { plugins: plugins.listPlugins(), errors: plugins.pluginErrors() });
       return json(res, 200, { settings: maskSettings(next), workers: availability(), workerRules: workerRules.listWorkerRules() });
     }
@@ -572,13 +611,13 @@ const server = http.createServer(async (req, res) => {
       const isTest = pathname.endsWith('/test');
       if (req.method === 'PUT' && !isTest) {
         const body = await readBody(req);
-        saveWorkerPluginConfig(id, body);
+        saveWorkerConfig(id, body);
         const workers = availability();
         bus.emit('workers/updated', { workers });
         return json(res, 200, { workers });
       }
       if (req.method === 'POST' && isTest) {
-        const result = await testWorkerPlugin(id);
+        const result = await testWorker(id);
         return json(res, 200, result);
       }
       if (req.method === 'DELETE' && !isTest) {
@@ -717,6 +756,7 @@ const server = http.createServer(async (req, res) => {
 seedIfEmpty();
 seed();
 auth.getAccessKey();
+await loadBuiltinWorkers();
 plugins.seedBuiltins();
 await plugins.reloadPlugins();
 await discovery.startLifecycles();

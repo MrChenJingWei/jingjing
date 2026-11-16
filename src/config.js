@@ -30,6 +30,8 @@ export const DEFAULT_SETTINGS = {
   defaultWorkspaceId: 'default',
   autoRemember: true,
   maxHops: 6,
+  // 额外读取工作流程（.md）的文件夹；<data>/workflows 总会被读取。
+  workflowDirs: [],
   queuePaused: false,
   persona: '平静、具体、不奉承，像一个可靠的同事。',
   channels: {
@@ -78,12 +80,3 @@ export const TASK_STATUS = {
   cancelled: '已取消'
 };
 
-export const WORKER_LABEL = {
-  llm: '问答',
-  shell: '文件操作',
-  file: '文件生成',
-  claude: 'Claude Code',
-  codex: 'Codex',
-  dsh: 'DeepSeek Harness',
-  memory: '记忆整理'
-};

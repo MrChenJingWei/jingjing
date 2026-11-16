@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://jingjing.local/plugin.schema.json",
-  "title": "静静任务来源插件清单",
-  "description": "plugins/<id>/plugin.json 的规范。运行时由 src/plugin-spec.js 做同样的校验。",
+  "title": "静静插件清单（任务来源 / Worker）",
+  "description": "plugins/<id>/plugin.json 与 workers/<id>/plugin.json 的规范。运行时由 src/plugin-spec.js 做同样的校验。",
   "type": "object",
   "required": ["id", "name", "entry"],
   "additionalProperties": false,
@@ -72,8 +72,47 @@
       "type": "array",
       "maxItems": 40,
       "items": { "$ref": "#/$defs/field" }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "仅 kind 为 worker 时使用：Router 按 abilities 和 cost 派活，调度器按运行限制执行",
+      "properties": {
+        "abilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["text", "write-file", "manage-files", "code", "memory"] },
+          "default": ["text"],
+          "description": "text 文本问答；write-file 在工作区生成文件；manage-files 整理/移动文件；code 读写代码仓库、执行命令；memory 整理记忆"
+        },
+        "cost": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 3,
+          "description": "相对开销。能力都满足时，Router 选开销最低的 Worker"
+        },
+        "keywords": {
+          "type": "string",
+          "maxLength": 300,
+          "default": "",
+          "description": "正则（忽略大小写）。任务文本命中时优先派给这个 Worker，比如 \"飞书|lark\""
+        },
+        "timeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 1440, "default": 30 },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 4, "default": 2 },
+        "retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 0,
+          "description": "失败后自动重试次数；超时和 retryable: false 的失败不重试"
+        }
+      }
     }
   },
+  "if": { "not": { "properties": { "kind": { "const": "worker" } }, "required": ["kind"] } },
+  "then": { "not": { "required": ["worker"] } },
   "$defs": {
     "field": {
       "type": "object",
@@ -85,12 +124,7 @@
           "pattern": "^[A-Za-z][A-Za-z0-9_]{0,39}$"
         },
         "label": { "type": "string", "minLength": 1, "maxLength": 60 },
-        "kind": {
-      "enum": ["source", "worker"],
-      "default": "source",
-      "description": "source = 任务来源；worker = 执行器 Worker"
-    },
-    "type": {
+        "type": {
           "enum": ["text", "url", "password", "number", "checkbox", "textarea", "select"]
         },
         "default": {},

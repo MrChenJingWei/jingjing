@@ -1,0 +1,22 @@
+{
+  "$schema": "../plugin.schema.json",
+  "id": "my-worker",
+  "apiVersion": 1,
+  "kind": "worker",
+  "name": "我的 Agent",
+  "version": "0.1.0",
+  "icon": "W",
+  "description": "一句话说清它能做什么——Router 会把这段描述交给模型来挑 Worker。",
+  "entry": "index.js",
+  "worker": {
+    "abilities": ["code", "write-file", "text"],
+    "cost": 3,
+    "keywords": "my-agent|我的agent",
+    "timeoutMinutes": 30,
+    "concurrency": 1,
+    "retries": 0
+  },
+  "config": [
+    { "key": "bin", "label": "CLI 路径", "type": "text", "placeholder": "留空则在 PATH 里找 my-agent" }
+  ]
+}

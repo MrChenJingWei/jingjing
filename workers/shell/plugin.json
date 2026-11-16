@@ -1,0 +1,20 @@
+{
+  "$schema": "../../plugins/plugin.schema.json",
+  "id": "shell",
+  "apiVersion": 1,
+  "kind": "worker",
+  "name": "文件操作",
+  "version": "1.0.0",
+  "icon": "件",
+  "description": "扫描工作区里的文件，按类型归档到「归档/」子目录；动手前先请你确认。",
+  "entry": "index.js",
+  "worker": {
+    "abilities": [
+      "manage-files"
+    ],
+    "cost": 1,
+    "timeoutMinutes": 10,
+    "concurrency": 1,
+    "retries": 0
+  }
+}

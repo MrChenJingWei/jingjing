@@ -1,0 +1,70 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { detectNeed, pickWorker } from '../src/worker-routing.js';
+
+const codeAbilities = ['code', 'write-file', 'manage-files', 'text'];
+const builtins = [
+  { id: 'llm', label: '问答', abilities: ['text'], cost: 1, source: 'builtin', available: true },
+  { id: 'file', label: '文件生成', abilities: ['write-file'], cost: 1, source: 'builtin', available: true },
+  { id: 'shell', label: '文件操作', abilities: ['manage-files'], cost: 1, source: 'builtin', available: true },
+  { id: 'memory', label: '记忆整理', abilities: ['memory'], cost: 1, source: 'builtin', available: true },
+  { id: 'claude', label: 'Claude Code', abilities: codeAbilities, cost: 4, keywords: 'claude', source: 'builtin', available: true },
+  { id: 'codex', label: 'Codex', abilities: codeAbilities, cost: 4, keywords: 'codex', source: 'builtin', available: false },
+  { id: 'dsh', label: 'DeepSeek Harness', abilities: codeAbilities, cost: 4, source: 'builtin', available: false }
+];
+
+const pick = (text, extra = {}) => pickWorker({ text, workers: builtins, ...extra }).worker;
+
+test('离线启发式：按能力挑最便宜的 Worker，和改造前的派活结果一致', () => {
+  assert.equal(pick('帮我写一份本周工作总结'), 'llm');
+  assert.equal(pick('帮我生成一个 notes.md 文件'), 'file');
+  assert.equal(pick('帮我整理下载文件夹'), 'shell');
+  assert.equal(pick('帮我修复登录页的 bug'), 'claude');
+});
+
+test('模型已选 Worker 时只用强信号纠偏', () => {
+  // 模型选了 llm，但文本明确要写文件 / 操作仓库：改派给具备能力的 Worker。
+  assert.equal(pick('把结果保存成 report.md', { requested: 'llm', decided: true }), 'file');
+  assert.equal(pick('把改动提交并推送到 github', { requested: 'llm', decided: true }), 'claude');
+  assert.equal(pick('整理仓库里的分支', { requested: 'shell', decided: true }), 'claude');
+  // 弱信号（「测试」）不推翻模型的判断。
+  assert.equal(pick('帮我想一个测试用例的思路', { requested: 'llm', decided: true }), 'llm');
+  // 模型选的 Worker 本身具备能力时保持不动。
+  assert.equal(pick('写一个 README.md 文件', { requested: 'claude', decided: true }), 'claude');
+});
+
+test('插件声明的关键词优先，点名不可用的 Worker 时说明改派', () => {
+  const plugin = { id: 'lark', label: '飞书文档', abilities: ['write-file'], cost: 3, keywords: '飞书|lark', source: 'plugin', available: true };
+  const workers = [...builtins, plugin];
+  assert.equal(pickWorker({ text: '把周报写到飞书文档里', workers }).worker, 'lark');
+  // 只有能力匹配时，同能力下内置且更便宜的 file 胜出。
+  assert.equal(pickWorker({ text: '生成一个 a.md 文件', workers }).worker, 'file');
+
+  const result = pickWorker({ text: '用 codex 跑一下单元测试', workers: builtins });
+  assert.equal(result.worker, 'claude');
+  assert.match(result.note, /Codex.*改派给「Claude Code」/);
+});
+
+test('请求的 Worker 不可用或缺失时有兜底', () => {
+  const r = pickWorker({ text: '修一下这个函数', requested: 'codex', workers: builtins });
+  assert.equal(r.worker, 'claude');
+  assert.match(r.note, /本机没有可用的「Codex」/);
+
+  const textOnly = builtins.map((w) => ({ ...w, available: w.id === 'llm' }));
+  const fallback = pickWorker({ text: '修复登录页的 bug', workers: textOnly });
+  assert.equal(fallback.worker, 'llm');
+  assert.match(fallback.note, /没有具备「code」能力/);
+
+  assert.equal(pickWorker({ text: '', workers: builtins }).worker, 'llm');
+  assert.equal(pickWorker({ text: '随便', workers: [] }).worker, null);
+});
+
+test('detectNeed：写文件优先，弱信号只在离线判断时生效', () => {
+  assert.equal(detectNeed('生成一个 data.json 文件'), 'write-file');
+  assert.equal(detectNeed('推送到 github'), 'code');
+  assert.equal(detectNeed('清理下载目录'), 'manage-files');
+  assert.equal(detectNeed('清理下载目录', { decided: true }), null);
+  assert.equal(detectNeed('跑一下编译'), 'code');
+  assert.equal(detectNeed('跑一下编译', { decided: true }), null);
+  assert.equal(detectNeed('写一首诗'), null);
+});

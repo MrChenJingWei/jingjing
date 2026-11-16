@@ -11,7 +11,12 @@ const STATUS_LABEL = {
 };
 const PLUGIN_TYPE_LABEL = { poll: '轮询', webhook: 'Webhook 推送', stream: '长连接', manual: '手动', watch: '文件监听' };
 const WORKER_LABEL = { llm: '问答', shell: '文件操作', file: '文件生成', claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness', memory: '记忆整理' };
-const WORKER_OPTIONS = ['llm', 'shell', 'claude', 'codex', 'dsh', 'memory'];
+const ABILITY_LABEL = { text: '文本', 'write-file': '写文件', 'manage-files': '整理文件', code: '代码', memory: '记忆' };
+const WORKER_LIMIT_FIELDS = [
+  { key: 'timeoutMinutes', label: '超时（分钟）', min: 1, max: 1440, help: '超过这个时长自动停止，且不自动重试' },
+  { key: 'concurrency', label: '最多同时运行', min: 1, max: 4, help: '同时还受全局并发上限约束' },
+  { key: 'retries', label: '失败自动重试次数', min: 0, max: 3, help: '编码类 Agent 建议保持 0，避免重复花费' }
+];
 function workerLabel(id) {
   return state.workers?.[id]?.label || WORKER_LABEL[id] || id;
 }
@@ -36,12 +41,16 @@ const EVENT_LABEL = {
   'task/recovered': '进程重启后恢复',
   'task/proactive': '由规则触发',
   'task/edited': '已编辑',
-  'task/retried': '重新排队'
+  'task/retried': '重新排队',
+  'workflow/proposed': '总结成工作流程',
+  'workflow/skipped': '没有总结流程'
 };
+const WORKFLOW_STATUS_LABEL = { active: '生效', candidate: '候选', disabled: '已停用', dismissed: '已忽略' };
 
 const state = {
   settings: null,
   workers: {},
+  workflows: { workflows: [], dirs: [], errors: [], root: '' },
   stats: {},
   tasks: [],
   approvals: [],
@@ -396,6 +405,37 @@ function approvalBlock(task, approval) {
     </div>`;
 }
 
+function workflowById(id) {
+  return (state.workflows?.workflows || []).find((w) => w.id === id) || null;
+}
+
+function workflowCard(msg) {
+  const w = workflowById(msg.meta?.workflowId);
+  if (!w) return '<div class="task-card workflow-card"><div class="task-card-body">这个流程文件已经被移走或删除了。</div></div>';
+  const steps = (w.steps || '').split('\n').filter((line) => line.trim()).slice(0, 6).join('\n');
+  const actions = w.status === 'candidate'
+    ? `<button class="mini-btn primary" data-action="workflow-status" data-id="${w.id}" data-status="active">保存为习惯</button>
+       <button class="mini-btn" data-action="workflow-open" data-id="${w.id}">先改一改</button>
+       <button class="mini-btn" data-action="workflow-status" data-id="${w.id}" data-status="dismissed">忽略</button>`
+    : `<span class="worker-tag">${esc(WORKFLOW_STATUS_LABEL[w.status] || w.status)}</span>
+       <button class="mini-btn" data-action="workflow-open" data-id="${w.id}">查看</button>`;
+  return `
+    <div class="task-card workflow-card" data-workflow-id="${w.id}">
+      <div class="task-card-head">
+        <div class="task-card-icon">流</div>
+        <div class="task-card-main">
+          <div class="task-card-title">${esc(w.name)}</div>
+          <div class="task-card-meta">
+            <span>${esc(w.when ? `触发：${w.when}` : '按名称匹配')}</span>
+            ${w.worker ? `<span>·</span><span>${esc(workerLabel(w.worker))}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="task-card-body">${md(steps)}</div>
+      <div class="task-card-actions">${actions}</div>
+    </div>`;
+}
+
 function messageHtml(msg, index) {
   const isUser = msg.role === 'user';
   const task = msg.task_id ? taskById(msg.task_id) : null;
@@ -407,6 +447,7 @@ function messageHtml(msg, index) {
         <div class="msg-author">${isUser ? '你' : '静静'}</div>
         <div class="bubble">${body}</div>
         ${task ? inlineTaskCard(task) : ''}
+        ${msg.kind === 'workflow' ? workflowCard(msg) : ''}
         ${index === state.messages.length - 1 ? `<div class="msg-time">${clock(msg.created_at)}</div>` : ''}
       </div>
     </div>`;
@@ -595,9 +636,11 @@ function closeDrawer() {
 
 function eventDetail(e) {
   if (!e.data) return '';
-  if (e.type === 'task/created') return `${workerLabel(e.data.worker)}`;
+  if (e.type === 'task/created') return `${workerLabel(e.data.worker)}${e.data.workflow ? ` · 按流程「${e.data.workflow}」` : ''}`;
   if (e.type === 'approval/resolved') return e.data.option ? `选择：${e.data.option}` : '';
   if (e.type === 'task/retry') return `第 ${e.data.attempt} 次尝试：${e.data.error || ''}`;
+  if (e.type === 'workflow/proposed') return `候选习惯「${e.data.name || ''}」`;
+  if (e.type === 'workflow/skipped') return e.data.reason || '';
   if (e.type === 'task/waiting_approval') return e.data.question || '';
   if (e.type === 'task/failed') return (e.data.error || '').slice(0, 120);
   if (e.type === 'task/proactive') return e.data.rule || '';
@@ -617,6 +660,7 @@ function renderDrawer({ task, events, approval }) {
     <div class="drawer-meta">
       ${statusPill(task.status)}
       <span class="worker-tag">${workerLabel(task.worker)}</span>
+      ${task.workflow_id ? `<span class="worker-tag">流程：${esc(workflowById(task.workflow_id)?.name || '已移除')}</span>` : ''}
       <span>${tokensText(task.tokens)} tokens</span>
       <span>创建于 ${timeAgo(task.created_at)}</span>
     </div>
@@ -658,6 +702,9 @@ function renderDrawer({ task, events, approval }) {
     <div class="drawer-actions">
       ${['queued', 'running', 'waiting_approval'].includes(task.status)
         ? `<button class="mini-btn danger" data-action="cancel-task" data-id="${task.id}">停止这个任务</button>`
+        : ''}
+      ${task.status === 'done' && !task.workflow_id
+        ? `<button class="mini-btn" data-action="learn-task" data-id="${task.id}">总结成工作流程</button>`
         : ''}
       <button class="mini-btn" data-action="close-drawer">关闭</button>
     </div>
@@ -794,6 +841,7 @@ const SETTINGS_PAGES = [
   { id: 'model', group: '助手', glyph: '模', title: '模型与称呼', desc: '运行模式、模型、Key 和它怎么称呼你。', needsSave: true },
   { id: 'scheduler', group: '助手', glyph: '调', title: '调度器', desc: '并发、恢复次数、默认目录和每日简报开关。', needsSave: true },
   { id: 'worker', group: '助手', glyph: '工', title: 'Worker', desc: '执行器可用状态；权限由本机 CLI 和账户决定。', needsSave: true },
+  { id: 'workflows', group: '助手', glyph: '流', title: '工作流程', desc: '读取你写好的流程文档，确认静静学到的习惯，按流程派活。', needsSave: false },
   { id: 'workspaces', group: '助手', glyph: '区', title: '工作区', desc: '任务来源落到的目录；每个来源可以单独绑定。', needsSave: false },
   { id: 'plugins', group: '来源', glyph: '插', title: '任务来源插件', desc: '邮箱、日历等发现来源，单独启用和配置。', needsSave: false },
   { id: 'rules', group: '助手', glyph: '报', title: '每日简报', desc: '每天定时汇总昨天完成和今天待处理的事。', needsSave: false },
@@ -815,6 +863,12 @@ function settingsSummary(id) {
     const workers = Object.values(state.workers || {});
     const available = workers.filter((w) => w.available).length;
     return `${available}/${workers.length} 个可用`;
+  }
+  if (id === 'workflows') {
+    const list = state.workflows?.workflows || [];
+    const active = list.filter((w) => w.status === 'active').length;
+    const candidates = list.filter((w) => w.status === 'candidate').length;
+    return `${active} 个生效${candidates ? ` · ${candidates} 个候选待确认` : ''}`;
   }
   if (id === 'workspaces') {
     const list = state.settings?.workspaces || [];
@@ -890,6 +944,7 @@ function openSettingsPage(id) {
     panel.hidden = panel.dataset.settingsPanel !== id;
   }
   if (id === 'workspaces') renderWorkspaces();
+  if (id === 'workflows') renderWorkflows();
   if (id === 'plugins') { state.pluginPage = 'list'; renderPlugins(); }
   if (id === 'rules') renderRules();
   if (id === 'pairing') loadPairing();
@@ -1041,18 +1096,31 @@ function workerConfigFields(w) {
   }).join('');
 }
 
+function workerLimitFields(w) {
+  return WORKER_LIMIT_FIELDS.map((field) => {
+    const value = w.limits?.[field.key] ?? '';
+    const fallback = w.limitDefaults?.[field.key];
+    return `<label class="field"><span>${esc(field.label)}</span><input type="number" name="limit.${field.key}" min="${field.min}" max="${field.max}" step="1" value="${esc(value)}" placeholder="${esc(fallback ?? '')}" title="${esc(field.help)}（默认 ${esc(fallback ?? '-')}）" /></label>`;
+  }).join('');
+}
+
 function renderWorkerGrid() {
   const entries = Object.entries(state.workers || {});
-  $('#worker-grid').innerHTML = entries.map(([key, w]) => `
-    <div class="worker-item ${w.available ? '' : 'is-off'}" data-worker="${key}">
+  $('#worker-grid').innerHTML = entries.map(([key, w]) => {
+    const abilities = (w.abilities || []).map((a) => ABILITY_LABEL[a] || a).join(' · ');
+    const origin = w.source === 'plugin' ? 'Worker 插件' : '内置';
+    const status = w.available ? w.detail || '可用' : w.detail || '不可用';
+    return `
+    <div class="worker-item ${w.available ? '' : 'is-off'}" data-worker="${key}" title="${esc(w.description || '')}">
       <span class="worker-dot"></span>
-      <span class="worker-item-main"><b>${esc(w.label || key)}</b><small>${esc(w.available ? w.detail || '可用' : w.detail || '不可用')}${w.source === 'plugin' ? ' · Worker 插件' : ''}</small></span>
+      <span class="worker-item-main"><b>${esc(w.label || key)}</b><small>${esc(status)} · ${esc(origin)}${abilities ? ` · ${esc(abilities)}` : ''}</small></span>
       <span class="worker-item-actions">
-        ${w.source === 'plugin' ? `<button type="button" class="mini-btn" data-worker-config="${key}">配置</button>
-        <button type="button" class="mini-btn" data-worker-test="${key}">检测</button>` : ''}
+        <button type="button" class="mini-btn" data-worker-config="${key}">配置</button>
+        <button type="button" class="mini-btn" data-worker-test="${key}">检测</button>
         <button type="button" class="mini-btn danger" data-worker-delete="${key}">删除</button>
       </span>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 function workerRuleCondition(rule) {
@@ -1186,15 +1254,21 @@ $('#worker-grid')?.addEventListener('click', async (event) => {
     if (!w) return;
     openDialog({
       title: `配置 ${w.label || id}`,
-      desc: '这些配置只属于当前主机的这个 Worker。',
-      body: `<div class="grid-2">${workerConfigFields(w)}<label class="switch-field"><span>启用</span><input type="checkbox" class="switch" name="worker.enabled" ${w.enabled ? 'checked' : ''}></label></div>`,
+      desc: `${w.description ? `${w.description} ` : ''}这些配置只属于当前主机的这个 Worker；运行限制留空表示用默认值。`,
+      body: `<div class="grid-2">${workerLimitFields(w)}${workerConfigFields(w)}<label class="switch-field"><span>启用</span><input type="checkbox" class="switch" name="worker.enabled" ${w.enabled ? 'checked' : ''}></label></div>`,
       onSubmit: async (values) => {
         const configValues = {};
         for (const field of w.configSchema || []) {
           const raw = values[`worker.${field.key}`];
           configValues[field.key] = field.type === 'checkbox' ? Boolean(raw) : field.type === 'number' ? Number(raw) : raw;
         }
-        const data = await api(`/api/workers/${id}`, { method: 'PUT', body: { config: configValues, enabled: Boolean(values['worker.enabled']) } });
+        const limits = {};
+        for (const field of WORKER_LIMIT_FIELDS) {
+          const raw = String(values[`limit.${field.key}`] ?? '').trim();
+          // 和默认值相同就不存覆盖，以后 Worker 升级默认值时能跟着变。
+          if (raw !== '' && Number(raw) !== w.limitDefaults?.[field.key]) limits[field.key] = Number(raw);
+        }
+        const data = await api(`/api/workers/${id}`, { method: 'PUT', body: { config: configValues, limits, enabled: Boolean(values['worker.enabled']) } });
         state.workers = data.workers;
         renderWorkerGrid();
         toast('Worker 配置已保存。');
@@ -2359,6 +2433,13 @@ function connectEvents() {
     }
   });
 
+  on('workflows/updated', (payload) => {
+    state.workflows = payload;
+    renderWorkflows();
+    renderChat();
+    if (state.settingsPage === 'index') renderSettingsIndex();
+  });
+
   on('task/deleted', ({ id }) => {
     state.tasks = state.tasks.filter((t) => t.id !== id);
     if (state.view === 'tasks') renderTasks();
@@ -2418,6 +2499,127 @@ function connectEvents() {
   });
 }
 
+/* ------------------------------ workflows ------------------------------ */
+
+function workflowMeta(w) {
+  const parts = [w.source === 'learned' ? '习惯' : '文档', WORKFLOW_STATUS_LABEL[w.status] || w.status];
+  if (w.when) parts.push(`触发：${w.when}`);
+  else if (w.source === 'doc') parts.push('按名称匹配');
+  if (w.worker) parts.push(`→ ${workerLabel(w.worker)}`);
+  if (w.stats?.uses) parts.push(`用过 ${w.stats.uses} 次，成功 ${w.stats.successes}`);
+  if (w.error) parts.push(`⚠ ${w.error}`);
+  return parts.join(' · ');
+}
+
+function renderWorkflows() {
+  const box = $('#workflow-list');
+  if (!box) return;
+  const data = state.workflows || {};
+  const list = data.workflows || [];
+  box.innerHTML = list.length ? list.map((w) => `
+    <div class="worker-rule workflow-item ${w.status === 'active' ? '' : 'is-off'}" title="${esc(w.file)}">
+      <span class="worker-rule-main"><b>${esc(w.name)}</b><small>${esc(workflowMeta(w))}</small></span>
+      <span class="worker-rule-actions">
+        <button type="button" class="mini-btn" data-action="workflow-open" data-id="${w.id}">${w.editable ? '编辑' : '查看'}</button>
+        ${w.status === 'active'
+          ? `<button type="button" class="mini-btn" data-action="workflow-status" data-id="${w.id}" data-status="disabled">停用</button>`
+          : `<button type="button" class="mini-btn primary" data-action="workflow-status" data-id="${w.id}" data-status="active">${w.status === 'candidate' ? '保存为习惯' : '启用'}</button>`}
+        ${w.editable ? `<button type="button" class="mini-btn danger" data-action="workflow-delete" data-id="${w.id}">删除</button>` : ''}
+      </span>
+    </div>`).join('') : '<div class="admin-note">还没有工作流程。可以新建一个，或者在下面指定放流程文档的文件夹。</div>';
+  const errors = data.errors || [];
+  const errorBox = $('#workflow-errors');
+  if (errorBox) {
+    errorBox.innerHTML = errors.length
+      ? `<div class="admin-note">${errors.map((e) => esc(`${e.dir ? `${e.dir}：` : ''}${e.error}`)).join('<br>')}</div>`
+      : '';
+  }
+  const root = $('#workflow-root');
+  if (root) root.textContent = data.root || '';
+  const dirs = $('#workflow-dirs');
+  if (dirs && document.activeElement !== dirs) dirs.value = (state.settings?.workflowDirs || []).join('\n');
+}
+
+async function setWorkflowStatus(id, status) {
+  try {
+    state.workflows = await api(`/api/workflows/${id}/status`, { method: 'POST', body: { status } });
+    renderWorkflows();
+    renderChat();
+    toast(status === 'active' ? '已保存为习惯，同类请求会按它执行。' : status === 'dismissed' ? '已忽略，同类任务不会再提议。' : '已更新。');
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function openWorkflow(id) {
+  let data;
+  try {
+    data = await api(`/api/workflows/${id}`);
+  } catch (err) {
+    toast(err.message);
+    return;
+  }
+  const w = data.workflow;
+  openDialog({
+    title: w.name,
+    desc: w.editable
+      ? `文件：${w.file}。头部的 when 是触发词（逗号分隔），worker / workspace 可选，正文是步骤。`
+      : `这是你文件夹里的文件：${w.file}。静静只读不改，请用编辑器修改，保存后会自动生效。`,
+    body: `<label class="field span-2"><textarea name="raw" rows="14" ${w.editable ? '' : 'readonly'}>${esc(data.raw)}</textarea></label>`,
+    onSubmit: async (values) => {
+      if (!w.editable) return;
+      state.workflows = await api(`/api/workflows/${id}`, { method: 'PUT', body: { raw: values.raw } });
+      renderWorkflows();
+      renderChat();
+      toast('工作流程已保存。');
+    }
+  });
+}
+
+$('#add-workflow')?.addEventListener('click', () => {
+  const workers = Object.entries(state.workers || {}).filter(([, w]) => w.available);
+  openDialog({
+    title: '新建工作流程',
+    desc: '保存到静静的工作流程目录。命中触发词的请求会直接按它派活，步骤会附进交给 Worker 的指令。',
+    body: `
+      <label class="field"><span>流程名</span><input name="name" placeholder="例如：写周报" required /></label>
+      <label class="field"><span>触发词</span><input name="when" placeholder="周报, weekly（逗号分隔，支持正则）" /></label>
+      <label class="field"><span>Worker</span><select name="worker"><option value="">自动（按能力挑）</option>
+        ${workers.map(([id, w]) => `<option value="${esc(id)}">${esc(w.label || id)}</option>`).join('')}</select></label>
+      <label class="field"><span>工作区</span><select name="workspace"><option value="">自动</option>
+        ${(state.settings?.workspaces || []).map((ws) => `<option value="${esc(ws.name)}">${esc(ws.name)}</option>`).join('')}</select></label>
+      <label class="field span-2"><span>步骤</span><textarea name="steps" rows="6" placeholder="1. 汇总本周完成的任务，按项目分组&#10;2. 每个项目写一句结论和下周计划&#10;3. 保存为 周报-日期.md"></textarea></label>`,
+    onSubmit: async (values) => {
+      state.workflows = await api('/api/workflows', { method: 'POST', body: values });
+      renderWorkflows();
+      toast('工作流程已创建。');
+    }
+  });
+});
+
+$('#reload-workflows')?.addEventListener('click', async () => {
+  try {
+    state.workflows = await api('/api/workflows/reload', { method: 'POST' });
+    renderWorkflows();
+    toast(`已读取 ${state.workflows.workflows.length} 个工作流程。`);
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+$('#save-workflow-dirs')?.addEventListener('click', async () => {
+  const dirs = ($('#workflow-dirs')?.value || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  try {
+    const data = await api('/api/settings', { method: 'PUT', body: { workflowDirs: dirs } });
+    state.settings = data.settings;
+    state.workflows = await api('/api/workflows/reload', { method: 'POST' });
+    renderWorkflows();
+    toast(`已保存，读取到 ${state.workflows.workflows.length} 个工作流程。`);
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
 /* ------------------------------- click -------------------------------- */
 
 document.addEventListener('click', async (e) => {
@@ -2453,6 +2655,31 @@ document.addEventListener('click', async (e) => {
     } catch (err) {
       toast(err.message);
     }
+  } else if (action === 'workflow-status') {
+    await setWorkflowStatus(el.dataset.id, el.dataset.status);
+  } else if (action === 'workflow-open') {
+    await openWorkflow(el.dataset.id);
+  } else if (action === 'workflow-delete') {
+    const w = workflowById(el.dataset.id);
+    if (!confirm(`删除工作流程「${w?.name || ''}」？文件会一起删除。`)) return;
+    try {
+      state.workflows = await api(`/api/workflows/${el.dataset.id}`, { method: 'DELETE' });
+      renderWorkflows();
+      toast('工作流程已删除。');
+    } catch (err) {
+      toast(err.message);
+    }
+  } else if (action === 'learn-task') {
+    el.disabled = true;
+    try {
+      const data = await api(`/api/tasks/${el.dataset.id}/learn`, { method: 'POST', timeoutMs: 90000 });
+      state.workflows = data;
+      toast(data.skipped || `已总结成候选习惯「${data.workflow?.name}」，在对话里确认。`, 3600);
+      await openTask(el.dataset.id);
+    } catch (err) {
+      el.disabled = false;
+      toast(err.message);
+    }
   } else if (action === 'forget') {
     if (confirm('要忘掉这条记忆吗？')) forgetMemory(el.dataset.id);
   } else if (action === 'edit-memory') {
@@ -2478,6 +2705,7 @@ function applySnapshot(data, { initial = false } = {}) {
     messages: data.messages,
     rules: data.rules,
     workerRules: data.workerRules || [],
+    workflows: data.workflows || { workflows: [], dirs: [], errors: [], root: '' },
     plugins: data.plugins || [],
     pluginErrors: data.pluginErrors || [],
     channels: data.channels,

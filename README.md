@@ -98,20 +98,25 @@ npm run plugin:check
 - **挂起零消耗**：Worker 需要你拍板时返回 `needs_approval`，调度器把审批写进 `approvals` 表，任务状态变成 `waiting_approval`，**Worker 进程此时已经退出**。不占 CPU、不烧 token。
 - **恢复执行**：你点选项后，审批结果写进任务的 `resume_payload`，任务重新入队，Worker 带着“你选了什么”重新启动，从原来的上下文继续。
 - **事件溯源**：每一次创建、开始、等待、拍板、重试、完成都追加到 `task_events`，任务详情里就是一条可回放的时间线。
-- **重试与熔断**：失败自动重试一次；单个任务最多恢复 6 次（`maxHops`），防止 Agent 在“问—答—再问”里循环。
+- **超时、重试与熔断**：每个 Worker 自带运行限制（超时、最多同时运行几个、失败重试几次），可在设置里按主机覆盖。问答/文件生成失败会重试 1 次，编码类 Agent 默认不重试，超时一律不重试；单个任务最多恢复 6 次（`maxHops`），防止 Agent 在“问—答—再问”里循环。
+- **取消就是取消**：取消或超时后调度器立刻释放槽位，Worker 晚到的结果会被丢弃，不会把任务改回完成或重新排队。
 - **崩溃恢复**：服务重启时，把卡在 `running` 的任务放回队列，而不是假装它还在跑。
 
-### 3. Worker：无状态、可替换
+### 3. Worker：无状态、可替换、全部插件化
 
-`src/workers.js` 里每个 Worker 都只做一件事：拿到任务，跑一轮，返回结果，退出。
+每个 Worker 都只做一件事：拿到任务，跑一轮，返回结果，退出。内置 Worker 和第三方 Worker 是同一种插件包（`plugin.json` + `index.js`），内置的放在 `workers/<id>/`，随在线升级一起更新；它们只通过 `execute(task, ctx)` 的 `ctx` 使用宿主能力。
 
-| Worker | 用途 | 说明 |
+| Worker | 能力 | 说明 |
 | --- | --- | --- |
-| `llm` | 问答、文本分析、总结、起草 | 只输出文本，不读写文件、不执行命令；演示模式本地生成 |
-| `shell` | 文件整理、归档、重命名 | 在任务工作区运行；能访问哪些文件由主机账户权限决定 |
-| `claude` | 编码任务 | 调用本机 `claude -p`，支持 `--resume` 续跑 |
-| `codex` | 编码任务 | 调用本机 `codex exec`（需自行安装） |
-| `memory` | 记忆整理 | 本地统计与归档 |
+| `llm` | text | 问答、分析、总结、起草；只输出文本，演示模式本地生成 |
+| `file` | write-file | 让模型生成一份文本文件，写入任务工作区 |
+| `shell` | manage-files | 扫描工作区并按类型归档，动手前先请你确认 |
+| `claude` | code / write-file / manage-files / text | 调用本机 `claude -p`，支持 `--resume` 续跑 |
+| `codex` | 同上 | 调用本机 `codex exec`（需自行安装） |
+| `dsh` | 同上 | 在 DeepSeek Harness 环境里以 `dsh headless` 运行 |
+| `memory` | memory | 本地统计与归档 |
+
+Router 不认具体的 Worker id，只按能力派活（`src/worker-routing.js`）：文本需要什么能力，就在可用的 Worker 里挑具备该能力、开销（`cost`）最低的一个；插件还可以声明 `keywords`，被点名时优先。所以装上一个新的 Worker 插件，不用改任何核心代码就能被自动派到活。
 
 任何外部 Agent 都可以通过约定接入：需要人拍板时，在输出的最后单独写一行
 
@@ -248,8 +253,8 @@ npm start
 Worker 是执行器，不是任务来源。内置 Worker 包括：问答、文件操作、文件生成、Claude Code、Codex、DeepSeek Harness、记忆整理。
 
 - 内置 Worker 可以删除，删除后点「恢复内置 Worker」找回；
-- 也可以安装 `kind: "worker"` 的插件，接入自己主机上的 Agent/CLI；
-- Worker 插件有独立配置和 `detect()`，可以按主机环境判断是否可用；
+- 也可以安装 `kind: "worker"` 的插件，接入自己主机上的 Agent/CLI；manifest 里用 `worker` 段声明能力、开销、关键词和运行限制，写法见 [docs/PLUGIN.md](docs/PLUGIN.md#worker-插件)，模板在 `plugins/.template-worker/`；
+- 每个 Worker（包括内置的）都可以在设置里调整超时、最多同时运行几个、失败重试几次；插件还有独立配置和 `detect()`，可以按主机环境判断是否可用；
 - Worker 插件以当前 macOS 用户权限运行，静静不控制它的工具权限。
 
 DeepSeek Harness 已经是内置 Worker，任务里选「DeepSeek Harness」即可用 `dsh headless` 执行。
@@ -266,6 +271,28 @@ DeepSeek Harness 已经是内置 Worker，任务里选「DeepSeek Harness」即�
 - 正则 `发票|invoice` + 来源 `plugin:email-imap` → 文件生成
 
 来源支持 `web`、`plugin:*`、`plugin:email-imap` 等；事件类型支持 `email.unread`、`issues.*`、`*`。同一来源同一事项在排队时会合并成一条任务；事件的 `hops` 超过 8 层不再继续派发。规则里的 Worker 不可用时会被跳过，继续走默认 Router 判断。
+
+## 工作流程与习惯
+
+工作流程描述「遇到什么请求 → 派给哪个 Worker、在哪个工作区 → 按什么步骤做」。每个流程是一个 Markdown 文件：
+
+```markdown
+---
+name: 写周报
+when: 周报, weekly        # 触发词：逗号分隔，每段都可以是正则
+worker: file              # 可选：派给哪个 Worker
+workspace: 默认工作区      # 可选：工作区名称或 id
+---
+
+1. 汇总本周完成的任务，按项目分组
+2. 每个项目写一句结论和下周计划
+3. 保存为 周报-日期.md
+```
+
+- **读取你写好的流程**：设置 → 工作流程 → 「读取的文件夹」里填上放流程文档的文件夹（最多读 3 层、300 个 `.md`）。头部可以不写：没有 `when` 时按标题模糊匹配（比如「部署流程.md」能认出「帮我部署一下」）。静静**只读不改**这些文件，停用只记在本机；改完文件几秒内自动生效。
+- **派活**：消息命中生效的流程时，不再让模型猜意图和 Worker，直接按流程派活，步骤会附在交给 Worker 的指令末尾。优先级：流程指定的 Worker > Worker 分配规则 > 按能力挑选。明显是提问（以「？」「吗」结尾）、要记东西或问进度的消息不套流程。来源插件发现的事项同样会匹配流程。
+- **学习习惯**：对话或手动发起的任务完成后，如果过程不是一问一答（用了非纯文本 Worker、中途拍过板、被你改过 Worker 或重试过），静静会把经过总结成一个**候选习惯**，写到 `<数据目录>/workflows/learned/`，并在对话里发一张卡片：「保存为习惯 / 先改一改 / 忽略」。确认后同类请求就按它执行；忽略的不会再提议。任何完成的任务也可以在详情里手动点「总结成工作流程」。接了云端模型时由模型提炼步骤和触发词，演示模式按事件时间线生成。
+- 每个流程会统计用过几次、成功几次，显示在设置页里。
 
 ## 设置：每个模块一个二级页面
 
@@ -338,7 +365,9 @@ jingjing/
 │   ├── events.js          SSE 事件总线
 │   ├── memory.js          分层记忆与中文检索
 │   ├── llm.js             意图识别 + 模型适配 + 演示回复
-│   ├── workers.js         LLM / Shell / Claude / Codex / Memory
+│   ├── workers.js         Worker 注册表、宿主 API（ctx）、运行限制
+│   ├── worker-routing.js  按能力 / 开销 / 关键词挑 Worker
+│   ├── workflows.js       工作流程：读取 .md、匹配、学习习惯
 │   ├── scheduler.js       队列、挂起恢复、事件日志、重试
 │   ├── router.js          Router、规则、对话
 │   ├── plugins.js         来源插件加载、配置、状态
@@ -350,9 +379,13 @@ jingjing/
 │   ├── overlay.js         启动时切换到数据目录里的新版本
 │   ├── update.js          Release 检查、下载校验、安装与回滚
 │   └── seed.js            演示数据
+├── workers/               内置 Worker（和 Worker 插件同一种格式）
+│   ├── llm/ file/ shell/ memory/
+│   └── claude/ codex/ dsh/
 ├── plugins/               任务来源插件
 │   ├── plugin.schema.json manifest 的 JSON Schema
-│   ├── .template/         新插件模板
+│   ├── .template/         新来源插件模板
+│   ├── .template-worker/  新 Worker 插件模板
 │   ├── email-imap/        IMAP 客户端 + MIME 解析
 │   └── calendar/          ICS 解析 + 日程任务
 ├── packaging/macos/       Swift 菜单栏 App + 打包脚本

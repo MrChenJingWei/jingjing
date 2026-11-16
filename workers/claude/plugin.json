@@ -1,0 +1,24 @@
+{
+  "$schema": "../../plugins/plugin.schema.json",
+  "id": "claude",
+  "apiVersion": 1,
+  "kind": "worker",
+  "name": "Claude Code",
+  "version": "1.0.0",
+  "icon": "码",
+  "description": "调用本机的 claude CLI，在任务工作区里读写代码、执行命令、操作 git 仓库，适合编码和多步骤的系统操作。",
+  "entry": "index.js",
+  "worker": {
+    "abilities": [
+      "code",
+      "write-file",
+      "manage-files",
+      "text"
+    ],
+    "cost": 4,
+    "keywords": "claude",
+    "timeoutMinutes": 60,
+    "concurrency": 1,
+    "retries": 0
+  }
+}

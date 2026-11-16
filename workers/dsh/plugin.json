@@ -1,0 +1,24 @@
+{
+  "$schema": "../../plugins/plugin.schema.json",
+  "id": "dsh",
+  "apiVersion": 1,
+  "kind": "worker",
+  "name": "DeepSeek Harness",
+  "version": "1.0.0",
+  "icon": "H",
+  "description": "以无头模式调用 DeepSeek Harness，在任务工作区里读写代码、执行命令。",
+  "entry": "index.js",
+  "worker": {
+    "abilities": [
+      "code",
+      "write-file",
+      "manage-files",
+      "text"
+    ],
+    "cost": 4,
+    "keywords": "deepseek harness|\\bdsh\\b",
+    "timeoutMinutes": 60,
+    "concurrency": 1,
+    "retries": 0
+  }
+}

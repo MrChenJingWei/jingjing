@@ -26,7 +26,83 @@ function asString(value, fallback = '') {
 }
 
 const FIELD_KEYS = new Set(['key', 'label', 'type', 'default', 'placeholder', 'help', 'required', 'wide', 'min', 'max', 'options']);
-const MANIFEST_KEYS = new Set(['$schema', 'id', 'apiVersion', 'kind', 'name', 'version', 'description', 'icon', 'entry', 'type', 'intervalMinutes', 'webhook', 'lifecycle', 'multiInstance', 'capabilities', 'config']);
+const MANIFEST_KEYS = new Set(['$schema', 'id', 'apiVersion', 'kind', 'name', 'version', 'description', 'icon', 'entry', 'type', 'intervalMinutes', 'webhook', 'lifecycle', 'multiInstance', 'capabilities', 'config', 'worker']);
+
+/**
+ * Worker 能力词表。Router 只按能力挑 Worker，不认具体 id：
+ * - text：纯文本问答 / 写作
+ * - write-file：在任务工作区里生成文件
+ * - manage-files：整理、移动、归档文件
+ * - code：读写代码仓库、执行命令、操作 git
+ * - memory：整理静静的记忆库
+ */
+export const WORKER_ABILITIES = ['text', 'write-file', 'manage-files', 'code', 'memory'];
+export const WORKER_LIMIT_RANGES = {
+  timeoutMinutes: { min: 1, max: 1440, label: '超时（分钟）' },
+  concurrency: { min: 1, max: 4, label: '最多同时运行' },
+  retries: { min: 0, max: 3, label: '失败自动重试次数' }
+};
+export const WORKER_DEFAULTS = Object.freeze({
+  abilities: ['text'],
+  cost: 3,
+  keywords: '',
+  timeoutMinutes: 30,
+  concurrency: 2,
+  retries: 0
+});
+const WORKER_KEYS = new Set(['abilities', 'cost', 'keywords', ...Object.keys(WORKER_LIMIT_RANGES)]);
+
+function intInRange(value, { min, max }, label) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) bad(`${label} 必须是 ${min}–${max} 的整数`);
+  return number;
+}
+
+/** 校验 manifest 里的 worker 段：能力、开销、关键词和运行限制。 */
+export function validateWorkerBlock(raw) {
+  if (raw === undefined) raw = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad('worker 必须是对象');
+  for (const key of Object.keys(raw)) {
+    if (!WORKER_KEYS.has(key)) bad(`worker 有未知字段：${key}`);
+  }
+  let abilities = WORKER_DEFAULTS.abilities;
+  if (raw.abilities !== undefined) {
+    if (!Array.isArray(raw.abilities) || !raw.abilities.length) bad('worker.abilities 必须是非空数组');
+    for (const ability of raw.abilities) {
+      if (!WORKER_ABILITIES.includes(ability)) {
+        bad(`worker.abilities 不支持：${ability}（可选 ${WORKER_ABILITIES.join(' / ')}）`);
+      }
+    }
+    abilities = [...new Set(raw.abilities)];
+  }
+  const keywords = raw.keywords === undefined ? '' : raw.keywords;
+  if (typeof keywords !== 'string' || keywords.length > 300) bad('worker.keywords 必须是不超过 300 字符的正则字符串');
+  if (keywords) {
+    try { new RegExp(keywords, 'i'); } catch (err) { bad(`worker.keywords 不是合法正则：${err.message}`); }
+  }
+  const out = {
+    abilities,
+    cost: raw.cost === undefined ? WORKER_DEFAULTS.cost : intInRange(raw.cost, { min: 1, max: 5 }, 'worker.cost'),
+    keywords
+  };
+  for (const [key, range] of Object.entries(WORKER_LIMIT_RANGES)) {
+    out[key] = raw[key] === undefined ? WORKER_DEFAULTS[key] : intInRange(raw[key], range, `worker.${key}`);
+  }
+  return out;
+}
+
+/** 校验本机对 Worker 运行限制的覆盖值；空值表示沿用 manifest 默认。 */
+export function validateWorkerLimits(raw = {}) {
+  if (raw === null || raw === undefined) raw = {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) bad('limits 必须是对象');
+  const out = {};
+  for (const [key, range] of Object.entries(WORKER_LIMIT_RANGES)) {
+    const value = raw[key];
+    if (value === undefined || value === null || value === '') continue;
+    out[key] = intInRange(value, range, range.label);
+  }
+  return out;
+}
 
 function validateField(field, index) {
   if (!field || typeof field !== 'object' || Array.isArray(field)) {
@@ -132,6 +208,7 @@ export function validateManifest(raw, { dir, dirName } = {}) {
   if (raw.multiInstance !== undefined && typeof raw.multiInstance !== 'boolean') bad('multiInstance 必须是布尔值');
   if (raw.kind !== undefined && !['source', 'worker'].includes(raw.kind)) bad('kind 只能是 source 或 worker');
   const kind = raw.kind === 'worker' ? 'worker' : 'source';
+  if (kind !== 'worker' && raw.worker !== undefined) bad('只有 kind 为 worker 的插件才能写 worker 段');
   const legacyType = raw.webhook === true ? 'webhook' : raw.lifecycle === true ? 'stream' : 'poll';
   const type = raw.type === undefined ? legacyType : String(raw.type);
   if (!PLUGIN_TYPES.includes(type)) bad(`type 不支持：${type}（可选 ${PLUGIN_TYPES.join(' / ')}）`);
@@ -156,7 +233,7 @@ export function validateManifest(raw, { dir, dirName } = {}) {
     if (typeof capabilities[key] !== 'boolean') bad(`capabilities.${key} 必须是布尔值`);
   }
 
-  return {
+  const manifest = {
     id,
     apiVersion,
     name: name.slice(0, 60),
@@ -177,6 +254,8 @@ export function validateManifest(raw, { dir, dirName } = {}) {
     },
     config
   };
+  if (kind === 'worker') manifest.worker = validateWorkerBlock(raw.worker);
+  return manifest;
 }
 
 function coerceValue(field, value) {
