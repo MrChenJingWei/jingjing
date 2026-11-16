@@ -157,7 +157,7 @@ plugins/
 
 ## 安装主机 App（macOS）
 
-双击 `dist/静静-0.2.0.pkg` 安装，或解压 `dist/静静-0.2.0.zip` 把 App 拖进「应用程序」。
+双击 `dist/静静-<版本>.pkg` 安装，或解压 `dist/静静-<版本>.zip` 把 App 拖进「应用程序」。
 
 打开后菜单栏出现「静静」，服务自动启动，并自动用配对链接打开浏览器。菜单里可以显示/复制配对码、打开手机安装二维码、切换「仅本机访问」、重启和看日志。
 
@@ -172,6 +172,49 @@ App 没有经过 Apple 公证，第一次打开需要右键 →「打开」。�
 ```bash
 JINGJING_HOST=0.0.0.0 bash scripts/install-service.sh
 ```
+
+---
+
+## 在线升级
+
+从 v0.3.0 起，设置 →「关于」里可以检查并安装新版本：
+
+- **检查**：请求 GitHub 最新 Release（`gh` 不需要；匿名 API 1 次/小时，带 ETag 缓存，避免触发限流）。
+- **校验**：只用 Release 里的 `latest.json` 清单，强制比对 `sha256`；设置 `JINGJING_UPDATE_PUBKEY`（Ed25519 公钥 PEM）后会额外验签，签名消息是 `版本号\nsha256`。
+- **安装**：安装到数据目录 `~/Library/Application Support/Jingjing/updates/<版本>/`，不覆盖 App 包、不动数据库、不需要管理员权限。
+- **生效**：装完在菜单栏点「重启服务」。启动时 `server.js` 发现数据目录里版本更高，就交给它运行；如果新版本启动后 15 秒内崩溃，会标记失效并在下次启动自动回退内置版本。
+- **回滚**：关于页有「回退版本」，回到上一版或内置版本。
+
+升级只覆盖代码层（`server.js`、`src/`、`public/`、`plugins/`）。Swift 菜单栏宿主和内置 Node 运行时的变更仍需重新安装 pkg/zip。
+
+### 发布一个版本
+
+版本号只写在 `package.json`，其余位置（健康检查、界面、`Info.plist`、安装包文件名）都从它读取。流程：
+
+```bash
+# 1. 改 package.json 的 version
+# 2. 提交并打 tag，推送后由 GitHub Actions 自动打包并发布
+git commit -am "chore: release v0.3.1"
+git tag v0.3.1
+git push origin main --tags
+```
+
+工作流 [.github/workflows/release.yml](.github/workflows/release.yml) 会先跑测试，再生成 `dist/jingjing-app-<版本>.zip` 和 `dist/latest.json`（含 sha256），作为 Release 附件发布。本地想验证发布产物：
+
+```bash
+npm test
+bash scripts/package-update.sh   # 产物在 dist/
+```
+
+### 用镜像或本地模拟源调试
+
+```bash
+JINGJING_UPDATE_REPO=owner/repo \
+JINGJING_UPDATE_API_BASE=https://api.github.com \
+npm start
+```
+
+把 `JINGJING_UPDATE_API_BASE` 指向一个本地假 GitHub API（提供 `repos/:owner/:repo/releases/latest` 和清单/压缩包），就能完整演练检查、安装、重启和回滚。
 
 ---
 
@@ -303,6 +346,9 @@ jingjing/
 │   ├── discovery.js       去重、模型判断、建任务
 │   ├── channels.js        Telegram / 飞书 / Webhook
 │   ├── auth.js            配对码、会话 Cookie、限流
+│   ├── version.js         版本号唯一来源与 semver 比较
+│   ├── overlay.js         启动时切换到数据目录里的新版本
+│   ├── update.js          Release 检查、下载校验、安装与回滚
 │   └── seed.js            演示数据
 ├── plugins/               任务来源插件
 │   ├── plugin.schema.json manifest 的 JSON Schema
@@ -310,7 +356,8 @@ jingjing/
 │   ├── email-imap/        IMAP 客户端 + MIME 解析
 │   └── calendar/          ICS 解析 + 日程任务
 ├── packaging/macos/       Swift 菜单栏 App + 打包脚本
-├── scripts/               常驻服务安装 / 卸载 / 重置
+├── .github/workflows/     tag 触发：测试、打包升级包、发 Release
+├── scripts/               常驻服务安装 / 卸载 / 重置 / 升级包打包
 ├── tests/                 日历、IMAP、MIME 测试
 ├── docs/                  架构图、插件、手机使用
 │   └── diagrams/          架构图（PNG + HTML 源）
@@ -347,6 +394,8 @@ jingjing/
 - 来源插件在服务进程内运行，拥有当前用户权限；只安装你信得过的插件。
 - PWA 在后台/锁屏时没有系统推送；后台通知需要配 Telegram，或后续接 Web Push / APNs。
 - 主机 App 只支持 macOS，安装包没有 Apple 公证；Windows / Linux 还没有安装包。
+- 在线升级只更新代码层，且默认只靠 HTTPS 与 sha256 保证完整性；要防篡改请配置 Ed25519 公钥验签。
+- 热更新生效期间会多一个常驻的守护进程（负责转发信号与崩溃回退），内存约多占一个空载 Node 进程。
 - 管理页没有做「恢复备份」按钮：数据库备份需要停服务后手动替换文件。
 - 没有做原生 Android / iOS 包，手机端是 PWA（Android 是真正的桌面安装）。
 

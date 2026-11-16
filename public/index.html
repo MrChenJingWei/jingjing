@@ -406,11 +406,23 @@
           <section class="panel panel-quiet" data-settings-panel="about">
             <h3>关于</h3>
             <dl class="about">
-              <div><dt>版本</dt><dd>0.2.0 · MVP</dd></div>
+              <div><dt>版本</dt><dd id="about-version">—</dd></div>
               <div><dt>运行位置</dt><dd id="about-host">本机</dd></div>
               <div><dt>时区</dt><dd id="about-tz">—</dd></div>
               <div><dt>数据</dt><dd>SQLite（任务 / 事件 / 记忆）</dd></div>
             </dl>
+            <div class="update-box">
+              <div class="update-head">
+                <button class="ghost-btn" type="button" id="update-check">检查更新</button>
+                <span class="panel-hint" id="update-status">从 GitHub 检查新版本。</span>
+              </div>
+              <pre class="update-notes" id="update-notes" hidden></pre>
+              <div class="update-actions" id="update-actions" hidden>
+                <button class="solid-btn" type="button" id="update-apply">安装更新</button>
+                <button class="ghost-btn" type="button" id="update-rollback" hidden>回退版本</button>
+              </div>
+              <p class="panel-hint">更新装进数据目录，覆盖的是代码不动数据；装完在菜单栏点「重启服务」生效，失败会自动回退内置版本。</p>
+            </div>
             <p class="panel-hint">清空数据：在项目目录执行 <code>npm run reset</code>，下次启动会重新生成演示内容。</p>
           </section>
           </form>

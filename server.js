@@ -18,6 +18,12 @@ import { installPluginZip } from './src/plugin-install.js';
 import * as auth from './src/auth.js';
 import { installLogCapture, recentLogs } from './src/logger.js';
 import { seed } from './src/seed.js';
+import { VERSION } from './src/version.js';
+import { activateOverlay } from './src/overlay.js';
+import * as updates from './src/update.js';
+
+// 数据目录里若有已安装的新版本，先交接给子进程；父进程只负责守护与转发信号。
+await activateOverlay();
 
 installLogCapture();
 
@@ -103,7 +109,8 @@ function bootstrap() {
     server: {
       now: new Date().toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      version: '0.2.0',
+      version: VERSION,
+      update: updates.status(),
       demo: settings.provider === 'demo'
     }
   };
@@ -261,7 +268,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && pathname === '/api/health') {
-      return json(res, 200, { ok: true, uptime: process.uptime(), clients: bus.size });
+      return json(res, 200, {
+        ok: true,
+        version: VERSION,
+        overlay: process.env.JINGJING_OVERLAY_VERSION || null,
+        uptime: process.uptime(),
+        clients: bus.size
+      });
     }
 
     if (req.method === 'POST' && pathname === '/api/chat') {
@@ -427,7 +440,8 @@ const server = http.createServer(async (req, res) => {
         .filter((file) => fs.existsSync(file))
         .reduce((sum, file) => sum + fs.statSync(file).size, 0);
       return json(res, 200, {
-        version: '0.2.0',
+        version: VERSION,
+        update: updates.status(),
         uptime: process.uptime(),
         node: process.version,
         db: { file: path.basename(DB_PATH), size: dbSize },
@@ -452,6 +466,26 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && pathname === '/api/admin/logs') {
       return json(res, 200, { logs: recentLogs(Number(url.searchParams.get('limit')) || 200) });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/update/status') {
+      return json(res, 200, updates.status());
+    }
+
+    if (req.method === 'GET' && pathname === '/api/update/check') {
+      return json(res, 200, await updates.checkForUpdate({ force: url.searchParams.get('force') === '1' }));
+    }
+
+    if (req.method === 'POST' && pathname === '/api/update/apply') {
+      const result = await updates.applyUpdate();
+      console.log(`[update] 已安装 ${result.version}，重启后生效`);
+      return json(res, 200, result);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/update/rollback') {
+      const result = updates.rollbackUpdate();
+      console.log(`[update] 已回退到 ${result.version}，重启后生效`);
+      return json(res, 200, result);
     }
 
     if (req.method === 'POST' && pathname === '/api/admin/queue') {
@@ -697,10 +731,11 @@ channels.restartTelegram();
 
 server.listen(PORT, HOST, () => {
   console.log('');
-  console.log('  静静 · 本地个人 AI 工作站');
+  console.log(`  静静 · 本地个人 AI 工作站 · v${VERSION}`);
   console.log(`  → http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`);
   console.log(`  数据目录：${DATA_DIR}`);
   console.log(`  运行模式：${getSettings().provider === 'demo' ? '演示模式（无需 API Key）' : getSettings().provider}`);
+  if (process.env.JINGJING_OVERLAY_VERSION) console.log(`  热更新版本：${process.env.JINGJING_OVERLAY_VERSION}（数据目录）`);
   console.log(`  配对码文件：${auth.accessKeyPath()}`);
   console.log('');
 });

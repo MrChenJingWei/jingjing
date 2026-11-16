@@ -711,6 +711,11 @@ html[data-theme="dark"] .switch::after { background: #e9e5dc; }
 .about div { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
 .about dt { color: var(--muted); }
 .about dd { margin: 0; color: var(--ink-2); }
+.update-box { border: 1px dashed var(--line); border-radius: 12px; padding: 12px 13px; margin: 0 0 12px; background: var(--surface-2); }
+.update-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.update-head .panel-hint { margin: 0; }
+.update-notes { margin: 10px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); font-size: 12px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; max-height: 220px; overflow: auto; font-family: inherit; }
+.update-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 
 /* ---------------- tabbar ---------------- */
 .tabbar {

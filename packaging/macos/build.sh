@@ -13,6 +13,8 @@ if [[ -z "$NODE_BIN" ]]; then
   exit 1
 fi
 
+VERSION="$("$NODE_BIN" -p "require('$ROOT/package.json').version")"
+
 rm -rf "$BUILD"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/app" "$APP/Contents/Resources/runtime" "$DIST"
 
@@ -25,6 +27,7 @@ swiftc -O -swift-version 5 -module-cache-path "$CACHE" -framework AppKit \
   "$ROOT/packaging/macos/JingjingApp.swift"
 
 cp "$ROOT/packaging/macos/Info.plist" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist" >/dev/null
 
 echo "==> 生成图标"
 ICONSET="$BUILD/AppIcon.iconset"
@@ -61,13 +64,16 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/静静.app"
 pkgbuild --component "$STAGE/静静.app" --install-location /Applications \
-  --identifier ai.jingjing.host --version 0.2.0 "$DIST/静静-0.2.0.pkg" >/dev/null
-ditto -c -k --sequesterRsrc --keepParent "$STAGE/静静.app" "$DIST/静静-0.2.0.zip"
+  --identifier ai.jingjing.host --version "$VERSION" "$DIST/静静-$VERSION.pkg" >/dev/null
+ditto -c -k --sequesterRsrc --keepParent "$STAGE/静静.app" "$DIST/静静-$VERSION.zip"
 rm -rf "$STAGE"
+
+echo "==> 生成在线升级包"
+bash "$ROOT/scripts/package-update.sh"
 
 echo ""
 echo "完成："
 echo "  App:  $APP"
-echo "  PKG:  $DIST/静静-0.2.0.pkg"
-echo "  ZIP:  $DIST/静静-0.2.0.zip"
-du -sh "$APP" "$DIST/静静-0.2.0.pkg" "$DIST/静静-0.2.0.zip"
+echo "  PKG:  $DIST/静静-$VERSION.pkg"
+echo "  ZIP:  $DIST/静静-$VERSION.zip"
+du -sh "$APP" "$DIST/静静-$VERSION.pkg" "$DIST/静静-$VERSION.zip"

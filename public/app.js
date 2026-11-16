@@ -839,7 +839,7 @@ function settingsSummary(id) {
     const rule = (state.rules || []).find((item) => item.id === 'morning-digest');
     return rule ? `每天 ${rule.trigger.at} · ${rule.enabled ? '已启用' : '已暂停'}` : '未配置';
   }
-  return `v${state.server?.version || '0.2.0'}`;
+  return `v${state.server?.version || '—'}`;
 }
 
 function renderSettingsIndex() {
@@ -894,6 +894,7 @@ function openSettingsPage(id) {
   if (id === 'rules') renderRules();
   if (id === 'pairing') loadPairing();
   if (id === 'install') setTimeout(updateInstallStatus, 60);
+  if (id === 'about') refreshUpdateStatus();
   if (id === 'worker') { renderWorkerGrid(); renderWorkerRules(); }
   if (id === 'channels') renderChannelBadges();
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -904,6 +905,98 @@ $('#settings-list')?.addEventListener('click', (event) => {
   if (item) openSettingsPage(item.dataset.settingsPage);
 });
 $('#settings-back')?.addEventListener('click', showSettingsIndex);
+
+/* --------------------------- 在线更新（GitHub） -------------------------- */
+
+function renderUpdatePanel(info) {
+  const statusEl = $('#update-status');
+  const notesEl = $('#update-notes');
+  const actionsEl = $('#update-actions');
+  const applyBtn = $('#update-apply');
+  const rollbackBtn = $('#update-rollback');
+  if (!statusEl) return;
+  const installed = info?.installed || state.server?.update?.installed || null;
+  rollbackBtn.hidden = !installed;
+  if (!info) {
+    notesEl.hidden = true;
+    actionsEl.hidden = true;
+    return;
+  }
+  if (info.error && !info.latest) {
+    statusEl.textContent = `检查失败：${info.error}`;
+    notesEl.hidden = true;
+    actionsEl.hidden = !installed;
+    applyBtn.hidden = true;
+    return;
+  }
+  if (info.available && installed && installed.version === info.latest) {
+    statusEl.textContent = `新版本 v${info.latest} 已装好，重启服务后生效。`;
+    notesEl.hidden = !info.notes;
+    notesEl.textContent = info.notes || '';
+    actionsEl.hidden = false;
+    applyBtn.hidden = true;
+    return;
+  }
+  if (!info.available) {
+    statusEl.textContent = info.latest ? `已是最新版本 v${info.current}` : '还没有可用的发布版本';
+    notesEl.hidden = true;
+    actionsEl.hidden = !installed;
+    applyBtn.hidden = true;
+    return;
+  }
+  statusEl.textContent = `发现新版本 v${info.latest}（当前 v${info.current}）`;
+  notesEl.hidden = !info.notes;
+  notesEl.textContent = info.notes || '';
+  actionsEl.hidden = false;
+  applyBtn.hidden = false;
+}
+
+async function refreshUpdateStatus() {
+  const statusEl = $('#update-status');
+  if (!statusEl) return;
+  statusEl.textContent = '正在检查 GitHub…';
+  try {
+    renderUpdatePanel(await api('/api/update/check'));
+  } catch (err) {
+    statusEl.textContent = `检查失败：${err.message}`;
+  }
+}
+
+async function runUpdate(path, pending) {
+  const applyBtn = $('#update-apply');
+  const statusEl = $('#update-status');
+  if (applyBtn) applyBtn.disabled = true;
+  if (statusEl) statusEl.textContent = pending;
+  try {
+    const data = await api(path, { method: 'POST' });
+    if (statusEl) {
+      statusEl.textContent = data.note
+        ? `${data.note}（v${data.version}）`
+        : `已安装 v${data.version}，重启服务后生效。`;
+    }
+    toast(`v${data.version} 已就绪，重启服务后生效`);
+    if (applyBtn) applyBtn.hidden = true;
+    const rollbackBtn = $('#update-rollback');
+    if (rollbackBtn) rollbackBtn.hidden = false;
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `操作失败：${err.message}`;
+    toast(err.message);
+  } finally {
+    if (applyBtn) applyBtn.disabled = false;
+  }
+}
+
+$('#update-check')?.addEventListener('click', async () => {
+  const statusEl = $('#update-status');
+  if (statusEl) statusEl.textContent = '正在检查 GitHub…';
+  try {
+    renderUpdatePanel(await api('/api/update/check?force=1'));
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `检查失败：${err.message}`;
+  }
+});
+$('#update-apply')?.addEventListener('click', () => runUpdate('/api/update/apply', '正在下载并校验更新包…'));
+$('#update-rollback')?.addEventListener('click', () => runUpdate('/api/update/rollback', '正在回退到上一版本…'));
 
 function fillSettings() {
   if (!state.settings) return;
@@ -919,6 +1012,11 @@ function fillSettings() {
   renderRules();
   $('#about-host').textContent = `${location.host}`;
   $('#about-tz').textContent = state.server.timezone || '—';
+  const installed = state.server?.update?.installed;
+  const versionEl = $('#about-version');
+  if (versionEl) {
+    versionEl.textContent = `${state.server?.version || '—'}${installed ? ` · 已装 v${installed.version}（重启生效）` : ''}`;
+  }
 }
 
 function workerConfigFields(w) {

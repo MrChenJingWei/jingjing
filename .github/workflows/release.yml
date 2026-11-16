@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 校验 tag 与 package.json 一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "tag $TAG 与 package.json 的版本 $VERSION 不一致" >&2
+            exit 1
+          fi
+
+      - name: 运行测试
+        run: npm test
+
+      - name: 生成升级包与清单
+        run: |
+          command -v zip >/dev/null || sudo apt-get update -qq && sudo apt-get install -y zip
+          command -v rsync >/dev/null || sudo apt-get install -y rsync
+          JINGJING_UPDATE_NOTES="$(git log -1 --pretty=%s)" bash scripts/package-update.sh
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          gh release create "v$VERSION" \
+            "dist/jingjing-app-$VERSION.zip" \
+            "dist/latest.json" \
+            --title "v$VERSION" \
+            --generate-notes
