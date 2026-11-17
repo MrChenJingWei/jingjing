@@ -215,7 +215,7 @@ plugins/
 
 插件只做两件事：拉数据、整形为条目。判断「要不要动手、交给谁、写成什么任务」由核心 `src/discovery.js` 负责。所以：
 
-- 想加 RSS / GitHub 通知 / 公司内部系统，只需要照着 [插件文档](docs/PLUGIN.md) 写一个目录；
+- 想加 RSS / GitHub 通知 / 公司内部系统，只需要照着 [插件文档](plugins/README.md) 写一个目录；
 - 不信任某个来源，关掉开关即可，不会影响调度器和记忆；
 - 插件失败只会更新自己的状态，不会拖垮主循环。
 
@@ -343,7 +343,7 @@ npm start
 Worker 是执行器，不是任务来源。内置 Worker 包括：问答、文件操作、文件生成、Claude Code、Codex、DeepSeek Harness。记忆（记住、检索、整理）是静静内置的功能，不是 Worker。
 
 - 每个 Worker 右侧都有启用开关：关掉后它不再接任务，但仍留在列表里，随时能打开；自己装的 Worker 插件还可以删除；
-- 也可以安装 `kind: "worker"` 的插件，接入自己主机上的 Agent/CLI；manifest 里用 `worker` 段声明能力、开销、关键词和运行限制，写法见 [docs/PLUGIN.md](docs/PLUGIN.md#worker-插件)，模板在 `plugins/.template-worker/`；
+- 也可以安装 `kind: "worker"` 的插件，接入自己主机上的 Agent/CLI；manifest 里用 `worker` 段声明能力、开销、关键词和运行限制，写法见 [plugins/README.md](plugins/README.md#worker-插件)，模板在 `plugins/.template-worker/`；
 - 每个 Worker（包括内置的）都可以在设置里调整超时、最多同时运行几个、失败重试几次；插件还有独立配置和 `detect()`，可以按主机环境判断是否可用；
 - Worker 插件以当前 macOS 用户权限运行，静静不控制它的工具权限。
 
@@ -355,7 +355,7 @@ DeepSeek Harness 已经是内置 Worker，任务里选「DeepSeek Harness」即�
 - **我的插件**：自己安装的、自己写的、让静静写的，放在数据目录，升级永远不会覆盖；和官方同 id 时覆盖官方，随时可以「恢复官方版本」。
 - **让静静写**：对它说「写一个拉取 RSS 的来源插件」，或在插件页点「让静静写一个」。它会交给 Claude Code / Codex 等编码 Worker（没有的话用云端模型）在草稿目录里写，自动检查（规范、不重名、只用 Node 自带模块、能正常加载），没通过就让它接着修；通过后把代码给你看，**你点「安装」才会装上**。官方已经有类似插件时会先提示你用官方的。
 
-细节和维护流程见 [docs/PLUGIN.md](docs/PLUGIN.md)。
+细节和维护流程见 [plugins/README.md](plugins/README.md)。
 
 
 ### Worker 分配规则
@@ -447,13 +447,13 @@ workspace: 默认工作区      # 可选：工作区名称或 id
 3. 需要行动的建任务并在对话里汇总，不需要的静默跳过；
 4. 插件状态（上次运行、结果、错误）在设置页可见。
 
-插件开发看 [docs/PLUGIN.md](docs/PLUGIN.md)。manifest 有 JSON Schema（`plugins/plugin.schema.json`），`plugins/.template/` 是模板；写完跑 `npm run plugin:check` 做规范检查，加载失败会直接显示在设置页。
+插件开发看 [plugins/README.md](plugins/README.md)。manifest 有 JSON Schema（`plugins/plugin.schema.json`），`plugins/.template/` 是模板；写完跑 `npm run plugin:check` 做规范检查，加载失败会直接显示在设置页。
 
 **安装不需要重新打包**：所有插件都在数据目录（命令行版 `data/plugins/`，App 版 `~/Library/Application Support/Jingjing/plugins/`）。安装包自带插件会在首次启动时复制进去，之后不再区分内置和外部；所有插件都能删除，在设置 → 任务来源 →「安装插件」上传 zip 即可。
 
 **入站 Webhook**：随包提供「Webhook 接收」插件，启用后卡片里会生成一个 `POST /api/hooks/<token>` 地址。外部服务把 JSON POST 过去，插件只负责转成通用条目，去重、判断、建任务仍由静静处理。
 
-**企业微信智能机器人**：以插件 zip 提供（`dist/plugins/wecom-0.1.0.zip`），用 WebSocket 长连接接收单聊/群聊 `@机器人` 消息，不需要公网 IP。安装和配置见 [docs/WECOM.md](docs/WECOM.md)。
+**企业微信智能机器人**：官方插件，默认停用，用 WebSocket 长连接接收单聊/群聊 `@机器人` 消息，不需要公网 IP。安装和配置见 [plugin-src/wecom/README.md](plugin-src/wecom/README.md)。
 
 ### B. 自动化：按时间自己跑
 
@@ -515,7 +515,7 @@ jingjing/
 ├── .github/workflows/     tag 触发：测试、打包升级包、发 Release
 ├── scripts/               常驻服务安装 / 卸载 / 重置 / 升级包打包
 ├── tests/                 日历、IMAP、MIME 测试
-├── docs/                  架构图、插件、手机使用
+├── docs/                  静静本体文档：架构、自动化、主机与手机
 │   └── diagrams/          架构图（PNG + HTML 源）
 ├── public/                Web 界面 / PWA（桌面和手机自适应；js/ 下按页面拆分）
 ├── dist/                  构建出来的 pkg / zip（不入库）
@@ -560,7 +560,7 @@ jingjing/
 ## 下一步可以做什么
 
 1. **PWA 后台推送**：Web Push（Tailscale HTTPS）或接 FCM，让锁屏也能收到审批。
-2. **更多来源插件**：RSS、GitHub 通知、飞书群消息，照 [docs/PLUGIN.md](docs/PLUGIN.md) 各写一个目录。
+2. **更多来源插件**：RSS、GitHub 通知、飞书群消息，照 [plugins/README.md](plugins/README.md) 各写一个目录。
 3. **主机 App 跨平台**：Windows / Linux 安装包，以及开机自启开关。
 4. **记忆的自动整理**：定期把零散的情景记忆压缩成画像，淘汰过时偏好。
 5. **任务依赖图**：让 Router 能派生子任务，调度器按 DAG 执行。

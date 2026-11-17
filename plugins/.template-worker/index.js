@@ -1,5 +1,5 @@
 // Worker 插件模板：把这个目录复制成 <数据目录>/plugins/<你的 id>，改 plugin.json 的 id/name/worker 和下面的实现。
-// 只通过 ctx 使用宿主能力，见 docs/PLUGIN.md「Worker 插件」。
+// 只通过 ctx 使用宿主能力，见 plugins/README.md「Worker 插件」。
 
 export function detect(config, { which }) {
   const bin = config.bin || which('my-agent');

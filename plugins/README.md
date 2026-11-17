@@ -344,7 +344,7 @@ export async function start(config, ctx) {
 
 Webhook 的 `ctx` 还包含 `rawBody`、`headers`、`query`，方便插件做签名校验（安全功能尚未启用）。
 
-企业微信的具体用法见 [docs/WECOM.md](WECOM.md)。
+企业微信的具体用法见 [wecom/README.md](wecom/README.md)。
 
 ## 条目格式
 

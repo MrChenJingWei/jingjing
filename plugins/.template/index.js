@@ -1,6 +1,6 @@
 /**
  * 任务来源插件模板。
- * 规范见 docs/PLUGIN.md 和 plugins/plugin.schema.json。
+ * 规范见 plugins/README.md 和 plugins/plugin.schema.json。
  */
 
 export async function test(config) {

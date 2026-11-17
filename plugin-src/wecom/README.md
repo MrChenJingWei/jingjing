@@ -73,17 +73,14 @@
 - 长连接断开后 SDK 会自动重连，重连期间消息可能延迟；
 - 回复频率受企业微信限制（单会话 30 条/分钟、1000 条/小时）；
 - Secret 存在本机 SQLite，界面打码，但不是加密存储；
-- 插件依赖官方 `@wecom/aibot-node-sdk`，已一起打进 zip。
+- 插件依赖官方 `@wecom/aibot-node-sdk`，已一起打进插件的单文件产物。
 
-## 六、重新打包
+## 六、重新构建（维护者）
 
-插件源码在 `plugin-src/wecom/`：
+插件源码在 `plugin-src/wecom/`，改完后在仓库根目录运行：
 
 ```bash
-cd plugin-src/wecom
-npm install --omit=dev
-cd ../..
-zip -qr dist/plugins/wecom-0.1.0.zip wecom -x "*/node_modules/.cache/*"
+npm run plugins:build -- wecom
 ```
 
-改了 `index.js` 或 `plugin.json` 后重新打 zip，再从设置页安装/覆盖即可。
+产物会写到 `plugins/wecom/`（含这份 README），连同源码一起提交；CI 的 `npm run plugins:check-built` 会检查产物是否最新。
