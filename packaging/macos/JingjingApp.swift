@@ -56,6 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         source.resume()
         sigterm = source
 
+        // 始终是菜单栏 App（不进 Dock / ⌘Tab），窗口开着也不切成普通 App。
+        // 普通 App 在别的 App 全屏时，系统会把它的菜单（网页下拉框、状态栏菜单）放到普通桌面上，人在全屏空间里根本看不见；
+        // 菜单栏 App 的菜单能出现在任何空间。顶部菜单栏不显示，但 mainMenu 里的快捷键（⌘C / ⌘V / ⌘R…）照常生效。
         NSApp.setActivationPolicy(.accessory)
         NSApp.mainMenu = buildMainMenu()
         setupMenu()
@@ -73,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopServer()
     }
 
-    /// 点 Dock 图标时把窗口叫回来。
+    /// 再次打开 App（Finder、启动台、Spotlight）时把窗口叫回来。
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         openWindow()
         return true
@@ -85,12 +88,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupWindow() {
         mainWindow = MainWindowController(baseURL: baseURL, keyProvider: { [weak self] in self?.readKey() })
-        mainWindow.onVisibilityChange = { [weak self] visible in
-            // 窗口开着时出现在 Dock 和 ⌘Tab 里，关掉后退回菜单栏。
-            NSApp.setActivationPolicy(visible ? .regular : .accessory)
-            if visible { NSApp.activate(ignoringOtherApps: true) }
-            self?.updateBadge()
-        }
 
         events = EventStream(url: baseURL.appendingPathComponent("api/stream"), keyProvider: { [weak self] in self?.readKey() })
         events.onEvent = { [weak self] type, payload in self?.notifier.handle(type: type, payload: payload) }
@@ -99,7 +96,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notifier.onResolve = { [weak self] approvalId, choice in self?.resolve(approvalId: approvalId, choice: choice) }
         notifier.onPendingCount = { [weak self] count in
             self?.pendingApprovals = count
-            self?.updateBadge()
             self?.updateStatus()
         }
 
@@ -107,10 +103,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey = HotKey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey) { [weak self] in
             self?.mainWindow.toggle()
         }
-    }
-
-    private func updateBadge() {
-        NSApp.dockTile.badgeLabel = pendingApprovals > 0 ? String(pendingApprovals) : nil
     }
 
     /// 在通知上直接点选项：调用本机接口拍板。
@@ -323,12 +315,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatus() {
         let badge = pendingApprovals > 0 ? " \(pendingApprovals)" : ""
-        statusItem.button?.title = running ? "静静 ●\(badge)" : "静静 ○"
+        setStatusTitle(running ? "静静 ●\(badge)" : "静静 ○")
         if running {
-            statusMenuItem.title = "服务运行中 · 端口 \(port) · \(localOnly ? "仅本机" : "局域网可访问")"
+            setStatusMenuTitle("服务运行中 · 端口 \(port) · \(localOnly ? "仅本机" : "局域网可访问")")
         } else if serverProcess == nil {
-            statusMenuItem.title = "服务未运行"
+            setStatusMenuTitle("服务未运行")
         }
+    }
+
+    /// 文字真的变了才写。健康检查每 2.5 秒跑一次，以前每次都重写一遍状态栏标题，
+    /// 哪怕内容一样系统也会重画菜单栏图标，WindowServer 日志里随之一串 Invalid window。
+    private func setStatusTitle(_ title: String) {
+        guard let button = statusItem.button, button.title != title else { return }
+        button.title = title
+    }
+
+    private func setStatusMenuTitle(_ title: String) {
+        guard statusMenuItem.title != title else { return }
+        statusMenuItem.title = title
     }
 
     private func readKey() -> String? {
@@ -556,7 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func notify(_ message: String) {
-        statusItem.button?.title = "静静 ✓"
+        setStatusTitle("静静 ✓")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
             self?.updateStatus()
         }

@@ -31,9 +31,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
     private var pendingScript: String?
     private var downloads: [ObjectIdentifier: URL] = [:]
 
-    /// 窗口显示 / 隐藏时回调，用来切换 Dock 图标。
-    var onVisibilityChange: ((Bool) -> Void)?
-
     init(baseURL: URL, keyProvider: @escaping () -> String?) {
         self.baseURL = baseURL
         self.keyProvider = keyProvider
@@ -50,6 +47,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
         window.minSize = NSSize(width: 420, height: 560)
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
+        // 窗口待在自己的桌面、可以全屏；在别的全屏 App 里唤出时系统会跳到静静所在的桌面。
+        // 菜单（网页下拉框、状态栏菜单）在哪个空间都能显示，前提是静静保持菜单栏 App，见 JingjingApp 里的 setActivationPolicy。
         window.collectionBehavior.insert(.fullScreenPrimary)
         super.init(window: window)
         window.delegate = self
@@ -117,13 +116,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        onVisibilityChange?(true)
     }
 
     func toggle() {
         if isFrontmost {
             window?.orderOut(nil)
-            onVisibilityChange?(false)
         } else {
             show()
         }
@@ -195,10 +192,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
     }
 
     // MARK: - NSWindowDelegate
-
-    func windowWillClose(_ notification: Notification) {
-        onVisibilityChange?(false)
-    }
 
     // 全屏时系统把标题栏收起来了，顶部那条留白和拖动条都不需要。
     func windowDidEnterFullScreen(_ notification: Notification) {
