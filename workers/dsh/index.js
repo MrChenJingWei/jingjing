@@ -78,7 +78,13 @@ export async function execute(task, ctx) {
     DSH_WEB_URL: null,
     ...(apiKey ? { DEEPSEEK_API_KEY: apiKey } : {})
   };
-  await ctx.emit('DeepSeek Harness 已启动，正在自己的会话里工作…');
+  // 服务重启会打断 dsh 进程；之前存过会话 id 的话，用 --session-id 接着上次的会话继续，
+  // 而不是从头再来（分支、未提交的改动都还在工作区里）。
+  const resumeSession = String(ctx.sessionId || ctx.recovery?.checkpoint?.sessionId || '').trim();
+  const prompt = resumeSession
+    ? `服务重启打断了上一轮执行。请从上次停下的地方继续，不要重复已经完成的工作；先检查当前工作区状态（分支、未提交改动），再完成剩余步骤并给出最终结果。\n\n原任务：${task.prompt || task.title}`
+    : (task.prompt || task.title);
+  await ctx.emit(resumeSession ? '继续上次的 Harness 会话…' : 'DeepSeek Harness 已启动，正在自己的会话里工作…');
 
   // 用 --json 跑：Harness 会把每一步（工具调用、文字、结束原因）逐行写到 stdout，
   // 这里解析成事件转成进度，对话卡片就能边跑边看到它在做什么，而不是等最后一次性出结果。
@@ -98,11 +104,20 @@ export async function execute(task, ctx) {
     input.command || input.path || input.file_path || input.query || input.url || ''
   ).replace(/\s+/g, ' ').trim().slice(0, 80);
 
+  let savedSession = resumeSession;
+  const rememberSession = (id) => {
+    const value = String(id || '').trim();
+    if (!value || value === savedSession) return;
+    savedSession = value;
+    // 存进任务断点：服务重启后调度器会带着它重新排队，上面就会用 --session-id 继续。
+    try { ctx.checkpoint?.({ sessionId: value }); } catch { /* 已经结束的执行不再保存 */ }
+  };
   const handle = (raw) => {
     let event;
     try { event = JSON.parse(raw); } catch { return; }
     if (!event || typeof event !== 'object') return;
     events.push(event);
+    if (event.type === 'session' && event.sessionId) rememberSession(event.sessionId);
     if (event.type === 'tool_call') {
       const detail = toolDetail(event.input);
       progress(`调用「${event.tool || '工具'}」${detail ? `：${detail}` : '…'}`);
@@ -114,7 +129,7 @@ export async function execute(task, ctx) {
     }
   };
 
-  const result = await ctx.exec(harness.cmd, [...harness.args, 'headless', '--json', task.prompt || task.title], {
+  const result = await ctx.exec(harness.cmd, [...harness.args, 'headless', '--json', ...(resumeSession ? ['--session-id', resumeSession] : []), prompt], {
     cwd: ctx.workspace,
     env,
     onOutput: (chunk) => {
@@ -140,6 +155,7 @@ export async function execute(task, ctx) {
   if (line.trim()) { handle(line.trim()); line = ''; }
 
   const finalEvent = [...events].reverse().find((event) => event.type === 'final');
+  if (finalEvent?.sessionId) rememberSession(finalEvent.sessionId);
   const streamedText = events.filter((event) => event.type === 'text').map((event) => event.text || '').join('');
   const usage = [...events].reverse().find((event) => event.type === 'status' && event.phase === 'step_end')?.usage;
   const stdoutText = events.length
@@ -161,6 +177,7 @@ export async function execute(task, ctx) {
   return {
     status: 'done',
     summary: text || 'DeepSeek Harness 没有输出。',
-    tokens: usage?.totalTokens || ctx.estimateTokens(text)
+    tokens: usage?.totalTokens || ctx.estimateTokens(text),
+    sessionId: savedSession || null
   };
 }

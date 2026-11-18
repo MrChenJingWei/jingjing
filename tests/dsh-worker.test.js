@@ -58,13 +58,16 @@ test('detect：找到 Harness 但静静没有 DeepSeek Key 时说明原因', () 
   }
 });
 
-function fakeCtx(output, { stream = false } = {}) {
+function fakeCtx(output, { stream = false, sessionId = null } = {}) {
   const calls = [];
   const emitted = [];
+  const checkpoints = [];
   const ctx = {
     which: () => '/usr/local/bin/dsh',
     config: { apiKey: 'sk-test' },
     workspace: '/tmp/ws',
+    sessionId,
+    checkpoint: (data) => { checkpoints.push(data); return data; },
     emit: async (message) => { emitted.push(message); },
     exec: async (cmd, args, options) => {
       calls.push({ cmd, args, options });
@@ -76,7 +79,7 @@ function fakeCtx(output, { stream = false } = {}) {
     },
     estimateTokens
   };
-  return { ctx, calls, emitted };
+  return { ctx, calls, emitted, checkpoints };
 }
 
 const jsonLines = (events) => events.map((event) => JSON.stringify(event)).join('\n') + '\n';
@@ -101,6 +104,22 @@ test('execute：在工作区里跑 dsh headless --json，并把它自己的 Key 
   assert.equal(calls[0].options.cwd, '/tmp/ws');
   assert.equal(calls[0].options.env.DEEPSEEK_API_KEY, 'sk-test');
   assert.equal(calls[0].options.env.DSH_SESSION_ID, null);
+});
+
+test('execute：把 Harness 的 session id 存进断点，结束后带回去', async () => {
+  const { ctx, checkpoints } = fakeCtx({ stdout: jsonLines(dshEvents) });
+  const result = await execute({ prompt: '修一下测试' }, ctx);
+  assert.equal(result.sessionId, 'session-1');
+  assert.deepEqual(checkpoints[0], { sessionId: 'session-1' }, '服务重启后要用它续会话');
+});
+
+test('execute：带着 session id 重启时，用 --session-id 继续而不是从头做', async () => {
+  const { ctx, calls, emitted } = fakeCtx({ stdout: jsonLines(dshEvents) }, { sessionId: 'session-old' });
+  const result = await execute({ prompt: '修一下测试' }, ctx);
+  assert.equal(result.status, 'done');
+  assert.deepEqual(calls[0].args.slice(0, 4), ['headless', '--json', '--session-id', 'session-old']);
+  assert.match(calls[0].args[4], /继续/);
+  assert.ok(emitted.some((message) => message.includes('继续上次的 Harness 会话')), '要让用户看到这是接着跑');
 });
 
 test('execute：不读“运行模式”那把 Key，只认这个 Worker 自己的配置', async () => {
