@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { db, now, uid, getSettings, pluginSettings, event } from './db.js';
 import { bus } from './events.js';
 import * as plugins from './plugins.js';
@@ -11,6 +12,7 @@ import * as persona from './persona.js';
 import * as scheduler from './scheduler.js';
 import * as sourceLinks from './source-links.js';
 import * as relay from './relay.js';
+import * as memory from './memory.js';
 
 const MAX_ITEMS_PER_RUN = 10;
 const running = new Set();
@@ -251,6 +253,19 @@ export function recentItems(source, limit = 20) {
 
 /* ----------------------------- 判断：要不要动手 ---------------------------- */
 
+/** 工作区顶层目录，给执行者一个项目索引；读不到就返回一句说明。 */
+export function workspaceDirs(dir, limit = 15) {
+  try {
+    const names = fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => entry.name)
+      .slice(0, limit);
+    return names.length ? names.join('、') : '（没有子目录）';
+  } catch {
+    return '（读不到这个目录）';
+  }
+}
+
 function heuristicDecision(item, index, pluginName) {
   const text = `${item.title}\n${item.content}`;
   const actionable = item.kind === 'agenda' ? true : ACTION_RE.test(text);
@@ -295,6 +310,8 @@ async function decide(items, pluginName, { flows = [] } = {}) {
     '现在给你一批来自来源插件的新条目，请判断每一条是否需要用户采取行动，并给出执行提示。',
     '只输出 JSON，不要解释。结构：',
     '{"items":[{"index":0,"actionable":true,"priority":2,"title":"不超过24字的任务名","reason":"不超过40字，说明为什么需要/不需要行动","prompt":"给执行助手的完整中文指令，包含必要背景","workflow":"工作流程 id 或空字符串"}]}',
+    '群聊历史/用户历史通常不在条目里；prompt 不要假设执行者能拿到完整群历史，需要背景时让它用静静已有的记忆/摘要和工作区代码。',
+    '如果问题来自某个项目/产品（比如某个店铺授权失败），prompt 要让执行者在工作区里找到对应项目、读相关代码或日志；代码里没有明显问题就给出用户能照着做的自查步骤，不要硬编一个 bug。',
     '判断标准：广告、营销、自动通知、订阅摘要、日历取消 → actionable=false；',
     '需要回复、有截止时间、要确认、要准备会议/行程、涉及合同/发票/面试 → actionable=true。',
     'direct=true 的条目是对方私聊或 @ 了机器人：要查、要做、要给出具体答复的照常 actionable=true；闲聊、打招呼、开玩笑 actionable=false，静静会自己决定回不回。',
@@ -409,6 +426,10 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
   const workspace = workspaceFor(plugin);
   const canReply = plugins.canSpeak(plugin.module);
   const autoReply = canReply && Boolean(plugin.row?.auto_reply);
+  // 闲聊自动回：没单独设置过（NULL）就沿用旧行为，跟着 autoReply。
+  const autoChat = canReply && (plugin.row?.auto_chat === null || plugin.row?.auto_chat === undefined
+    ? Boolean(plugin.row?.auto_reply)
+    : Boolean(plugin.row?.auto_chat));
   const catalog = workerCatalog();
   // 自动化指定了工作流程 / Worker 时，不再让模型判断要不要动手：这条规则就是主人配的处理器。
   const forced = override && (override.workflow || override.worker) ? override : null;
@@ -429,7 +450,7 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
     }
     if (!decision?.actionable && item.direct) {
       // 有人直接找静静，但不是要办的事：不建任务，交给她按人格决定回不回。
-      const chatted = await chatBack(id, plugin, item, { canReply, autoReply });
+      const chatted = await chatBack(id, plugin, item, { canReply, autoChat });
       recordItem(id, item, 'chat', null, chatted.reason);
       details.push({ externalId: item.externalId, title: item.title, status: 'chat', taskId: null, reason: chatted.reason, replied: chatted.replied, reply: chatted.reply || '' });
       continue;
@@ -453,20 +474,34 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
     const forcedWorker = forced?.worker ? catalog.find((w) => w.id === forced.worker && w.available) : null;
     const flowWorker = forcedWorker || (flow?.worker ? catalog.find((w) => w.id === flow.worker && w.available) : null);
     const taskWorkspace = workflows.resolveWorkspace(flow) || workspace;
+    // 关键点可能早就进了静静的本地记忆（项目背景、历史任务结论、用户习惯），
+    // 直接带上最相关的几条，比让 Worker 自己去翻数据库更准、也更省时间。
+    let recalled = [];
+    try {
+      recalled = memory.context(rawText, { domain: 'work', limit: 3 });
+    } catch (err) {
+      console.warn('[discovery] 读取相关记忆失败：', err.message);
+    }
+    const memoryText = recalled.length
+      ? `相关记忆（内部参考，可能不全对；只用来判断，不要把原文写进给用户的回复）：\n${memory.serializeForPrompt(recalled)}`
+      : '';
     const prompt = [
       decision.prompt || `处理来自「${plugin.manifest.name}」的这条事项。`,
       '',
       '---',
       `来源：${plugin.manifest.name}`,
       `工作区：${taskWorkspace.name}（${taskWorkspace.path}）`,
+      `工作区里的目录：${workspaceDirs(taskWorkspace.path)}`,
       `判断理由：${decision.reason || '需要跟进'}`,
       `标题：${item.title}`,
       item.url ? `链接：${item.url}` : '',
       item.content ? `内容：\n${item.content}` : '',
+      memoryText,
       // 能发回原会话：发消息是静静的事，Worker 只管写回复正文（否则它会以为要自己去群里发，然后说做不到）。
       canReply && item.replyTo
         ? `\n注意：发回「${plugin.label || plugin.manifest.name}」原会话由静静负责（${autoReply ? '任务完成后自动发出' : '主人确认后发出'}），你不需要、也不要说自己无法发消息。你的最终结果会${autoReply ? '原样' : '作为草稿'}发给对方，请直接写成给对方看的回复正文，不要写给静静主人的分析；拿不准、需要主人决定的地方先提问。`
-        : ''
+        : '',
+      '\n群聊历史通常拿不到；先看上面附带的相关记忆和摘要，不够再查静静的本地记忆库（memories 表）。记忆只用于判断，不要把内部记忆原文写进给用户的回复；也不要翻企微客户端、WorkBuddy 这类无关的本机数据。'
     ].filter(Boolean).join('\n') + workflows.promptSection(flow);
     // 外部来源的条目不能自己指定 Worker：消息里点名的、模型挑的、按文字推断出来的能力都不算，
     // 只认主人配置的：工作流程指定的 Worker > 分配规则 > 最便宜的文本 Worker。
@@ -1021,9 +1056,9 @@ function speakerOf(instanceId, plugin, item) {
   };
 }
 
-async function chatBack(instanceId, plugin, item, { canReply, autoReply }) {
+async function chatBack(instanceId, plugin, item, { canReply, autoChat }) {
   if (!canReply || !item.replyTo) return { replied: false, reason: '闲聊；这个来源不能回消息' };
-  if (!autoReply) return { replied: false, reason: '闲聊；没开「自动发回」，静静不回' };
+  if (!autoChat) return { replied: false, reason: '闲聊；没开「闲聊自动回」，静静不回' };
   let reply = '';
   try {
     ({ reply } = await persona.chatReply({

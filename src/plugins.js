@@ -447,6 +447,8 @@ export function listPlugins() {
       // 插件导出了 reply() / deliver() 就能把任务结果发回原会话；autoReply 是用户打开的「完成后自动发回」。
       canReply: canSpeak(item.module),
       autoReply: Boolean(row.auto_reply) && canSpeak(item.module),
+      // NULL 时沿用旧行为（跟着 autoReply），显式值才独立。
+      autoChat: canSpeak(item.module) && (row.auto_chat === null || row.auto_chat === undefined ? Boolean(row.auto_reply) : Boolean(row.auto_chat)),
       // 导出了 deliver()：收到回执、状态播报、在渠道里拍板都由静静按 relay 策略来管。
       canDeliver: typeof item.module?.deliver === 'function',
       relay: (({ autoResult: _a, ...rest }) => ({ ...rest, owners: rest.owners.join(', ') }))(relayPolicy(row)),
@@ -497,7 +499,7 @@ export function getPlugin(instanceId) {
   };
 }
 
-export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, label, autoReply, relay } = {}) {
+export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, label, autoReply, autoChat, relay } = {}) {
   const plugin = getPlugin(id);
   if (!plugin) throw new Error('插件不存在');
   const row = plugin.row;
@@ -539,6 +541,12 @@ export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, 
     err.statusCode = 400;
     throw err;
   }
+  // 闲聊开关独立存；没显式设置过就保持 NULL，沿用旧行为（跟着 autoReply），不主动写值。
+  if (autoChat !== undefined && Boolean(autoChat) && !canSpeak(plugin.module)) {
+    const err = new Error('这个插件不支持自动回消息');
+    err.statusCode = 400;
+    throw err;
+  }
   let nextRelay = row.relay || null;
   if (relay !== undefined) {
     const current = relayPolicy(row);
@@ -551,6 +559,9 @@ export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, 
   db.prepare(`
     UPDATE source_plugins SET label = ?, enabled = ?, config = ?, workspace_id = ?, interval_minutes = ?, auto_reply = ?, updated_at = ? WHERE id = ?
   `).run(nextLabel, nextEnabled ? 1 : 0, JSON.stringify(normalized), nextWorkspace, nextInterval, nextAutoReply ? 1 : 0, now(), id);
+  if (autoChat !== undefined) {
+    db.prepare('UPDATE source_plugins SET auto_chat = ? WHERE id = ?').run(autoChat ? 1 : 0, id);
+  }
   return getPlugin(id);
 }
 

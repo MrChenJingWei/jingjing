@@ -269,6 +269,9 @@ db.exec(`
 `);
 // auto_reply：任务完成后自动把结果发回原会话。会往外发消息，默认关闭。
 ensureColumn('source_plugins', 'auto_reply', 'INTEGER');
+// auto_chat：闲聊自动回（不建任务、由静静按人格回）。和任务结果的自动发回分开；
+// NULL 表示沿用旧行为（跟着 auto_reply），显式 0/1 才独立控制。
+ensureColumn('source_plugins', 'auto_chat', 'INTEGER');
 // relay：消息类来源往外说话的策略（回执 / 状态播报 / 谁能在群里拍板），见 relay.js。
 ensureColumn('source_plugins', 'relay', 'TEXT');
 // custom：这条审批是否允许用户不选给出的选项、自己写决定；answer：用户写的决定。

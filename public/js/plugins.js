@@ -173,6 +173,10 @@ function renderPluginDetail(id) {
           <label class="switch-row" style="margin-top:8px">
             <span><b>任务完成后自动发回原会话</b><small>默认关闭。打开后，结果不经你过目就直接发给对方；关着时，可以在完成的任务上点「发回原会话」，改好再发。</small></span>
             <input type="checkbox" class="switch" data-plugin-auto-reply="${pid}" ${plugin.autoReply ? 'checked' : ''} />
+          </label>
+          <label class="switch-row" style="margin-top:8px">
+            <span><b>闲聊自动回</b><small>默认关闭。打开后，私聊或 @ 静静的闲聊由她按人格自己回；任务结果仍按上面那个开关处理，两者互不影响。</small></span>
+            <input type="checkbox" class="switch" data-plugin-auto-chat="${pid}" ${plugin.autoChat ? 'checked' : ''} />
           </label>` : ''}
         ${plugin.canDeliver ? relaySection(plugin, pid) : ''}
       </section>
@@ -486,6 +490,18 @@ async function changeRelay(input) {
   }
 }
 
+async function changeAutoChat(input) {
+  const id = input.dataset.pluginAutoChat;
+  try {
+    const data = await api(`/api/plugins/${id}`, { method: 'PUT', body: { autoChat: input.checked } });
+    replacePlugin(data.plugin);
+    toast(input.checked ? '已打开：闲聊会由静静自己回。' : '已关闭闲聊自动回。', 3600);
+  } catch (err) {
+    input.checked = !input.checked;
+    toast(err.message);
+  }
+}
+
 async function changeAutoReply(input) {
   const id = input.dataset.pluginAutoReply;
   try {
@@ -534,6 +550,8 @@ panel?.addEventListener('change', (event) => {
   if (workspace) { changeWorkspace(workspace); return; }
   const autoReply = event.target.closest('[data-plugin-auto-reply]');
   if (autoReply) { changeAutoReply(autoReply); return; }
+  const autoChat = event.target.closest('[data-plugin-auto-chat]');
+  if (autoChat) { changeAutoChat(autoChat); return; }
   const relayInput = event.target.closest('[data-plugin-relay]');
   if (relayInput) { changeRelay(relayInput); return; }
   const enabled = event.target.closest('[data-plugin-enabled]');

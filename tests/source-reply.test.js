@@ -128,7 +128,7 @@ test('打开自动发回：指令里注明结果会原样发回；完成后自�
   await assert.rejects(discovery.replyToSource(taskId, { text: 'x' }), /已停用/);
 });
 
-test('私聊或 @ 静静、但不是要办的事：不建任务，静静按人格决定回不回；要开自动发回才回', async () => {
+test('私聊或 @ 静静、但不是要办的事：不建任务，静静按人格决定回不回；闲聊开关和任务自动发回分开', async () => {
   const { saveSettings } = await import('../src/db.js');
   assert.equal(discovery.normalizeItem(message(0, { direct: 'yes' })).direct, false, '只认 direct: true');
 
@@ -175,13 +175,13 @@ test('私聊或 @ 静静、但不是要办的事：不建任务，静静按人�
     assert.equal(quiet.details[0].replied, false);
     assert.equal(globalThis.__replies.length, 1);
 
-    // 没开自动发回：不回，也不调模型去想回什么。
+    // 没开闲聊自动回：不回，也不调模型去想回什么。
     plugins.savePlugin('chat-test', { autoReply: false });
     model.reply = '不该发出去';
     const before = model.asked.length;
     const off = await discovery.ingestItems('chat-test', [chat(12)]);
     assert.equal(off.details[0].replied, false);
-    assert.match(off.details[0].reason, /没开「自动发回」/);
+    assert.match(off.details[0].reason, /没开「闲聊自动回」/);
     assert.equal(model.asked.length, before + 1, '只调了判断，没调人格回复');
     assert.equal(globalThis.__replies.length, 1);
 
@@ -196,6 +196,21 @@ test('私聊或 @ 静静、但不是要办的事：不建任务，静静按人�
     const work = await discovery.ingestItems('chat-test', [chat(14, { content: '@静静 请回复一下蓝马的进度' })]);
     assert.equal(work.created, 1);
     assert.equal(work.details[0].status, 'task');
+
+    // 两个开关独立：只开闲聊，闲聊能回；关掉闲聊后，即使任务自动发回开着，闲聊也不回。
+    plugins.savePlugin('chat-test', { autoChat: true, autoReply: false });
+    model.decide = { actionable: false, reason: '闲聊' };
+    model.reply = '在的，慢慢说。';
+    const chatOnly = await discovery.ingestItems('chat-test', [chat(15)]);
+    assert.equal(chatOnly.details[0].replied, true, '只开闲聊自动回，静静就能聊天');
+    assert.equal(globalThis.__replies.length, 2);
+
+    plugins.savePlugin('chat-test', { autoChat: false, autoReply: true });
+    model.reply = '不该发出去';
+    const noChat = await discovery.ingestItems('chat-test', [chat(16)]);
+    assert.equal(noChat.details[0].replied, false, '关了闲聊自动回就不闲聊');
+    assert.match(noChat.details[0].reason, /闲聊自动回/);
+    assert.equal(globalThis.__replies.length, 2);
   } finally {
     globalThis.fetch = realFetch;
     saveSettings({ provider: 'demo', apiKey: '' });

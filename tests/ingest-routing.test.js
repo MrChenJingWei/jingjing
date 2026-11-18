@@ -18,6 +18,7 @@ const workflows = await import('../src/workflows.js');
 const workerRules = await import('../src/worker-rules.js');
 const scheduler = await import('../src/scheduler.js');
 const discovery = await import('../src/discovery.js');
+const memory = await import('../src/memory.js');
 const router = await import('../src/router.js');
 
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -318,5 +319,31 @@ test('外部消息里的「deepseek」不会被当成 Worker 别名', async () =
     assert.notEqual(task.status, 'waiting_approval');
   } finally {
     model.restore();
+  }
+});
+
+test('来源任务的提示词：带工作区目录和本地记忆，不假设拿得到群历史', async () => {
+  const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-ws-'));
+  fs.mkdirSync(path.join(wsDir, 'lanma-vue'));
+  fs.mkdirSync(path.join(wsDir, 'yt-shelf'));
+  saveSettings({ workspaces: [{ id: 'ws_test', name: '渔童工作器', path: wsDir }], defaultWorkspaceId: 'ws_test' });
+  memory.remember({
+    text: '蓝马店铺授权失败时，先让用户确认平台授权是否过期，再查账号状态',
+    layer: 'semantic',
+    kind: 'note',
+    domain: 'work',
+    importance: 0.8
+  });
+  const model = fakeModel();
+  try {
+    const task = await taskOf([item('为什么我蓝马店铺授权不了了')]);
+    assert.match(model.asked[0], /群聊历史.*通常不在条目里/, '提示词约束要告诉模型别假设拿得到群历史');
+    assert.match(task.prompt, /工作区里的目录：.*lanma-vue/, '执行者要知道工作区里有哪些项目');
+    assert.match(task.prompt, /相关记忆/, '静静的记忆要带进任务');
+    assert.match(task.prompt, /平台授权是否过期/, '关键经验不能丢');
+    assert.match(task.prompt, /memories 表/, '记忆不够时告诉它去哪里查');
+  } finally {
+    model.restore();
+    fs.rmSync(wsDir, { recursive: true, force: true });
   }
 });
