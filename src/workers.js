@@ -365,8 +365,6 @@ function hostContext(descriptor, task, ctx) {
     log: (message) => console.log(`[worker:${descriptor.id}] ${message}`),
     config: workerConfig(descriptor),
     settings: pluginSettings(settings),
-    // 只有随代码发布的内置 Worker 能拿到模型 Key（比如 DeepSeek Harness 要转交给子进程）。
-    secrets: descriptor.source === 'builtin' ? { apiKey: settings.apiKey || '' } : {},
     resume: ctx.resume || null,
     // 主人在已经结束的卡上「接着做」：{ round, text }。task.prompt 已经拼好了前几轮，能续会话的 Worker 可以只发 text。
     followup: ctx.followup || null,

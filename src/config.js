@@ -15,7 +15,8 @@ export const PORT = Number(process.env.JINGJING_PORT || 7777);
 export const DEFAULT_SETTINGS = {
   assistantName: '静静',
   userName: '你',
-  provider: 'demo', // demo | deepseek | ollama
+  // demo（本地模拟）| openai（OpenAI 兼容接口：DeepSeek、Kimi、GLM、中转站、本地网关都走这条）| ollama
+  provider: 'demo',
   model: 'deepseek-chat',
   apiKey: '',
   baseUrl: 'https://api.deepseek.com',
@@ -56,6 +57,16 @@ export const DEFAULT_SETTINGS = {
     enabled: true
   }
 };
+
+/**
+ * 运行模式只有三种；旧版本把“OpenAI 兼容接口”存成 deepseek，读取时统一成 openai，
+ * 这样已经存下的配置和会话不用迁移也能继续用。
+ */
+export function normalizeProvider(value) {
+  if (value === 'ollama') return 'ollama';
+  if (value === 'openai' || value === 'deepseek') return 'openai';
+  return 'demo';
+}
 
 export function normalizeWorkspaces(settings) {
   const list = Array.isArray(settings.workspaces) ? settings.workspaces : [];

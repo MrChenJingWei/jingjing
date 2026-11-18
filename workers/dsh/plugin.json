@@ -4,7 +4,7 @@
   "apiVersion": 1,
   "kind": "worker",
   "name": "DeepSeek Harness",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "icon": "H",
   "description": "以无头模式调用 DeepSeek Harness，在任务工作区里读写代码、执行命令。",
   "entry": "index.js",
@@ -21,5 +21,14 @@
     "timeoutMinutes": 60,
     "concurrency": 1,
     "retries": 0
-  }
+  },
+  "config": [
+    {
+      "key": "apiKey",
+      "label": "DeepSeek API Key",
+      "type": "password",
+      "placeholder": "sk-...",
+      "help": "只给这个 Worker 用。无头 dsh 只认 DeepSeek 官方 Key，不读「运行模式」那把；留空则用环境变量 DEEPSEEK_API_KEY。"
+    }
+  ]
 }

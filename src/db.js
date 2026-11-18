@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { DATA_DIR, DB_PATH, DEFAULT_SETTINGS, normalizeWorkspaces } from './config.js';
+import { DATA_DIR, DB_PATH, DEFAULT_SETTINGS, normalizeProvider, normalizeWorkspaces } from './config.js';
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -403,7 +403,9 @@ export function deepMerge(base, patch) {
 
 export function getSettings() {
   const stored = getSetting('config', {});
-  return normalizeWorkspaces(deepMerge(DEFAULT_SETTINGS, stored || {}));
+  const settings = deepMerge(DEFAULT_SETTINGS, stored || {});
+  settings.provider = normalizeProvider(settings.provider);
+  return normalizeWorkspaces(settings);
 }
 
 /** 给界面看的设置：密钥只告诉有没有填。 */

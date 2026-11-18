@@ -611,7 +611,6 @@ Worker 只通过 `ctx` 使用宿主能力，不要 import 静静的核心模块�
 | `log(message)` | 写服务日志 |
 | `config` | 这个 Worker 在本机的配置（按 manifest 的 `config` 校验过） |
 | `settings` | 静静的全局设置快照（只读），**不含**模型 Key 和通知通道凭据 |
-| `secrets` | 只有内置 Worker 能拿到 `{ apiKey }`；第三方插件是 `{}` |
 | `workspace` | 任务工作目录的绝对路径 |
 | `paths.sandbox` | 静静的沙箱目录 |
 | `resume` | 从审批恢复时是 `{ question, options, choice, answer? }`，`choice < 0` 表示用户取消；用户没选选项、自己写了决定时带 `answer`（同时追加在 `options` 末尾、`choice` 指向它）；否则为 `null` |
@@ -623,7 +622,7 @@ Worker 只通过 `ctx` 使用宿主能力，不要 import 静静的核心模块�
 | `run` | 本次执行 `{ id, token, reportUrl }`，给外部进程回传用（见下文） |
 | `memories` / `tasks` | 与任务相关的记忆、最近的任务板 |
 | `workers` | 当前可用的 Worker 列表（`id`、`label`、`abilities`…） |
-| `llm.mode` | `'demo'` / `'deepseek'` / `'ollama'` |
+| `llm.mode` | `'demo'` / `'openai'`（OpenAI 兼容接口，含 DeepSeek、Kimi、GLM、中转站）/ `'ollama'` |
 | `llm.chat({ system, messages, json, temperature, maxTokens })` | 调用用户配置的模型，自动跟随 `signal` 中止；返回 `{ text, tokens, cost }` |
 | `exec(cmd, args, { cwd, env, onOutput, timeoutMs })` | 运行外部命令；`signal` 触发时自动 SIGTERM → SIGKILL 并返回 `{ error: 'aborted' }`。`env` 里值为 `null` 的键会被删除；子进程自动带上 `JINGJING_RUN_ID` / `JINGJING_RUN_TOKEN` / `JINGJING_REPORT_URL` |
 | `which(bin)` | 在 PATH 和常见安装目录里找可执行文件 |

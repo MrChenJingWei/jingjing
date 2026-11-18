@@ -44,12 +44,17 @@ test('detect：找到 Harness 但静静没有 DeepSeek Key 时说明原因', () 
   delete process.env.DEEPSEEK_API_KEY;
   try {
     const which = () => '/usr/local/bin/dsh';
-    const noKey = detect({}, { which, llm: { mode: 'demo' } });
+    const noKey = detect({}, { which });
     assert.equal(noKey.available, false);
     assert.match(noKey.detail, /API Key/);
-    assert.equal(detect({}, { which, llm: { mode: 'deepseek' } }).available, true);
+    // 只认这个 Worker 自己的 Key：静静运行模式那把配没配都不影响它。
+    assert.equal(detect({}, { which, llm: { mode: 'openai', hasKey: true } }).available, false);
+    assert.equal(detect({ apiKey: 'sk-dsh' }, { which }).available, true);
+    process.env.DEEPSEEK_API_KEY = 'sk-env';
+    assert.equal(detect({}, { which }).available, true, '环境变量也算这个 Worker 的 Key');
   } finally {
     if (saved !== undefined) process.env.DEEPSEEK_API_KEY = saved;
+    else delete process.env.DEEPSEEK_API_KEY;
   }
 });
 
@@ -58,7 +63,7 @@ function fakeCtx(output, { stream = false } = {}) {
   const emitted = [];
   const ctx = {
     which: () => '/usr/local/bin/dsh',
-    secrets: { apiKey: 'sk-test' },
+    config: { apiKey: 'sk-test' },
     workspace: '/tmp/ws',
     emit: async (message) => { emitted.push(message); },
     exec: async (cmd, args, options) => {
@@ -85,7 +90,7 @@ const dshEvents = [
   { type: 'final', sessionId: 'session-1', reason: { kind: 'completed' }, text: '改好了' }
 ];
 
-test('execute：在工作区里跑 dsh headless --json，并把静静的 Key 交给子进程', async () => {
+test('execute：在工作区里跑 dsh headless --json，并把它自己的 Key 交给子进程', async () => {
   const { ctx, calls } = fakeCtx({ stdout: jsonLines(dshEvents) });
   const result = await execute({ prompt: '修一下测试' }, ctx);
   assert.equal(result.status, 'done');
@@ -96,6 +101,22 @@ test('execute：在工作区里跑 dsh headless --json，并把静静的 Key 交
   assert.equal(calls[0].options.cwd, '/tmp/ws');
   assert.equal(calls[0].options.env.DEEPSEEK_API_KEY, 'sk-test');
   assert.equal(calls[0].options.env.DSH_SESSION_ID, null);
+});
+
+test('execute：不读“运行模式”那把 Key，只认这个 Worker 自己的配置', async () => {
+  const saved = process.env.DEEPSEEK_API_KEY;
+  delete process.env.DEEPSEEK_API_KEY;
+  try {
+    const { ctx, calls } = fakeCtx({ stdout: '' });
+    ctx.config = {};
+    ctx.secrets = { apiKey: 'sk-from-run-mode' };
+    const result = await execute({ prompt: 'x' }, ctx);
+    assert.equal(result.status, 'failed');
+    assert.match(result.summary, /这个 Worker 的「配置」/);
+    assert.equal(calls.length, 0, '没有自己的 Key 时不该启动 dsh');
+  } finally {
+    if (saved !== undefined) process.env.DEEPSEEK_API_KEY = saved;
+  }
 });
 
 test('execute：边跑边把 Harness 的步骤转成进度，最终结果不重复', async () => {

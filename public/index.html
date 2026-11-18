@@ -212,25 +212,27 @@
               <!-- 模型与人设 -->
               <div class="spage" data-settings-panel="model" hidden>
                 <section class="card">
-                  <div class="card-head"><h3>模型</h3><p>演示模式不需要任何 Key，也能完整体验任务闭环。接入云端模型后，Router 的判断会更准。</p></div>
+                  <div class="card-head"><h3>模型</h3><p>「OpenAI 兼容接口」不只能接 DeepSeek：Kimi、GLM、通义、公司网关、中转站，以及本机 Ollama 的 /v1，只要提供 <code>/chat/completions</code> 都能用。演示模式不需要任何 Key，也能完整体验任务闭环。</p></div>
                   <div class="grid-2">
                     <label class="field">
                       <span>运行模式</span>
                       <select name="provider" id="provider-select">
                         <option value="demo">演示模式（本地模拟）</option>
-                        <option value="deepseek">DeepSeek API</option>
+                        <option value="openai">OpenAI 兼容接口（DeepSeek / Kimi / GLM / 中转站）</option>
                         <option value="ollama">本地 Ollama</option>
                       </select>
                     </label>
-                    <label class="field" data-for-provider="deepseek ollama">
+                    <label class="field" data-for-provider="openai ollama">
                       <span>模型</span>
-                      <input name="model" placeholder="deepseek-chat" />
+                      <input name="model" id="model-input" list="model-options" placeholder="deepseek-chat" />
+                      <datalist id="model-options"></datalist>
+                      <small class="field-help" id="model-help">可以直接填，也可以点输入框右侧箭头选。换完地址点「获取模型列表」，会把接口支持的模型都列进来。</small>
                     </label>
-                    <label class="field" data-for-provider="deepseek">
-                      <span>API Key</span>
-                      <input name="apiKey" type="password" placeholder="留空则沿用已保存的 Key" />
+                    <label class="field" data-for-provider="openai">
+                      <span>API Key（可选）</span>
+                      <input name="apiKey" type="password" placeholder="云端服务填自己的 Key；本地网关可以留空" />
                     </label>
-                    <label class="field" data-for-provider="deepseek">
+                    <label class="field" data-for-provider="openai">
                       <span>API 地址</span>
                       <input name="baseUrl" placeholder="https://api.deepseek.com" />
                     </label>
@@ -241,6 +243,7 @@
                   </div>
                   <div class="inline-actions">
                     <button type="button" class="btn" id="test-model">测试模型连接</button>
+                    <button type="button" class="btn" id="fetch-models">获取模型列表</button>
                     <span class="test-result" id="model-test-result"></span>
                   </div>
                 </section>

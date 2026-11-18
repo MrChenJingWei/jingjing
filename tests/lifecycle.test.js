@@ -315,7 +315,7 @@ test('第三方 Worker 在独立线程里执行：进度、断点、模型调用
       await ctx.checkpoint({ step: 1 });
       const reply = await ctx.llm.chat({ messages: [{ role: 'user', content: '你好' }] });
       const r = await ctx.exec(process.execPath, ['-e', 'console.log(process.env.JINGJING_RUN_ID)']);
-      return { status: 'done', summary: JSON.stringify({ main: isMainThread, llm: Boolean(reply.text), runId: r.stdout.trim(), ctxRun: ctx.run.id, apiKey: ctx.settings.apiKey ?? null, secrets: ctx.secrets }) };
+      return { status: 'done', summary: JSON.stringify({ main: isMainThread, llm: Boolean(reply.text), runId: r.stdout.trim(), ctxRun: ctx.run.id, apiKey: ctx.settings.apiKey ?? null, hasSecrets: 'secrets' in ctx }) };
     }
   `);
   const task = scheduler.createTask({ title: '线程', prompt: 'x', worker: 'threaded-ok' });
@@ -327,7 +327,7 @@ test('第三方 Worker 在独立线程里执行：进度、断点、模型调用
   assert.equal(out.llm, true);
   assert.equal(out.runId, out.ctxRun);
   assert.equal(out.apiKey, null, '插件拿不到模型 Key');
-  assert.deepEqual(out.secrets, {});
+  assert.equal(out.hasSecrets, false, '宿主不再把模型 Key 交给任何 Worker');
   assert.deepEqual(scheduler.taskRuns(task.id)[0].checkpoint, { step: 1 });
 });
 

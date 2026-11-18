@@ -17,7 +17,7 @@ import * as workerRules from './src/worker-rules.js';
 import * as workflows from './src/workflows.js';
 import * as archive from './src/archive.js';
 import * as forge from './src/plugin-forge.js';
-import { chat as llmChat } from './src/llm.js';
+import { chat as llmChat, listModels } from './src/llm.js';
 import * as plugins from './src/plugins.js';
 import * as discovery from './src/discovery.js';
 import * as sourceLinks from './src/source-links.js';
@@ -574,11 +574,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/model/test') {
       const settings = getSettings();
       if (settings.provider === 'demo') {
-        return json(res, 400, { ok: false, error: '当前是演示模式，请先在设置里选择 DeepSeek 或 Ollama 并保存' });
+        return json(res, 400, { ok: false, error: '当前是演示模式，请先在设置里选一个真实接口并保存' });
       }
-      if (settings.provider === 'deepseek' && !settings.apiKey) {
-        return json(res, 400, { ok: false, error: '还没有填 API Key' });
-      }
+      // Key 可以留空：本地网关和 Ollama 常常不鉴权，能不能用交给接口自己回答。
       const started = Date.now();
       try {
         const out = await llmChat({
@@ -597,6 +595,15 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (err) {
         return json(res, 400, { ok: false, error: err.message, latencyMs: Date.now() - started });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/model/list') {
+      try {
+        const models = await listModels();
+        return json(res, 200, { ok: true, models });
+      } catch (err) {
+        return json(res, 400, { ok: false, error: err.message });
       }
     }
 
@@ -1061,7 +1068,8 @@ console.log('');
 console.log(`  静静 · 本地个人 AI 工作站 · v${VERSION}`);
 console.log(`  → http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`);
 console.log(`  数据目录：${DATA_DIR}`);
-console.log(`  运行模式：${getSettings().provider === 'demo' ? '演示模式（无需 API Key）' : getSettings().provider}`);
+const bootProvider = getSettings().provider;
+console.log(`  运行模式：${bootProvider === 'openai' ? 'OpenAI 兼容接口' : bootProvider === 'ollama' ? 'Ollama' : '演示模式（无需 API Key）'}`);
 if (process.env.JINGJING_OVERLAY_VERSION) console.log(`  热更新版本：${process.env.JINGJING_OVERLAY_VERSION}（数据目录）`);
 console.log(`  配对码文件：${auth.accessKeyPath()}`);
 console.log('');

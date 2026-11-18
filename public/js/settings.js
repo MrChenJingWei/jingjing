@@ -27,7 +27,51 @@ export const SETTINGS_PAGES = [
 const pageById = (id) => SETTINGS_PAGES.find((page) => page.id === id);
 
 function providerLabel(value) {
-  return value === 'deepseek' ? 'DeepSeek' : value === 'ollama' ? 'Ollama' : '演示模式';
+  if (value === 'openai' || value === 'deepseek') return 'OpenAI 兼容';
+  return value === 'ollama' ? 'Ollama' : '演示模式';
+}
+
+/* ----------------------------- 模型选择器 ----------------------------- */
+// 模型框是可输入的下拉：常见地址给一组预设，点「获取模型列表」再把接口返回的模型并进来。
+
+const HOST_MODEL_PRESETS = {
+  'api.deepseek.com': ['deepseek-chat', 'deepseek-reasoner'],
+  'api.moonshot.cn': ['kimi-k2-0905-preview', 'moonshot-v1-32k'],
+  'open.bigmodel.cn': ['glm-4.6', 'glm-4.5-air'],
+  'dashscope.aliyuncs.com': ['qwen-plus', 'qwen-max'],
+  'api.openai.com': ['gpt-5', 'gpt-4.1'],
+  'openrouter.ai': ['deepseek/deepseek-chat']
+};
+const OLLAMA_PRESETS = ['qwen2.5:7b', 'llama3.1:8b', 'gemma3:4b'];
+// 按运行模式分开存，免得 Ollama 的模型名跑到云端接口的列表里。
+const fetchedModels = { openai: new Set(), ollama: new Set() };
+
+function baseHost() {
+  const raw = $('[name="baseUrl"]')?.value?.trim() || '';
+  try {
+    return new URL(raw || 'https://api.deepseek.com').host;
+  } catch {
+    return '';
+  }
+}
+
+function renderModelOptions() {
+  const list = $('#model-options');
+  const input = $('#model-input');
+  if (!list || !input) return;
+  const provider = $('#provider-select')?.value || 'demo';
+  const presets = provider === 'ollama'
+    ? OLLAMA_PRESETS
+    : HOST_MODEL_PRESETS[baseHost()] || HOST_MODEL_PRESETS['api.deepseek.com'];
+  const all = [...new Set([...presets, ...(fetchedModels[provider] || fetchedModels.openai)])];
+  list.innerHTML = all.map((id) => `<option value="${esc(id)}"></option>`).join('');
+  input.placeholder = provider === 'ollama' ? 'qwen2.5:7b' : 'deepseek-chat';
+  const help = $('#model-help');
+  if (help) {
+    help.textContent = provider === 'ollama'
+      ? '可以直接填，也可以点输入框右侧箭头选本机 Ollama 里的模型；点「获取模型列表」会读本机的 /api/tags。'
+      : '可以直接填，也可以点输入框右侧箭头选。换完地址点「获取模型列表」，会把接口支持的模型都列进来。';
+  }
 }
 
 /** 分类旁的短标记（桌面）和一句话摘要（手机列表）。 */
@@ -225,7 +269,11 @@ export async function leaveSettingsOk() {
   return false;
 }
 
-$('#settings-form')?.addEventListener('input', updateSettingsDirty);
+$('#settings-form')?.addEventListener('input', (event) => {
+  updateSettingsDirty();
+  // 换地址时把预设模型也换掉，免得 DeepSeek 的模型名留在别人家的列表里。
+  if (event.target.name === 'baseUrl' || event.target.name === 'ollamaUrl') renderModelOptions();
+});
 $('#settings-form')?.addEventListener('change', (event) => {
   if (event.target.id === 'provider-select') syncProviderFields();
   updateSettingsDirty();
@@ -258,6 +306,7 @@ function syncProviderFields() {
   $$('[data-for-provider]').forEach((field) => {
     field.hidden = !field.dataset.forProvider.split(' ').includes(provider);
   });
+  renderModelOptions();
 }
 
 export async function saveSettings({ silent = false } = {}) {
@@ -312,6 +361,28 @@ $('#test-model')?.addEventListener('click', async () => {
     if (settingsDirty()) await saveSettings({ silent: true });
     const res = await api('/api/model/test', { method: 'POST' });
     out.textContent = `✓ ${res.model} · ${res.latencyMs}ms · ${res.tokens} tokens`;
+    out.dataset.state = 'ok';
+  } catch (err) {
+    out.textContent = `✗ ${err.message}`;
+    out.dataset.state = 'error';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#fetch-models')?.addEventListener('click', async () => {
+  const btn = $('#fetch-models');
+  const out = $('#model-test-result');
+  btn.disabled = true;
+  out.textContent = '正在向接口要模型列表…';
+  out.dataset.state = 'pending';
+  try {
+    if (settingsDirty()) await saveSettings({ silent: true });
+    const res = await api('/api/model/list', { method: 'POST' });
+    const provider = $('#provider-select')?.value === 'ollama' ? 'ollama' : 'openai';
+    res.models.forEach((id) => fetchedModels[provider].add(id));
+    renderModelOptions();
+    out.textContent = `✓ 拿到 ${res.models.length} 个模型，点模型框右侧箭头就能选`;
     out.dataset.state = 'ok';
   } catch (err) {
     out.textContent = `✗ ${err.message}`;

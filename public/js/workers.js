@@ -71,7 +71,8 @@ function workerConfigFields(w) {
       return `<label class="field span-2"><span>${esc(field.label)}</span><textarea rows="3" ${attrs}>${esc(value ?? '')}</textarea></label>`;
     }
     const type = field.type === 'number' ? 'number' : field.type === 'password' ? 'password' : 'text';
-    return `<label class="field"><span>${esc(field.label)}</span><input type="${type}" ${attrs} value="${esc(value ?? '')}" placeholder="${esc(field.placeholder || '')}" /></label>`;
+    const help = field.help ? `<small>${esc(field.help)}</small>` : '';
+    return `<label class="field"><span>${esc(field.label)}</span><input type="${type}" ${attrs} value="${esc(value ?? '')}" placeholder="${esc(field.placeholder || '')}" />${help}</label>`;
   }).join('');
 }
 

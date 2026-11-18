@@ -1,4 +1,5 @@
 import { getSettings } from './db.js';
+import { normalizeProvider } from './config.js';
 
 const truncate = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -24,8 +25,23 @@ function toolsUnsupportedError(provider, status, detail) {
   return err;
 }
 
-async function callDeepSeek({ messages, temperature, maxTokens, json, signal, tools }) {
+/** 报错时用接口地址的主机名当代号，接的是哪家一眼能看出来（接 DeepSeek 就是 api.deepseek.com）。 */
+function serviceLabel(cfg) {
+  try {
+    return new URL(cfg.baseUrl || 'https://api.deepseek.com').host || '模型服务';
+  } catch {
+    return '模型服务';
+  }
+}
+
+/**
+ * OpenAI 兼容接口：任何实现了 POST /chat/completions 的服务都能接
+ * （DeepSeek、Kimi、GLM、通义、公司网关、中转站、Ollama 的 /v1 等）。
+ * Key 可选：本地网关不带鉴权时不发 Authorization。
+ */
+async function callOpenAICompatible({ messages, temperature, maxTokens, json, signal, tools }) {
   const cfg = getSettings();
+  const label = serviceLabel(cfg);
   const base = (cfg.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
   const body = {
     model: cfg.model || 'deepseek-chat',
@@ -39,19 +55,18 @@ async function callDeepSeek({ messages, temperature, maxTokens, json, signal, to
     body.tools = tools;
     body.tool_choice = 'auto';
   }
+  const headers = { 'Content-Type': 'application/json' };
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${cfg.apiKey}`
-    },
+    headers,
     body: JSON.stringify(body),
     signal: withTimeout(signal, 120000)
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    if (tools?.length && res.status >= 400 && res.status < 500) throw toolsUnsupportedError('DeepSeek', res.status, detail);
-    throw new Error(`DeepSeek ${res.status}: ${truncate(detail, 200)}`);
+    if (tools?.length && res.status >= 400 && res.status < 500) throw toolsUnsupportedError(label, res.status, detail);
+    throw new Error(`${label} ${res.status}: ${truncate(detail, 200)}`);
   }
   const data = await res.json();
   const message = data.choices?.[0]?.message || {};
@@ -97,19 +112,59 @@ async function callOllama({ messages, temperature, json, signal, tools }) {
   };
 }
 
-/** 实际生效的模型通道：deepseek 没填 Key 时按演示模式处理。 */
+/**
+ * 实际生效的模型通道：demo / openai / ollama。
+ * “OpenAI 兼容接口”不填 Key 也照样用（本地网关常常不鉴权），只有选演示模式才走 demo。
+ */
 export function llmMode(cfg = getSettings()) {
-  if (cfg.provider === 'deepseek' && cfg.apiKey) return 'deepseek';
-  if (cfg.provider === 'ollama') return 'ollama';
-  return 'demo';
+  const provider = normalizeProvider(cfg.provider);
+  return provider === 'demo' ? 'demo' : provider;
+}
+
+/**
+ * 向当前接口要一份模型列表：OpenAI 兼容服务读 GET /models，Ollama 读 GET /api/tags。
+ * 只是便利手段，失败也不影响手动填模型名。
+ */
+export async function listModels({ signal, timeoutMs = 15000 } = {}) {
+  const cfg = getSettings();
+  const mode = llmMode(cfg);
+  if (mode === 'demo') {
+    throw Object.assign(new Error('演示模式没有模型列表，先把运行模式切到 OpenAI 兼容接口或 Ollama'), { statusCode: 400 });
+  }
+  const isOllama = mode === 'ollama';
+  const base = (isOllama ? cfg.ollamaUrl || 'http://127.0.0.1:11434' : cfg.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
+  const headers = {};
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+  let res;
+  try {
+    res = await fetch(isOllama ? `${base}/api/tags` : `${base}/models`, { headers, signal: withTimeout(signal, timeoutMs) });
+  } catch (err) {
+    // 地址写错、服务没起来时，直接告诉用户是哪个地址连不上。
+    const reason = err?.cause?.code || err?.message || '请求失败';
+    throw new Error(`连不上 ${base}（${reason}）`);
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`${isOllama ? 'Ollama' : serviceLabel(cfg)} ${res.status}: ${truncate(detail, 200)}`);
+  }
+  const data = await res.json().catch(() => null);
+  const models = [];
+  const push = (value) => {
+    const id = typeof value === 'string' ? value : value?.id || value?.name || value?.model;
+    if (id && !models.includes(String(id))) models.push(String(id));
+  };
+  if (Array.isArray(data?.data)) data.data.forEach(push);
+  if (Array.isArray(data?.models)) data.models.forEach(push);
+  if (!models.length) throw new Error('这个地址没有返回可识别的模型列表，手动填模型名也一样能用');
+  return models.sort();
 }
 
 export async function chat({ messages, system, temperature, maxTokens, json = false, signal }) {
   const cfg = getSettings();
   const all = system ? [{ role: 'system', content: system }, ...messages] : messages;
   const mode = llmMode(cfg);
-  if (mode === 'deepseek') {
-    return callDeepSeek({ messages: all, temperature, maxTokens, json, signal });
+  if (mode === 'openai') {
+    return callOpenAICompatible({ messages: all, temperature, maxTokens, json, signal });
   }
   if (mode === 'ollama') {
     return callOllama({ messages: all, temperature, json, signal });
@@ -135,8 +190,8 @@ export async function chatWithTools({ messages, system, tools, temperature, maxT
   if (!toolsSupported(cfg)) throw new Error('当前模型不支持工具调用');
   const all = system ? [{ role: 'system', content: system }, ...messages] : messages;
   try {
-    return mode === 'deepseek'
-      ? await callDeepSeek({ messages: all, temperature, maxTokens, signal, tools })
+    return mode === 'openai'
+      ? await callOpenAICompatible({ messages: all, temperature, maxTokens, signal, tools })
       : await callOllama({ messages: all, temperature, signal, tools });
   } catch (err) {
     if (err.toolsUnsupported) toolsUnsupported.add(`${mode}:${cfg.model}`);

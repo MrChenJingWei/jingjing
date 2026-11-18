@@ -132,7 +132,7 @@ npm run plugin:check
 | `status` | 汇总进行中 / 等你拍板 / 最近完成 |
 | `recall` | 检索记忆库 |
 
-演示模式用规则分类；接入 DeepSeek / Ollama 后会改为让模型输出 JSON 意图。Router **不启动任何 Agent 进程**，它只负责“该不该做、交给谁”。
+演示模式用规则分类；接入 OpenAI 兼容接口 / Ollama 后会改为让模型输出 JSON 意图。Router **不启动任何 Agent 进程**，它只负责“该不该做、交给谁”。
 
 ### 2. 调度器：工头，负责“挂起零消耗”
 
@@ -159,7 +159,7 @@ npm run plugin:check
 | `shell` | manage-files | 扫描工作区并按类型归档，动手前先请你确认 |
 | `claude` | code / write-file / manage-files / text | 调用本机 `claude -p`，支持 `--resume` 续跑 |
 | `codex` | 同上 | 调用本机 `codex exec`（需自行安装） |
-| `dsh` | 同上 | 以 `dsh headless --json` 运行，工具调用和输出会实时显示在任务卡上；自动找 PATH 里的 `dsh` 或「应用程序」里的 DeepSeek Harness.app，需要在设置里填 DeepSeek API Key |
+| `dsh` | 同上 | 以 `dsh headless --json` 运行，工具调用和输出会实时显示在任务卡上；自动找 PATH 里的 `dsh` 或「应用程序」里的 DeepSeek Harness.app，要用它自己的 DeepSeek 官方 Key（在 Worker 的「配置」里填，或设环境变量 `DEEPSEEK_API_KEY`） |
 
 Router 不认具体的 Worker id，只按能力派活（`src/worker-routing.js`）：文本需要什么能力，就在可用的 Worker 里挑具备该能力、开销（`cost`）最低的一个；插件还可以声明 `keywords`，被点名时优先。所以装上一个新的 Worker 插件，不用改任何核心代码就能被自动派到活。
 
@@ -347,7 +347,7 @@ Worker 是执行器，不是任务来源。内置 Worker 包括：问答、文�
 - 每个 Worker（包括内置的）都可以在设置里调整超时、最多同时运行几个、失败重试几次；插件还有独立配置和 `detect()`，可以按主机环境判断是否可用；
 - Worker 插件以当前 macOS 用户权限运行，静静不控制它的工具权限。
 
-DeepSeek Harness 已经是内置 Worker，任务里选「DeepSeek Harness」即可用 `dsh headless --json` 执行。只装了桌面 App、没有装命令行工具也能用，静静会直接调用 App 自带的 `dsh`；无头模式不读桌面版的登录状态，要用设置 → 模型里的 DeepSeek API Key。它跑起来以后，每一步工具调用、每段输出都会作为进度实时更新到对话里的任务卡（不用等全部结束）。
+DeepSeek Harness 已经是内置 Worker，任务里选「DeepSeek Harness」即可用 `dsh headless --json` 执行。只装了桌面 App、没有装命令行工具也能用，静静会直接调用 App 自带的 `dsh`；无头模式不读桌面版的登录状态，也不读「运行模式」那把 Key：在设置 → Worker → DeepSeek Harness 的「配置」里单独填一个 DeepSeek 官方 Key（或设环境变量 `DEEPSEEK_API_KEY`）。这条链路只连 DeepSeek，第三方中转的 Key 在这里不算数。它跑起来以后，每一步工具调用、每段输出都会作为进度实时更新到对话里的任务卡（不用等全部结束）。
 
 ## 官方插件、我的插件，以及让静静自己写插件
 
@@ -411,9 +411,9 @@ workspace: 默认工作区      # 可选：工作区名称或 id
 
 打开「设置 → 模型与人设」：
 
-- **DeepSeek**：填 API Key（默认 `https://api.deepseek.com`，模型 `deepseek-chat`）。Key 存在本机 SQLite 里。
-- **Ollama**：填本机地址（默认 `http://127.0.0.1:11434`）和模型名，例如 `qwen2.5:7b`。
-- 保存后 Router 会改用模型做意图识别，`llm` Worker 也会走真实模型。
+- **OpenAI 兼容接口**：默认指向 DeepSeek（`https://api.deepseek.com`，模型 `deepseek-chat`）；把 API 地址和模型换掉，就能接 Kimi、GLM、通义、公司网关、中转站，或本机 Ollama 的 `/v1`。Key 可以留空（本地网关常常不鉴权；云端服务留空会直接报鉴权失败，不会再悄悄退回演示模式），点「获取模型列表」会从接口的 `/models` 拉模型名，也可以直接填。Key 存在本机 SQLite 里。
+- **Ollama**：填本机地址（默认 `http://127.0.0.1:11434`）和模型名，例如 `qwen2.5:7b`；同样支持「获取模型列表」（读 `/api/tags`）。
+- 保存后 Router 会改用模型做意图识别，`llm` Worker 也会走真实模型；接的不是 DeepSeek 时，只要对方提供 OpenAI 风格的 `/chat/completions`，就不用改代码。
 
 模型连不上时，对话会回退到本地演示回复，不会让你卡在错误里。
 

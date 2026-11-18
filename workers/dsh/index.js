@@ -45,16 +45,18 @@ export function findHarness({
   return null;
 }
 
-// 无头模式不读桌面版的登录凭据，只认 DEEPSEEK_API_KEY：用静静设置里的 DeepSeek Key，或者进程环境里已有的。
-function hasApiKey(llmMode, env = process.env) {
-  return llmMode === 'deepseek' || Boolean(env.DEEPSEEK_API_KEY);
+// 这个 Worker 有自己的 DeepSeek Key：存在它自己的配置里（设置 → Worker → DeepSeek Harness → 配置），
+// 或者用进程环境里的 DEEPSEEK_API_KEY。它不读“运行模式”那把 Key —— 那把可能指向 Kimi、中转站或
+// 本地网关，交给无头 dsh 只会 401。
+function hasApiKey(config, env = process.env) {
+  return Boolean(config?.apiKey) || Boolean(env.DEEPSEEK_API_KEY);
 }
 
-export function detect(config, { which, llm } = {}) {
+export function detect(config, { which } = {}) {
   const harness = findHarness({ which });
   if (!harness) return { available: false, detail: '没有找到 DeepSeek Harness（需要 dsh 命令或 /Applications 里的 DeepSeek Harness.app）' };
-  if (!hasApiKey(llm?.mode)) {
-    return { available: false, detail: '已找到 DeepSeek Harness，但还没有 DeepSeek API Key：在设置 → 模型里填好，无头模式要用它' };
+  if (!hasApiKey(config)) {
+    return { available: false, detail: '已找到 DeepSeek Harness，但还没有它自己的 DeepSeek API Key：在 Worker 的「配置」里填，或设环境变量 DEEPSEEK_API_KEY' };
   }
   return { available: true, detail: harness.detail };
 }
@@ -64,9 +66,9 @@ export async function execute(task, ctx) {
   if (!harness) {
     return { status: 'failed', retryable: false, summary: '没有找到 DeepSeek Harness：需要 dsh 命令，或把 DeepSeek Harness.app 装在「应用程序」里。' };
   }
-  const apiKey = ctx.secrets?.apiKey || '';
+  const apiKey = ctx.config?.apiKey || '';
   if (!apiKey && !process.env.DEEPSEEK_API_KEY) {
-    return { status: 'failed', retryable: false, summary: 'DeepSeek Harness 的无头模式需要 DeepSeek API Key，请先在设置 → 模型里填好。' };
+    return { status: 'failed', retryable: false, summary: 'DeepSeek Harness 的无头模式需要 DeepSeek API Key：在这个 Worker 的「配置」里填好，或设环境变量 DEEPSEEK_API_KEY。' };
   }
   const env = {
     ...harness.env,
