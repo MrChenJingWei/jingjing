@@ -156,3 +156,21 @@ test('内置 Worker 通过同一个加载器注册，并能在演示模式下执
   const task = scheduler.createTask({ title: '回答问题', prompt: '总结一下', worker: 'llm' });
   await waitFor(() => status(task.id) === 'done', '问答 Worker 完成');
 });
+
+test('任务结论：done 后可以标完成/待确认，非法值和运行中的任务会被拒绝', async () => {
+  fakeWorker('quick-outcome', { abilities: ['text'] }, async () => ({ status: 'done', summary: '好了' }));
+  const task = scheduler.createTask({ title: '测试结论', prompt: '随便做点', worker: 'quick-outcome' });
+  await waitFor(() => status(task.id) === 'done', '任务结束');
+
+  assert.equal(scheduler.updateTask(task.id, { outcome: 'proposed' }).outcome, 'proposed');
+  assert.ok(eventTypes(task.id).includes('task/outcome'));
+  assert.equal(scheduler.updateTask(task.id, { outcome: 'completed' }).outcome, 'completed');
+  assert.throws(() => scheduler.updateTask(task.id, { outcome: '半成品' }), /不认识的结论/);
+  assert.equal(scheduler.updateTask(task.id, { outcome: null }).outcome, null);
+
+  const gated = gatedWorker('slow-outcome', { abilities: ['text'] });
+  const running = scheduler.createTask({ title: '跑着的任务', prompt: 'x', worker: 'slow-outcome' });
+  await waitFor(() => status(running.id) === 'running', '开始执行');
+  assert.throws(() => scheduler.updateTask(running.id, { outcome: 'completed' }), /正在执行|还没结束/);
+  gated[0].release({ status: 'done', summary: 'ok' });
+});

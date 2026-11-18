@@ -708,6 +708,8 @@ export function approve(approvalId, choice, { by = 'user', answer = '' } = {}) {
   return done(getTask(task.id));
 }
 
+export const TASK_OUTCOMES = ['completed', 'proposed', 'delivered', 'partial', 'blocked'];
+
 export function updateTask(taskId, patch = {}) {
   const task = getTask(taskId);
   if (!task) throw new Error('任务不存在');
@@ -721,9 +723,18 @@ export function updateTask(taskId, patch = {}) {
   }
   if (patch.priority !== undefined) fields.priority = Math.min(5, Math.max(1, Number(patch.priority) || 2));
   if (patch.cwd !== undefined) fields.cwd = String(patch.cwd);
+  if (patch.outcome !== undefined) {
+    const value = patch.outcome === null || patch.outcome === '' ? null : String(patch.outcome);
+    if (value && !TASK_OUTCOMES.includes(value)) throw Object.assign(new Error('不认识的结论'), { statusCode: 400 });
+    if (!['done', 'failed', 'cancelled'].includes(task.status)) {
+      throw Object.assign(new Error('任务还没结束，等这轮跑完再标记结论'), { statusCode: 409 });
+    }
+    fields.outcome = value;
+  }
   if (!Object.keys(fields).length) return task;
   db.prepare(`UPDATE tasks SET ${Object.keys(fields).map((key) => `${key} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
     .run(...Object.values(fields), now(), taskId);
+  if (fields.outcome !== undefined) event(taskId, 'task/outcome', { from: task.outcome || null, to: fields.outcome });
   event(taskId, 'task/edited', {
     fields: Object.keys(fields),
     ...(fields.worker && fields.worker !== task.worker ? { from: { worker: task.worker }, to: { worker: fields.worker } } : {})

@@ -10,8 +10,27 @@ import { switchView, renderActivity } from './shell.js';
 
 /* ------------------------------ 小部件 -------------------------------- */
 
-export function statusPill(status) {
-  return `<span class="pill" data-s="${esc(status)}">${esc(STATUS_LABEL[status] || status)}</span>`;
+export const OUTCOME_LABEL = {
+  completed: '已完成',
+  proposed: '待确认方案',
+  delivered: '已回复',
+  partial: '部分完成',
+  blocked: '等你决定'
+};
+const OUTCOME_OPTIONS = [
+  ['', '本轮结束（未确认完成）'],
+  ['completed', '已完成'],
+  ['proposed', '待确认方案'],
+  ['delivered', '已回复'],
+  ['partial', '部分完成'],
+  ['blocked', '等你决定']
+];
+
+/** done 只表示这轮跑完了；到底算不算完成，看 outcome。 */
+export function statusPill(status, outcome = null) {
+  const label = status === 'done' ? (OUTCOME_LABEL[outcome] || '本轮结束') : (STATUS_LABEL[status] || status);
+  const attr = outcome ? ` data-o="${esc(outcome)}"` : '';
+  return `<span class="pill" data-s="${esc(status)}"${attr}>${esc(label)}</span>`;
 }
 
 export function elapsedHtml(task) {
@@ -408,14 +427,110 @@ const FILTERS = [
   { id: 'all', label: '全部', test: () => true },
   { id: 'waiting_approval', label: '待拍板', test: (t) => t.status === 'waiting_approval', warm: true },
   { id: 'active', label: '进行中', test: (t) => ['queued', 'running'].includes(t.status) },
-  { id: 'done', label: '已完成', test: (t) => t.status === 'done' },
+  { id: 'done', label: '已结束', test: (t) => t.status === 'done' },
   { id: 'failed', label: '失败', test: (t) => ['failed', 'cancelled'].includes(t.status) }
 ];
 
-function filteredTasks() {
-  const filter = FILTERS.find((f) => f.id === state.taskFilter) || FILTERS[0];
+const SOURCE_STATUS_LABEL = {
+  open: '待处理',
+  in_progress: '进行中',
+  blocked: '阻塞',
+  review: '待确认',
+  done: '已完成',
+  cancelled: '已关闭',
+  unknown: '未知'
+};
+const OUTCOME_FILTER_LABEL = {
+  unset: '本轮结束（未确认）',
+  completed: '已完成',
+  proposed: '待确认方案',
+  delivered: '已回复',
+  partial: '部分完成',
+  blocked: '等你决定'
+};
+
+/** 任务来源：插件 id、对话、手动、自动化。 */
+function sourceKey(task) {
+  const origin = String(task.origin || '');
+  if (origin.startsWith('plugin:')) return origin.slice('plugin:'.length);
+  if (origin.startsWith('rule:') || task.rule_id) return '__automation';
+  if (origin === 'schedule') return '__automation';
+  return origin || 'chat';
+}
+
+function sourceName(key) {
+  if (key === '__automation') return '自动化';
+  const plugin = (state.plugins || []).find((item) => item.id === key);
+  if (plugin) return plugin.label || plugin.name || key;
+  if (key === 'chat') return '对话';
+  if (key === 'manual') return '手动';
+  return key;
+}
+
+/** 一个任务可能绑多个外部单子，状态分类取并集。 */
+function sourceCategories(task) {
+  return new Set((task.sources || []).map((link) => link.status?.category || 'unknown'));
+}
+
+function sourceStatusMatch(task, wanted) {
+  if (wanted === 'all') return true;
+  const links = task.sources || [];
+  if (wanted === 'none') return links.length === 0;
+  return [...sourceCategories(task)].includes(wanted);
+}
+
+function outcomeMatch(task, wanted) {
+  if (wanted === 'all') return true;
+  if (wanted === 'unset') return task.status === 'done' && !task.outcome;
+  return task.outcome === wanted;
+}
+
+function baseFilteredTasks({ ignoreChip = false } = {}) {
   const q = state.taskQuery.trim().toLowerCase();
-  return state.tasks.filter((t) => filter.test(t) && (!q || `${t.title} ${t.prompt || ''} ${t.id}`.toLowerCase().includes(q)));
+  return state.tasks.filter((t) => {
+    if (!ignoreChip) {
+      const filter = FILTERS.find((f) => f.id === state.taskFilter) || FILTERS[0];
+      if (!filter.test(t)) return false;
+    }
+    if (state.taskSource !== 'all' && sourceKey(t) !== state.taskSource) return false;
+    if (!sourceStatusMatch(t, state.taskSourceStatus)) return false;
+    if (!outcomeMatch(t, state.taskOutcome)) return false;
+    return !q || `${t.title} ${t.prompt || ''} ${t.id}`.toLowerCase().includes(q);
+  });
+}
+
+function filteredTasks() {
+  return baseFilteredTasks();
+}
+
+/** 来源 / 来源状态 / 完成情况三个下拉，选项从当前任务里现算。 */
+function renderTaskFilterSelects() {
+  const sources = [...new Set(state.tasks.map(sourceKey))].sort();
+  if (state.taskSource !== 'all' && !sources.includes(state.taskSource)) state.taskSource = 'all';
+  const sourceSel = $('#task-source-filter');
+  if (sourceSel) {
+    sourceSel.innerHTML = [
+      `<option value="all">全部来源</option>`,
+      ...sources.map((key) => `<option value="${esc(key)}">${esc(sourceName(key))}</option>`)
+    ].join('');
+    sourceSel.value = state.taskSource;
+  }
+
+  const categories = [...new Set(state.tasks.flatMap((t) => [...sourceCategories(t)]))].sort();
+  const statusSel = $('#task-source-status');
+  if (statusSel) {
+    const options = [['all', '全部来源状态'], ['none', '未关联来源']];
+    for (const category of categories) options.push([category, SOURCE_STATUS_LABEL[category] || category]);
+    statusSel.innerHTML = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
+    statusSel.value = state.taskSourceStatus;
+  }
+
+  const outcomeSel = $('#task-outcome-filter');
+  if (outcomeSel) {
+    const options = [['all', '全部完成情况'], ['unset', OUTCOME_FILTER_LABEL.unset], ...Object.entries(OUTCOME_FILTER_LABEL).filter(([key]) => key !== 'unset')];
+    outcomeSel.innerHTML = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
+    outcomeSel.value = state.taskOutcome;
+  }
 }
 
 function taskSubtitle(t) {
@@ -431,8 +546,8 @@ function taskSubtitle(t) {
 function renderFilters() {
   const box = $('#task-filters');
   if (!box) return;
-  const q = state.taskQuery.trim().toLowerCase();
-  const base = q ? state.tasks.filter((t) => `${t.title} ${t.prompt || ''} ${t.id}`.toLowerCase().includes(q)) : state.tasks;
+  renderTaskFilterSelects();
+  const base = baseFilteredTasks({ ignoreChip: true });
   box.innerHTML = FILTERS.map((f) => {
     const count = base.filter(f.test).length;
     if (f.id !== 'all' && f.id !== state.taskFilter && count === 0 && f.id !== 'active') return '';
@@ -456,7 +571,7 @@ export function renderTaskList() {
       <span class="trow-main">
         <span class="trow-top"><b>${esc(t.title)}</b><time>${timeAgo(t.created_at)}</time></span>
         <span class="trow-sub">${esc(taskSubtitle(t).slice(0, 140))}</span>
-        <span class="trow-meta">${statusPill(t.status)}${sourceTag(t)}<span>${esc(workerLabel(t.worker))}</span><span>·</span><span>${esc(t.parent_id ? '接着上一张' : originLabel(t))}</span></span>
+        <span class="trow-meta">${statusPill(t.status, t.outcome)}${sourceTag(t)}<span>${esc(workerLabel(t.worker))}</span><span>·</span><span>${esc(t.parent_id ? '接着上一张' : originLabel(t))}</span></span>
       </span>
     </button>`).join('');
 }
@@ -550,6 +665,9 @@ export async function openTask(id, { reveal = false } = {}) {
       // 不在当前筛选结果里：切到「全部」再选。
       state.taskFilter = 'all';
       state.taskQuery = '';
+      state.taskSource = 'all';
+      state.taskSourceStatus = 'all';
+      state.taskOutcome = 'all';
       const search = $('#task-search');
       if (search) search.value = '';
       renderTaskList();
@@ -691,10 +809,15 @@ function renderDetail({ task, events, approval, runs, links }, mode) {
     container.innerHTML = `
       <article class="detail">
         <div class="detail-bar">
-          ${statusPill(task.status)}
+          ${statusPill(task.status, task.outcome)}
           <span class="grow"></span>
           ${active ? `<button type="button" class="btn sm danger" data-action="cancel-task" data-id="${id}">${icon('stop', 'sm')}停止</button>` : ''}
           ${['failed', 'cancelled', 'done'].includes(task.status) ? `<button type="button" class="btn sm" data-action="retry-task" data-id="${id}">${icon('retry', 'sm')}${task.status === 'done' ? '重跑' : '重试'}</button>` : ''}
+          ${task.status === 'done' ? `<label class="outcome-pick">结论
+            <select data-task-outcome="${id}">
+              ${OUTCOME_OPTIONS.map(([value, label]) => `<option value="${value}" ${(task.outcome || '') === value ? 'selected' : ''}>${label}</option>`).join('')}
+            </select>
+          </label>` : ''}
           ${replyButton(task)}
           ${task.status === 'done' && !task.workflow_id ? `<button type="button" class="btn sm" data-action="learn-task" data-id="${id}" title="把这次的做法总结成工作流程，下次同类请求按它执行">${icon('flow', 'sm')}总结成流程</button>` : ''}
           ${task.status !== 'running' ? `<button type="button" class="icon-btn" data-action="edit-task" data-id="${id}" title="编辑">${icon('edit')}</button>` : ''}
@@ -1005,6 +1128,40 @@ $('#task-filters')?.addEventListener('click', (event) => {
 });
 
 let searchTimer = null;
+$('#task-source-filter')?.addEventListener('change', (event) => {
+  state.taskSource = event.target.value;
+  renderTaskList();
+});
+$('#task-source-status')?.addEventListener('change', (event) => {
+  state.taskSourceStatus = event.target.value;
+  renderTaskList();
+});
+$('#task-outcome-filter')?.addEventListener('change', (event) => {
+  state.taskOutcome = event.target.value;
+  renderTaskList();
+});
+
+// 详情里的「结论」：done 只代表跑完了，这里才是算不算完成。
+document.addEventListener('change', async (event) => {
+  const select = event.target.closest('[data-task-outcome]');
+  if (!select) return;
+  const id = select.dataset.taskOutcome;
+  select.disabled = true;
+  try {
+    const data = await api(`/api/tasks/${id}`, { method: 'PATCH', body: { outcome: select.value || null } });
+    upsertTask(data.task);
+    changed('tasks');
+    renderTaskList();
+    refreshTaskDetail(id);
+    toast(select.value ? `已标记为「${OUTCOME_LABEL[select.value]}」。` : '已恢复为「本轮结束（未确认完成）」。');
+  } catch (err) {
+    toast(err.message);
+    select.value = taskById(id)?.outcome || '';
+  } finally {
+    select.disabled = false;
+  }
+});
+
 $('#task-search')?.addEventListener('input', (event) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {

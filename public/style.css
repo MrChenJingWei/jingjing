@@ -257,6 +257,11 @@ html[data-theme="dark"] .switch::after { background: #eae6dc; }
 .seg-item em { font-style: normal; color: var(--faint); margin-left: 4px; font-weight: 400; }
 
 .filter-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-filter-selects { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-filter-selects select {
+  min-width: 0; flex: 1 1 120px; font-size: 12px; color: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px;
+}
 .fchip {
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 10px;
@@ -432,6 +437,14 @@ html[data-theme="dark"] .switch::after { background: #eae6dc; }
 .pill[data-s="running"] { background: var(--accent-soft); color: var(--accent); }
 .pill[data-s="waiting_approval"] { background: var(--warm-soft); color: var(--warm); }
 .pill[data-s="done"] { background: var(--accent-soft); color: var(--accent); }
+.pill[data-s="done"][data-o="proposed"], .pill[data-s="done"][data-o="partial"] { background: var(--warm-soft); color: var(--warm); }
+.pill[data-s="done"][data-o="delivered"] { background: var(--surface-3); color: var(--ink-2); }
+.outcome-pick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.outcome-pick select {
+  font-size: 12px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 6px;
+}
+.pill[data-s="done"][data-o="blocked"] { background: var(--warm-soft); color: var(--warm); }
 .pill[data-s="failed"] { background: var(--danger-soft); color: var(--danger); }
 .pill[data-s="cancelled"] { color: var(--faint); }
 .tag {

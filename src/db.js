@@ -232,6 +232,8 @@ ensureColumn('messages', 'meta', 'TEXT');
 ensureColumn('tasks', 'run_id', 'TEXT');
 ensureColumn('tasks', 'recoveries', 'INTEGER');
 ensureColumn('tasks', 'options', 'TEXT');
+// outcome：任务结论，和 status（这轮运行的生命周期）分开。done 只代表跑完了，不代表事情做完了。
+ensureColumn('tasks', 'outcome', 'TEXT');
 ensureColumn('approvals', 'kind', 'TEXT');
 // reply_to：来源插件给的「发回哪里」（插件自己认识的地址，比如企微的会话 ID）；有它，任务结果才能发回原会话。
 ensureColumn('tasks', 'reply_to', 'TEXT');

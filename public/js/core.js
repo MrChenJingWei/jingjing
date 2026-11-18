@@ -85,6 +85,9 @@ export const state = {
   sessionId: 'main',
   view: 'chat',
   taskFilter: 'all',
+  taskSource: 'all',
+  taskSourceStatus: 'all',
+  taskOutcome: 'all',
   taskQuery: '',
   // 任务详情：桌面在任务页右侧面板里看（selected），别的页面从右边滑出（drawer）。
   selectedTaskId: null,

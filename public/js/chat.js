@@ -31,7 +31,7 @@ function inlineTaskCard(task) {
         <span class="glyph">${esc(workerGlyph(task.worker))}</span>
         <div class="tcard-main">
           <div class="tcard-title">${esc(task.title)}</div>
-          <div class="tcard-meta">${statusPill(task.status)}<span>${esc(workerLabel(task.worker))}</span><span>·</span><span>${timeAgo(task.created_at)}</span>${sourceTag(task)}${parentLink(task)}</div>
+          <div class="tcard-meta">${statusPill(task.status, task.outcome)}<span>${esc(workerLabel(task.worker))}</span><span>·</span><span>${timeAgo(task.created_at)}</span>${sourceTag(task)}${parentLink(task)}</div>
         </div>
         <button type="button" class="icon-btn" data-action="open-task" data-id="${esc(task.id)}" title="查看详情">${icon('chevronRight')}</button>
       </div>
@@ -494,6 +494,9 @@ $('#attention')?.addEventListener('click', () => {
     setTimeout(() => card.classList.remove('is-flash'), 1400);
   } else {
     state.taskFilter = 'waiting_approval';
+    state.taskSource = 'all';
+    state.taskSourceStatus = 'all';
+    state.taskOutcome = 'all';
     switchView('tasks');
   }
 });
