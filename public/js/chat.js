@@ -6,7 +6,7 @@ import {
 } from './core.js';
 import { icon, openDialog, ask } from './ui.js';
 import { switchView, setDot } from './shell.js';
-import { statusPill, approvalBlock, elapsedHtml, replyButton, keepApprovalFocus } from './tasks.js';
+import { statusPill, replyBox, parentLink, sourceTag, elapsedHtml, replyButton, keepApprovalFocus } from './tasks.js';
 import { openPluginPage } from './plugins.js';
 
 /* ------------------------------ 行内任务卡 ---------------------------- */
@@ -16,9 +16,11 @@ function inlineTaskCard(task) {
   const approval = approvalFor(task);
   const progress = task.status === 'running'
     ? `<div class="tcard-progress"><span class="spinner"></span><span data-progress-text="${esc(task.id)}">${esc(task.progress || '执行中…')}</span>${elapsedHtml(task)}</div>`
-    : '';
+    : task.status === 'queued' && task.progress
+      ? `<div class="tcard-progress is-muted">${esc(task.progress)}</div>`
+      : '';
   const result = task.status === 'done' && task.result
-    ? `<div class="tcard-body prose">${md(task.result.split('\n').slice(0, 4).join('\n'))}</div>`
+    ? `<div class="tcard-body prose">${md(resultPreview(task.result))}</div>`
     : task.status === 'failed'
       ? `<div class="tcard-body is-error">${esc((task.error || task.result || '').slice(0, 200))}</div>`
       : '';
@@ -29,13 +31,13 @@ function inlineTaskCard(task) {
         <span class="glyph">${esc(workerGlyph(task.worker))}</span>
         <div class="tcard-main">
           <div class="tcard-title">${esc(task.title)}</div>
-          <div class="tcard-meta">${statusPill(task.status)}<span>${esc(workerLabel(task.worker))}</span><span>·</span><span>${timeAgo(task.created_at)}</span></div>
+          <div class="tcard-meta">${statusPill(task.status)}<span>${esc(workerLabel(task.worker))}</span><span>·</span><span>${timeAgo(task.created_at)}</span>${sourceTag(task)}${parentLink(task)}</div>
         </div>
         <button type="button" class="icon-btn" data-action="open-task" data-id="${esc(task.id)}" title="查看详情">${icon('chevronRight')}</button>
       </div>
       ${progress}
       ${result}
-      ${approval ? approvalBlock(task, approval) : ''}
+      ${replyBox(task, approval, { compact: true })}
       ${active || replyButton(task) ? `
         <div class="tcard-actions">
           <button type="button" class="btn xs" data-action="open-task" data-id="${esc(task.id)}">查看详情</button>
@@ -43,6 +45,23 @@ function inlineTaskCard(task) {
           ${active ? `<button type="button" class="btn xs danger" data-action="cancel-task" data-id="${esc(task.id)}">停止</button>` : ''}
         </div>` : ''}
     </div>`;
+}
+
+/** 卡片里只放结果开头几行；结果最后在问人时，把那句问题也带上。 */
+function resultPreview(text) {
+  const lines = String(text).split('\n');
+  const head = lines.slice(0, 4).join('\n');
+  if (lines.length <= 4) return head;
+  const last = lines.map((line) => line.trim()).filter(Boolean).pop() || '';
+  return /[?？]\s*[)）*_`]*$|吗[。.]?$/.test(last) ? `${head}\n\n…\n\n${last}` : head;
+}
+
+/** 同一张卡在对话里出现过多次（接着做过）：只有最新那次画完整卡片，之前的缩成一行。 */
+function taskRef(task) {
+  return `
+    <button type="button" class="tref" data-action="open-task" data-id="${esc(task.id)}">
+      <span class="sdot" data-s="${esc(task.status)}"></span><b>${esc(task.title)}</b><span>后面接着做了，卡片在下面</span>${icon('chevronRight', 'sm')}
+    </button>`;
 }
 
 /* ------------------------- 插件工坊：静静写的插件 ------------------------- */
@@ -283,7 +302,7 @@ function messageHtml(msg, index, list) {
       <div class="msg-body" title="${esc(clock(msg.created_at))}">
         ${!isUser && !grouped ? `<div class="msg-head"><b>静静</b><time>${clock(msg.created_at)}</time></div>` : ''}
         ${text ? `<div class="msg-text ${isUser ? '' : 'prose'}">${body}</div>` : ''}
-        ${task ? inlineTaskCard(task) : ''}
+        ${task ? (list.slice(index + 1).some((m) => m.task_id === msg.task_id) ? taskRef(task) : inlineTaskCard(task)) : ''}
         ${msg.kind === 'workflow' ? workflowCard(msg) : ''}
         ${msg.kind === 'plugin-draft' ? pluginDraftCard(msg) : ''}
         ${msg.kind === 'persona' ? personaProposalCard(msg) : ''}

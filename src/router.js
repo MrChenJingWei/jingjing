@@ -64,6 +64,28 @@ export function postAssistant(text, { kind = 'text', taskId = null, sessionId = 
   return addMessage({ sessionId, role: 'assistant', text, kind, taskId, meta });
 }
 
+/**
+ * 主人在任务卡上「接着做」/「另起一张」：在主对话里记下这句话，并把卡片带到对话底部。
+ * mode：same = 同一张卡接着做；new = 另起一张后续卡。
+ */
+export function continueTask(taskId, text, { mode = 'same', worker = null } = {}) {
+  const parent = scheduler.getTask(taskId);
+  if (!parent) throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
+  const task = mode === 'new'
+    ? scheduler.spawnFollowup(taskId, text, { worker: worker || null })
+    : scheduler.continueTask(taskId, text);
+  ensureSession(MAIN_SESSION);
+  const ask = String(text).trim();
+  addMessage({ sessionId: MAIN_SESSION, role: 'user', text: ask });
+  const label = workerCatalog().find((w) => w.id === task.worker)?.label || task.worker;
+  const round = task.resume_payload?.followup?.round;
+  const reply = mode === 'new'
+    ? `好，接着「${parent.title}」另起一张「${task.title}」，交给「${label}」。两张卡互相连着，随时能跳回去看。`
+    : `好，「${task.title}」接着做${round ? `（第 ${round} 轮）` : ''}，还是「${label}」${task.resume_payload?.session_id ? '，接着上次的会话' : ''}。`;
+  addMessage({ sessionId: MAIN_SESSION, role: 'assistant', kind: 'task', taskId: task.id, text: reply });
+  return task;
+}
+
 function statusReply() {
   const tasks = scheduler.listTasks({ limit: 30 });
   const waiting = tasks.filter((t) => t.status === 'waiting_approval');

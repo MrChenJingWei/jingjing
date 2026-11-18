@@ -1,4 +1,8 @@
 import AiBot, { generateReqId } from '@wecom/aibot-node-sdk';
+import { createRelay } from './relay.js';
+
+// 每个插件实例（一条长连接）一个 relay：deliver() 由静静调用，按实例找到对应的连接。
+const relays = new Map();
 
 export async function test(config) {
   if (!config.botId || !config.secret) return { ok: false, detail: 'BotID 和 Secret 都要填' };
@@ -10,6 +14,16 @@ export async function test(config) {
 
 export async function poll() {
   return { items: [] };
+}
+
+/**
+ * 静静要往企微里说一句（收到后的判断、等拍板、做完、结果、闲聊回复……）。
+ * 返回 { mode }：updated 原地更新了收到的那条消息，sent 另发了一条，skipped 没发（只想原地刷新的进度）。
+ */
+export async function deliver(config, payload, ctx) {
+  const relay = relays.get(ctx.instanceId);
+  if (!relay) throw new Error('企业微信长连接还没连上');
+  return relay.deliver(payload);
 }
 
 function messageTitle(body) {
@@ -61,6 +75,13 @@ export async function start(config, ctx) {
     }
   });
 
+  const relay = createRelay({
+    client,
+    newStreamId: () => generateReqId('stream'),
+    log: (message) => ctx.log(message)
+  });
+  relays.set(ctx.instanceId, relay);
+
   client.on('message.text', async (frame) => {
     const body = frame.body || {};
     const content = String(body.text?.content || '').trim();
@@ -69,15 +90,13 @@ export async function start(config, ctx) {
     const quoted = String(body.quote?.text?.content || '').trim();
     const text = quoted ? `引用：${quoted}\n\n${content}` : content;
     const occurredAt = body.create_time ? new Date(body.create_time * 1000).toISOString() : null;
-    const streamId = generateReqId('stream');
-    const ack = config.replyAck !== false;
-
-    if (ack) {
-      await client.replyStream(frame, streamId, '收到，正在看…', false).catch(() => {});
-    }
+    // 说什么、播报到什么程度由静静的设置决定；这里只负责马上占一个「正在看…」的气泡。
+    const policy = ctx.policy?.() || { ack: true };
+    if (policy.ack) await relay.open(frame, body.msgid);
 
     try {
-      const result = await ctx.ingest([
+      // 收到之后的判断结果、之后的进度和结果，都由静静通过 deliver() 写回这条消息。
+      await ctx.ingest([
         {
           externalId: body.msgid,
           kind: 'note',
@@ -86,6 +105,14 @@ export async function start(config, ctx) {
           title: messageTitle(body),
           content: text,
           occurredAt,
+          // 机器人只收得到私聊和群里 @ 它的消息：都是直接找过来的。
+          direct: true,
+          replyTo: {
+            chatid: body.chatid || body.from?.userid || '',
+            chattype: body.chattype || 'single',
+            msgid: body.msgid,
+            userid: body.from?.userid || ''
+          },
           meta: {
             chatid: body.chatid || '',
             chattype: body.chattype || 'single',
@@ -93,26 +120,19 @@ export async function start(config, ctx) {
           }
         }
       ]);
-      if (ack) {
-        const details = Array.isArray(result.details) ? result.details : [];
-        let reply;
-        if (result.created) {
-          const lines = details.filter((item) => item.status === 'task').map((item) => `- ${item.title}：${item.reason || '需要处理'}`);
-          reply = `收到。已经建了 ${result.created} 个任务：\n${lines.join('\n')}\n\n可以在静静任务板里查看。`;
-        } else if (details.some((item) => item.status === 'merged')) {
-          reply = `收到，已合并到已有任务：${details.find((item) => item.status === 'merged')?.title || ''}`;
-        } else if (details.length) {
-          reply = `看过了，这条先不动：${details[0].reason || '暂时不需要处理'}`;
-        } else {
-          reply = '这条之前已经处理过了。';
-        }
-        await client.replyStream(frame, streamId, reply.slice(0, 4000), true);
-      }
     } catch (err) {
       ctx.log(`处理企业微信消息失败：${err.message}`);
-      if (ack) {
-        await client.replyStream(frame, streamId, '处理这条消息时出错了，稍后再试。', true).catch(() => {});
-      }
+      await relay.deliver({ to: { msgid: body.msgid }, event: 'received', text: '处理这条消息时出错了，稍后再试。', final: true, transient: true }).catch(() => {});
+    }
+  });
+
+  // 卡片按钮：转给静静核对是不是主人，再把卡片改成结果。
+  client.on('event.template_card_event', async (frame) => {
+    try {
+      const result = await relay.onCardEvent(frame, (request) => ctx.interact?.(request) || { ok: false, message: '这个版本的静静不支持在企微里拍板。' });
+      if (result) ctx.log(`卡片操作：${result.ok ? '已执行' : '没执行'}（${result.message}）`);
+    } catch (err) {
+      ctx.log(`处理卡片按钮失败：${err.message}`);
     }
   });
 
@@ -144,6 +164,8 @@ export async function start(config, ctx) {
   ready = true;
 
   return async () => {
+    if (relays.get(ctx.instanceId) === relay) relays.delete(ctx.instanceId);
+    relay.dispose();
     if (closed) return;
     closed = true;
     try { client.disconnect(); } catch { /* ignore */ }

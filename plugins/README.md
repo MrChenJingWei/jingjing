@@ -7,6 +7,8 @@
 
 所以邮箱、日历、RSS、GitHub 通知都可以是彼此独立、可开关、可替换的插件，而不是写死在 Router 里。
 
+> 这份说明随静静一起安装。在静静的「设置 → 任务来源」或「设置 → Worker」点「怎么写插件」就能看到，还能翻官方插件的源码、一键拿一份模板。
+
 ## 官方插件和「我的」插件
 
 插件有两个来源，目录名都必须等于 manifest 的 `id`：
@@ -366,10 +368,41 @@ Webhook 的 `ctx` 还包含 `rawBody`、`headers`、`query`，方便插件做签
 - `externalId` 相同就不会重复建任务。
 - `kind=agenda` 会被当作「需要准备」的事项；`email` / `note` 交给判断层；
 - `direct: true` 表示对方直接找过来（私聊、群里 @ 机器人）：要办的事照常建任务；闲聊、打招呼这类不建任务，也不直接丢掉，由静静按设置里的人格决定回不回（要开这个来源的「自动发回」，并且插件导出了 `reply()`，回复时 `task` 为 `null`）。这类条目在 `ingest` 的结果里 `status` 为 `chat`。群里没 @ 的消息、通知、邮件不要标；
-- `url` 和 `occurredAt` 会随条目持久化到 `source_items`，可用来回溯；`meta` 只参与判断，不持久化；
+- `url` 和 `occurredAt` 会随条目持久化到 `source_items`，可用来回溯；`meta` 参与判断，绑定外部状态时还会存在绑定上、同步时原样交回 `syncStatus()`；
 - 插件**只负责取数据和整形**，不能指定 Worker、优先级、任务模板、是否自动执行或是否需要审批——这些行为全部由静静决定；
 - 插件不要自己建任务、不要写数据库、不要直接改界面；
 - 单次 `poll()` 超过 90 秒会被中止；请把 `ctx.signal` 传给 `fetch`。
+
+## 带状态的来源：跟踪外部状态（可选）
+
+缺陷单、工单、PR、流水线这类外部对象有自己的状态。来源插件可以把状态带上，静静会把外部对象**绑到建出来的任务卡上**，在列表、对话卡片和任务详情里显示，并在状态变化时更新。核心不认识任何一家来源，状态怎么映射全在插件里。
+
+条目多带几个字段：
+
+```js
+{
+  externalId: '1024',
+  externalType: '缺陷',            // 只用于显示：「缺陷 #1024」
+  title: '登录页在 iOS 上白屏',
+  url: 'https://…/bugs/1024',      // 只接受 http/https，详情里的「打开原单」
+  status: {                        // 也可以只给一个字符串，当作显示文案
+    key: 'resolved',               // 外部原始状态
+    label: '已解决',               // 界面上原样显示
+    category: 'review',            // open / in_progress / blocked / review / done / cancelled，其他值按 unknown
+    detail: '等待测试验证',         // 可选
+    updatedAt: '2026-11-17T06:20:00Z' // 可选：比已知状态旧的会被忽略
+  },
+  meta: { project: 'p1' },         // 同步时原样交回 syncStatus
+  track: false                     // 可选：这条不要跟踪
+}
+```
+
+- 条目带了 `status`，或者插件导出了 `syncStatus()`，建卡时就会绑定；合并进已有任务的条目也会补一条绑定；从一张卡「另起一张」的后续卡继承它的绑定。
+- **`poll()` 再拉到已经见过的条目**：不会再建卡，但会用它带的 `status` 更新绑定。只查「未关闭」列表的来源，单子关掉后就拉不到了，这时需要下面的 `syncStatus()`。
+- 可选导出 `syncStatus(config, links, ctx)`：静静每 10 分钟把到期的绑定（任务还在进行，或结束不到 7 天）按来源成批交给它，一批最多 50 条、30 秒超时，和 `poll()` 不会同时跑。`links` 是 `[{ externalId, externalType, url, meta, status }]`，返回 `[{ externalId, status, url?, title?, meta? }]`；找不到的返回 `{ externalId, missing: true }` 或者不返回。抛错算同步失败：保留最后已知状态，按失败次数退避（最长 1 小时）。任务详情里的「刷新状态」也走它。
+- 外部状态**只显示、只提示**：不会改任务状态，不会把任务顶到列表最上面，也不会写回外部系统。外部已完成而卡还在进行、卡做完了而外部还开着时，详情里会提示。
+- 完整例子见官方的 TAPD 插件（`plugins/tapd/`）：调本机 tapd-cli 只读查询，按项目的中文状态名推断分类（`status.js`），首次启用只记基线、之后只为新分来的单子建卡。
+- 用户可以对单条绑定「停止跟踪」或「解除绑定」；来源停用或删除后绑定保留，显示为已停用。删任务会删绑定，但去重账本还在，同一条外部单子不会被重新建卡。
 
 ## 把任务结果发回原会话（可选）
 
@@ -381,7 +414,51 @@ Webhook 的 `ctx` 还包含 `rawBody`、`headers`、`query`，方便插件做签
    - 完成的任务上有「发回原会话」按钮，用户可以先改再发；
    - 插件设置页有「任务完成后自动发回原会话」开关，**默认关闭**。打开后任务一完成就发，交给 Worker 的指令里会注明「结果会原样发回，直接写给对方」。
 
-插件不要自己决定什么时候回消息（收到时回一句「收到」这种回执除外）。
+插件不要自己决定什么时候回消息、回什么。长连接机器人这类来源用下面的 `deliver()`：静静决定说什么，插件只管在渠道里怎么显示。
+
+## 消息类来源：在渠道里回话、拍板（可选）
+
+企微、飞书这类机器人来源，收到消息后的回执、任务的状态播报、拍板、结果交付，都可以回到原来的会话里。分工是：
+
+- **插件拥有渠道**：怎么显示（更新同一条消息 / 发卡片 / 另发一条）；
+- **静静拥有状态和策略**：说什么、什么时候说、谁能在渠道里拍板，都在静静的插件设置页里（「在 xx 里怎么回话」），不在插件配置里；
+- 任务状态只存在静静这里。插件拿到的是副本，要改任务只能通过 `ctx.interact()` 请静静去做。
+
+### 往外说：导出 `deliver(config, payload, ctx)`
+
+条目带上 `replyTo`（发回哪里），静静会在这些时候调用 `deliver`：
+
+| `payload.event` | 什么时候 | 说明 |
+| --- | --- | --- |
+| `received` | 这批消息处理完 | 判断结果（建了任务 / 合并 / 不处理），开了「收到消息先回执」才发 |
+| `chat` | 私聊或 @ 的闲聊，静静想回 | 回复正文 |
+| `waiting_approval` | 任务等拍板 | 带 `approval: { id, kind, question, options, custom }`，适合画成按钮卡片 |
+| `progress` | 任务进度（开了实时进度，同一任务至少隔 10 秒） | `transient: true`：只在能原地更新时显示，不要为它另发消息 |
+| `done` / `failed` / `cancelled` | 任务结束 | 没开自动发回时，`done` 只说做完了，不带结果正文 |
+| `result` | 自动发回，或主人点「发回原会话」 | 结果正文 |
+
+`payload` 里还有 `to`（就是条目的 `replyTo`）、`text`（静静想说的话）、`final`（这件事在这条消息上说完了）、`task: { id, title, status }`。返回 `{ mode: 'updated' | 'sent' | 'skipped' }`，抛错算没发出去。同一个来源的调用是串行的；一批消息处理期间产生的任务播报，会排在回执之后。每次发送都会记到任务时间线上（进度除外）。
+
+收到消息时要不要先占一个「正在看…」，看 `ctx.policy()`：长连接插件的 `start()` 里能拿到 `{ ack, status }`。完整例子见官方企业微信插件：`plugin-src/wecom/relay.js`。
+
+只导出了旧的 `reply(config, { to, text, task }, ctx)` 也行，但只会收到 `result` 和 `chat`。
+
+### 渠道里回来的操作：`ctx.interact(request)`
+
+有人点了卡片按钮、在渠道里说「继续」，插件把它转给静静：
+
+```js
+const result = await ctx.interact({
+  taskId, action: 'approve' | 'continue' | 'cancel',
+  approvalId,            // approve 时建议带上，过期的会被拒绝
+  choice, answer,        // approve：选第几个，或者自己写的决定
+  text,                  // continue：接着做什么
+  actor, actorName       // 渠道里的用户 id 和显示名
+});
+// → { ok, code?, message, task? }，message 可以直接回给渠道
+```
+
+静静会核对：任务是这个来源建的、`actor` 在设置的「能在群里拍板的人」里（默认没有人）。不在名单里的会被拒绝，并在任务时间线记下他的 id。长连接插件在 `start()` 的 ctx 里、Webhook 插件在 `webhook()` 的 ctx 里都有 `interact`。
 
 ## 哪些行为由静静控制
 
@@ -539,6 +616,8 @@ Worker 只通过 `ctx` 使用宿主能力，不要 import 静静的核心模块�
 | `paths.sandbox` | 静静的沙箱目录 |
 | `resume` | 从审批恢复时是 `{ question, options, choice, answer? }`，`choice < 0` 表示用户取消；用户没选选项、自己写了决定时带 `answer`（同时追加在 `options` 末尾、`choice` 指向它）；否则为 `null` |
 | `sessionId` | 上一轮返回的 `sessionId`，或断点里存的 `sessionId`，用于续跑 |
+| `followup` | 主人在已经结束的卡上「接着做」时是 `{ round, text }`，否则为 `null`。这时 `task.prompt` 已经拼好了原指令、前几轮的结果和这次的话，不认识它的 Worker 照常用 `task.prompt` 就能接上；能续会话的 Worker（`ctx.sessionId` 还在）可以只发 `text` |
+| `approvalGuide` | 「需要主人拍板时怎么停下来问」的约定文字（输出 `[[APPROVAL]]` 标记）。调用编码 Agent 的 Worker 把它附在提示词末尾，Agent 才会在需要决定时停下，而不是把问题埋在结果里直接算完成 |
 | `checkpoint(data)` | 存断点（合并进本次执行记录，最多 64KB），返回合并后的断点。存了 `sessionId` 会同步到 `ctx.sessionId` |
 | `recovery` | 服务重启后带着断点恢复时是 `{ at, runId, checkpoint }`，否则为 `null` |
 | `run` | 本次执行 `{ id, token, reportUrl }`，给外部进程回传用（见下文） |

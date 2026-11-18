@@ -1,0 +1,79 @@
+{
+  "$schema": "../plugin.schema.json",
+  "id": "tapd",
+  "apiVersion": 1,
+  "name": "TAPD",
+  "version": "0.1.0",
+  "icon": "T",
+  "description": "通过本机的 tapd-cli 发现分给你的缺陷 / 需求并建任务；任务卡上跟踪它在 TAPD 里的状态。只读，不会改 TAPD。",
+  "entry": "index.js",
+  "type": "poll",
+  "intervalMinutes": 15,
+  "capabilities": {
+    "network": true,
+    "read": false,
+    "write": false
+  },
+  "config": [
+    {
+      "key": "workspaceIds",
+      "label": "项目 ID",
+      "type": "text",
+      "required": true,
+      "placeholder": "33349361, 41055554",
+      "help": "TAPD 项目链接里 tapd.cn/ 后面那串数字，多个用逗号分隔"
+    },
+    {
+      "key": "entities",
+      "label": "跟踪哪些",
+      "type": "select",
+      "options": [
+        { "value": "bug", "label": "分给我的缺陷" },
+        { "value": "story", "label": "分给我的需求" },
+        { "value": "both", "label": "缺陷和需求" }
+      ],
+      "default": "bug"
+    },
+    {
+      "key": "startFresh",
+      "label": "只为启用之后新分给我的单子建卡",
+      "type": "checkbox",
+      "default": true,
+      "help": "不勾的话，启用时手上所有没结束的单子都会交给静静判断、建卡（每次最多 10 条）"
+    },
+    {
+      "key": "owner",
+      "label": "处理人昵称",
+      "type": "text",
+      "placeholder": "留空自动用令牌对应的用户"
+    },
+    {
+      "key": "token",
+      "label": "个人令牌",
+      "type": "password",
+      "help": "留空就沿用环境变量 TAPD_TOKEN。从「应用程序」打开静静时读不到 shell 里的环境变量，需要填在这里"
+    },
+    {
+      "key": "endpoint",
+      "label": "API 地址",
+      "type": "url",
+      "placeholder": "https://api.tapd.cn",
+      "help": "留空沿用 TAPD_API_ENDPOINT，再没有就用 https://api.tapd.cn"
+    },
+    {
+      "key": "bin",
+      "label": "tapd-cli 路径",
+      "type": "text",
+      "placeholder": "留空自动查找（~/.local/bin、/opt/homebrew/bin、/usr/local/bin）"
+    },
+    {
+      "key": "statusMap",
+      "label": "状态分类（可选）",
+      "type": "textarea",
+      "wide": true,
+      "placeholder": "已解决未上线 = review\nstatus_8 = blocked",
+      "help": "自动推断不准时手动指定，每行「状态名或 key = 分类」。分类：open / in_progress / blocked / review / done / cancelled"
+    }
+  ],
+  "multiInstance": true
+}

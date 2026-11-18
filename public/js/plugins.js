@@ -174,6 +174,7 @@ function renderPluginDetail(id) {
             <span><b>任务完成后自动发回原会话</b><small>默认关闭。打开后，结果不经你过目就直接发给对方；关着时，可以在完成的任务上点「发回原会话」，改好再发。</small></span>
             <input type="checkbox" class="switch" data-plugin-auto-reply="${pid}" ${plugin.autoReply ? 'checked' : ''} />
           </label>` : ''}
+        ${plugin.canDeliver ? relaySection(plugin, pid) : ''}
       </section>
       ${webhookUrl ? `
         <div class="webhook-box">
@@ -442,6 +443,49 @@ async function changeWorkspace(select) {
   }
 }
 
+const RELAY_STATUS_LABEL = {
+  off: '不播报：只回执，之后在静静里看',
+  key: '关键节点：等拍板、做完、失败',
+  progress: '关键节点 + 实时进度（同一条消息里刷新）'
+};
+
+/** 消息类来源（导出了 deliver()）往外说话的策略：静静决定说什么，插件决定在渠道里怎么显示。 */
+function relaySection(plugin, pid) {
+  const relay = plugin.relay || {};
+  return `
+    <div class="relay-box">
+      <h4>在${esc(plugin.label || plugin.name)}里怎么回话</h4>
+      <label class="switch-row">
+        <span><b>收到消息先回执</b><small>先回「收到，正在看…」，判断完在同一条消息里说结果（建了任务 / 合并 / 不处理）。</small></span>
+        <input type="checkbox" class="switch" data-plugin-relay="ack" data-id="${pid}" ${relay.ack !== false ? 'checked' : ''} />
+      </label>
+      <label class="field"><span>任务状态播报</span>
+        <select data-plugin-relay="status" data-id="${pid}">
+          ${Object.entries(RELAY_STATUS_LABEL).map(([value, label]) => `<option value="${value}" ${relay.status === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+        </select>
+        <small class="field-help">等拍板时会推一张带按钮的卡片。任务结果要不要发出去，看上面的「自动发回」。</small>
+      </label>
+      <label class="field"><span>能在群里拍板的人</span>
+        <input data-plugin-relay="owners" data-id="${pid}" value="${esc(relay.owners || '')}" placeholder="渠道里的用户 id，多个用逗号分隔" maxlength="1000" />
+        <small class="field-help">只有这些人点卡片按钮才算数，默认没有人。不知道自己的 id：在群里点一次按钮，任务时间线上会记下点按钮的人的 id。</small>
+      </label>
+    </div>`;
+}
+
+async function changeRelay(input) {
+  const id = input.dataset.id;
+  const key = input.dataset.pluginRelay;
+  const value = input.type === 'checkbox' ? input.checked : input.value;
+  try {
+    const data = await api(`/api/plugins/${id}`, { method: 'PUT', body: { relay: { [key]: value } } });
+    replacePlugin(data.plugin);
+    toast({ ack: value ? '收到消息会先回执。' : '不再回执。', status: '状态播报已更新。', owners: '能拍板的人已更新。' }[key]);
+  } catch (err) {
+    if (input.type === 'checkbox') input.checked = !input.checked;
+    toast(err.message);
+  }
+}
+
 async function changeAutoReply(input) {
   const id = input.dataset.pluginAutoReply;
   try {
@@ -490,6 +534,8 @@ panel?.addEventListener('change', (event) => {
   if (workspace) { changeWorkspace(workspace); return; }
   const autoReply = event.target.closest('[data-plugin-auto-reply]');
   if (autoReply) { changeAutoReply(autoReply); return; }
+  const relayInput = event.target.closest('[data-plugin-relay]');
+  if (relayInput) { changeRelay(relayInput); return; }
   const enabled = event.target.closest('[data-plugin-enabled]');
   if (enabled) setEnabled(enabled);
 });

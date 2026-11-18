@@ -10,12 +10,22 @@ export function detect(config, { settings, which }) {
   return { available, detail: available ? bin : '未安装或已禁用' };
 }
 
+function withGuide(prompt, ctx) {
+  return ctx.approvalGuide ? `${prompt}\n\n${ctx.approvalGuide}` : prompt;
+}
+
 function promptFor(task, ctx) {
   if (ctx.recovery) {
     return '（静静：服务重启打断了你上一次的执行。请先检查已经完成的部分，然后从中断的地方继续完成原来的任务。）';
   }
   const resume = ctx.resume;
-  if (!resume) return task.prompt;
+  if (!resume) {
+    // 主人在上一轮结果之后接着说：会话还在就只发这句话，Claude 记得前面做过什么；会话没了 task.prompt 里已经拼好了前几轮。
+    if (ctx.followup?.text && ctx.sessionId) {
+      return withGuide(`${ctx.followup.text}\n\n（静静：这是主人看完你上一轮的结果后接着说的，请在这个会话的基础上继续，已经做完的部分不要从头重做。）`, ctx);
+    }
+    return withGuide(task.prompt, ctx);
+  }
   if (resume.answer) {
     return `${task.prompt}\n\n对「${resume.question}」，用户没有选给出的选项，而是这样决定：${resume.answer}\n请按用户的决定继续完成。`;
   }
@@ -64,7 +74,7 @@ export async function execute(task, ctx) {
   const output = `${run.result.stderr}\n${run.result.stdout}`;
   if (!run.final && ctx.sessionId && /No conversation found|session.*not found/i.test(output)) {
     await ctx.emit('之前的会话不存在，重新开始执行…');
-    run = await runOnce(bin, task, { ...ctx, recovery: null }, { resumeId: null, prompt: task.prompt });
+    run = await runOnce(bin, task, { ...ctx, recovery: null }, { resumeId: null, prompt: withGuide(task.prompt, ctx) });
     if (run.result.error === 'aborted') return { status: 'cancelled', summary: '任务已停止。' };
   }
 

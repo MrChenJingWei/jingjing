@@ -232,8 +232,42 @@ ensureColumn('tasks', 'options', 'TEXT');
 ensureColumn('approvals', 'kind', 'TEXT');
 // reply_to：来源插件给的「发回哪里」（插件自己认识的地址，比如企微的会话 ID）；有它，任务结果才能发回原会话。
 ensureColumn('tasks', 'reply_to', 'TEXT');
+// parent_id + link_kind：任务之间的流转。followup = 从上一张卡「另起一张」接着做。
+ensureColumn('tasks', 'link_kind', 'TEXT');
+
+// 任务 ↔ 外部对象（TAPD 缺陷、GitHub PR……）的绑定和外部状态，见 source-links.js。
+// 和 source_items（去重账本）分开：这张表跟着任务删除、归档、恢复。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS task_sources (
+    id                TEXT PRIMARY KEY,
+    task_id           TEXT NOT NULL,
+    provider          TEXT NOT NULL,
+    provider_label    TEXT,
+    external_id       TEXT NOT NULL,
+    external_type     TEXT,
+    title             TEXT,
+    url               TEXT,
+    status_key        TEXT,
+    status_label      TEXT,
+    status_category   TEXT NOT NULL DEFAULT 'unknown',
+    status_detail     TEXT,
+    status_updated_at TEXT,
+    meta              TEXT,
+    tracking          INTEGER NOT NULL DEFAULT 1,
+    sync_error        TEXT,
+    sync_failures     INTEGER NOT NULL DEFAULT 0,
+    synced_at         TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE(task_id, provider, external_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_sources_task ON task_sources(task_id);
+  CREATE INDEX IF NOT EXISTS idx_task_sources_provider ON task_sources(provider, external_id);
+`);
 // auto_reply：任务完成后自动把结果发回原会话。会往外发消息，默认关闭。
 ensureColumn('source_plugins', 'auto_reply', 'INTEGER');
+// relay：消息类来源往外说话的策略（回执 / 状态播报 / 谁能在群里拍板），见 relay.js。
+ensureColumn('source_plugins', 'relay', 'TEXT');
 // custom：这条审批是否允许用户不选给出的选项、自己写决定；answer：用户写的决定。
 ensureColumn('approvals', 'custom', 'INTEGER');
 ensureColumn('approvals', 'answer', 'TEXT');

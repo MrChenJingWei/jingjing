@@ -7,6 +7,7 @@ import { runWorker, availability, isWorker, workerLimits, workerRecovery, worker
 import { namedWorker, handoffWorker } from './worker-routing.js';
 import { ensureWorkerRule, listWorkerRules } from './worker-rules.js';
 import * as channels from './channels.js';
+import * as sourceLinks from './source-links.js';
 
 // taskId -> { controller, startedAt, worker, runId, report(body) }
 const running = new Map();
@@ -26,7 +27,16 @@ function emitTask(task) {
 }
 
 export function getTask(id) {
-  return rowTask(db.prepare('SELECT * FROM tasks WHERE id = ?').get(id));
+  const task = rowTask(db.prepare('SELECT * FROM tasks WHERE id = ?').get(id));
+  if (task) sourceLinks.attach([task]);
+  return task;
+}
+
+/** 任务本身没变、但挂在它上面的东西（比如来源状态）变了：重新推一次，不改 updated_at。 */
+export function touchTask(id) {
+  const task = getTask(id);
+  if (task) emitTask(task);
+  return task;
 }
 
 export function listTasks({ limit = 60, status, q = '' } = {}) {
@@ -47,7 +57,7 @@ export function listTasks({ limit = 60, status, q = '' } = {}) {
   const filtered = needle
     ? rows.filter((row) => `${row.title} ${row.prompt}`.toLowerCase().includes(needle))
     : rows;
-  return filtered.map(rowTask);
+  return sourceLinks.attach(filtered.map(rowTask));
 }
 
 export function taskEvents(taskId, limit = 50) {
@@ -112,7 +122,13 @@ export function createTask({
   replyTo = null,
   // 建好先停下问主人（比如外部消息点名了别的 Worker）：{ question, options, choices, progress }。
   // choices[i] 是选第 i 项时做什么：{ worker, rule? } 交给它（rule 顺手建一条分配规则），或 { cancel: true }。
-  hold = null
+  hold = null,
+  // 任务之间的流转：从哪张卡另起的（parentId）、怎么接上的（linkKind，目前只有 followup）。
+  parentId = null,
+  linkKind = null,
+  // 绑定的外部对象（见 source-links.linkFromItem），和任务在同一个事务里写入；sourceLinks 是多条。
+  sourceLink = null,
+  sourceLinksList = null
 }) {
   const chosen = worker || defaultWorker();
   if (!chosen) {
@@ -132,16 +148,22 @@ export function createTask({
   const approvalId = hold ? uid('a_') : null;
   transaction(() => {
     db.prepare(`
-      INSERT INTO tasks(id, title, prompt, worker, cwd, status, priority, origin, rule_id, session_id, group_key, hops, workflow_id, options, reply_to, approval_id, progress, recoveries, created_at, updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
+      INSERT INTO tasks(id, title, prompt, worker, cwd, status, priority, origin, rule_id, session_id, group_key, hops, workflow_id, options, reply_to, approval_id, progress, parent_id, link_kind, recoveries, created_at, updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
     `).run(
       id, cleanTitle, String(prompt || cleanTitle), chosen,
       cwd || settings.defaultCwd || '', hold ? 'waiting_approval' : 'queued', priority, origin, ruleId, sessionId,
       groupKey || null, Math.max(0, Number(hops) || 0), workflowId || null,
       options ? JSON.stringify(options) : null, replyTo ? JSON.stringify(replyTo) : null,
-      approvalId, hold ? hold.progress || '等你决定交给谁' : null, stamp, stamp
+      approvalId, hold ? hold.progress || '等你决定交给谁' : null,
+      parentId || null, parentId ? linkKind || 'followup' : null, stamp, stamp
     );
-    event(id, 'task/created', { worker: chosen, origin, title: cleanTitle, source, ...(workflowId ? { workflowId, workflow: workflowName } : {}) });
+    event(id, 'task/created', {
+      worker: chosen, origin, title: cleanTitle, source,
+      ...(workflowId ? { workflowId, workflow: workflowName } : {}),
+      ...(parentId ? { parentId, linkKind: linkKind || 'followup' } : {})
+    });
+    for (const link of [sourceLink, ...(sourceLinksList || [])].filter(Boolean)) sourceLinks.insertLink(id, link);
     if (hold) {
       db.prepare(`
         INSERT INTO approvals(id, task_id, question, options, status, kind, custom, meta, created_at)
@@ -172,7 +194,7 @@ export function findMergeableTask({ groupKey, worker, cwd }) {
   return row ? rowTask(row) : null;
 }
 
-export function mergeTask(taskId, { text = '', title = '', source = '', replyTo = null } = {}) {
+export function mergeTask(taskId, { text = '', title = '', source = '', replyTo = null, sourceLink = null } = {}) {
   const task = getTask(taskId);
   if (!task || task.status !== 'queued') return null;
   const addition = `\n\n--- 合并的新事件${title ? `：${title}` : ''} ---\n${String(text || '').slice(0, 3000)}`;
@@ -183,6 +205,8 @@ export function mergeTask(taskId, { text = '', title = '', source = '', replyTo 
   // 合并进来的新消息更晚：结果发回最近一条消息所在的会话。
   if (replyTo) db.prepare('UPDATE tasks SET reply_to = ? WHERE id = ?').run(JSON.stringify(replyTo), taskId);
   event(taskId, 'task/merged', { title, source });
+  // 合并进来的那条外部对象也绑到这张卡上：一张卡可以对应多条来源。
+  if (sourceLink) sourceLinks.insertLink(taskId, sourceLink);
   const updated = getTask(taskId);
   emitTask(updated);
   return updated;
@@ -351,10 +375,12 @@ async function execute(task) {
   let outcomeError = null;
   try {
     const resume = task.resume_payload?.approval || null;
-    const work = Promise.resolve().then(() => runWorker(getTask(task.id), {
+    const followup = task.resume_payload?.followup || null;
+    const work = Promise.resolve().then(() => runWorker(withFollowup(getTask(task.id)), {
       signal: controller.signal,
       resume,
       recovery,
+      followup: followup ? { round: followup.round, text: followup.text } : null,
       // Worker 只拿业务记忆；静静的人格记忆不进任务。
       memories: memory.context(`${task.title} ${task.prompt}`, { limit: 6, domain: 'work' }),
       tasks: listTasks({ limit: 10 }),
@@ -727,7 +753,8 @@ export function retryTask(taskId) {
       progress: '重新排队…',
       started_at: null,
       finished_at: null,
-      resume_payload: JSON.stringify({})
+      // 会话和断点从头来；但「接着做」的这一轮要求要留着，重试的是最近这一轮。
+      resume_payload: JSON.stringify(task.resume_payload?.followup ? { followup: task.resume_payload.followup } : {})
     });
     event(taskId, 'task/retried', { by: 'user' });
   });
@@ -735,6 +762,141 @@ export function retryTask(taskId) {
   emitTask(updated);
   pump();
   return updated;
+}
+
+/* ----------------------------- 接着做 / 另起一张 ----------------------------- */
+
+export const MAX_FOLLOWUP = 4000;
+const TRANSCRIPT_KEEP = 4;
+const TURN_CHARS = 3000;
+const TERMINAL = ['done', 'failed', 'cancelled'];
+
+function clip(text, max) {
+  const value = String(text || '').trim();
+  return value.length > max ? `${value.slice(0, max)}…（后面省略）` : value;
+}
+
+function followupText(text) {
+  const value = String(text ?? '').trim();
+  if (!value) throw Object.assign(new Error('先写下要接着做什么'), { statusCode: 400 });
+  if (value.length > MAX_FOLLOWUP) {
+    throw Object.assign(new Error(`写得太长了（最多 ${MAX_FOLLOWUP} 字）`), { statusCode: 400 });
+  }
+  return value;
+}
+
+/**
+ * 交给 Worker 的任务：有「接着做」时把指令换成「原指令 + 前几轮 + 这次的话」。
+ * 不认识 ctx.followup 的 Worker 不用改也能接上；能续会话的 Worker（Claude Code）可以只发这次的话。
+ */
+export function withFollowup(task) {
+  const f = task?.resume_payload?.followup;
+  if (!f?.text) return task;
+  const parts = [task.prompt];
+  for (const turn of f.transcript || []) {
+    const head = turn.ask ? `--- 第 ${turn.round} 轮：主人追问「${turn.ask}」---` : `--- 第 ${turn.round} 轮 ---`;
+    const label = turn.status === 'failed' ? '出错' : turn.status === 'cancelled' ? '中途停了' : '结果';
+    parts.push(`${head}\n${label}：\n${turn.result || '（没有结果）'}`);
+  }
+  parts.push(`--- 第 ${f.round} 轮：主人现在接着说 ---\n${f.text}\n\n请在前面的基础上继续，已经做完的部分不要从头重做。`);
+  return { ...task, prompt: parts.join('\n\n') };
+}
+
+/** 在同一张卡上接着做：保留 Worker 的会话，把这次的话作为新一轮交给它。 */
+export function continueTask(taskId, text, { by = 'user' } = {}) {
+  const task = getTask(taskId);
+  if (!task) throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
+  if (!TERMINAL.includes(task.status)) {
+    const why = task.status === 'waiting_approval' ? '它在等你拍板，直接回答它的问题就行' : '它还在做，等它停下再接着说';
+    throw Object.assign(new Error(why), { statusCode: 409 });
+  }
+  const ask = followupText(text);
+  const payload = task.resume_payload || {};
+  const prev = payload.followup || null;
+  const round = (prev?.round || 1) + 1;
+  const transcript = [
+    ...(prev?.transcript || []),
+    { round: round - 1, ask: prev?.text || null, status: task.status, result: clip(task.result || task.error, TURN_CHARS) }
+  ].slice(-TRANSCRIPT_KEEP);
+  const { approval: _a, checkpoint: _c, recovered: _r, ...rest } = payload;
+  transaction(() => {
+    if (task.approval_id) {
+      db.prepare("UPDATE approvals SET status = 'expired', resolved_at = ? WHERE id = ? AND status = 'pending'")
+        .run(now(), task.approval_id);
+    }
+    setStatus(taskId, {
+      status: 'queued',
+      attempts: 0,
+      hops: 0,
+      recoveries: 0,
+      approval_id: null,
+      error: null,
+      progress: '收到，接着做…',
+      started_at: null,
+      finished_at: null,
+      resume_payload: JSON.stringify({ ...rest, followup: { round, text: ask, transcript, at: now() } })
+    });
+    event(taskId, 'task/followup', { text: ask, round, by, from: task.status });
+  });
+  const updated = getTask(taskId);
+  emitTask(updated);
+  pump();
+  return updated;
+}
+
+/** 另起一张接着做的卡：带上上一张的指令和结果，默认同一个 Worker、同一个工作目录。 */
+export function spawnFollowup(parentId, text, { worker = null, cwd = null, title = '', by = 'user' } = {}) {
+  const parent = getTask(parentId);
+  if (!parent) throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
+  const ask = followupText(text);
+  const chosen = worker || (isWorker(parent.worker) ? parent.worker : null);
+  const prompt = [
+    `接着之前的任务「${parent.title}」做。`,
+    `原来的指令：\n${clip(parent.prompt, TURN_CHARS)}`,
+    parent.result || parent.error
+      ? `${parent.status === 'failed' ? '上一张卡出错了' : '上一张卡的结果'}：\n${clip(parent.result || parent.error, TURN_CHARS)}`
+      : '',
+    `这次要做的：\n${ask}`
+  ].filter(Boolean).join('\n\n');
+  const firstLine = ask.split('\n').find((line) => line.trim()) || ask;
+  const task = createTask({
+    title: String(title || '').trim() || firstLine.slice(0, 30),
+    prompt,
+    worker: chosen,
+    cwd: cwd ?? parent.cwd,
+    origin: parent.origin,
+    sessionId: parent.session_id,
+    priority: parent.priority || 2,
+    replyTo: parent.reply_to || null,
+    parentId: parent.id,
+    linkKind: 'followup',
+    // 后续卡继承上一张绑定的外部对象：修复卡 → 验证卡都挂在同一个外部单子下。
+    sourceLinksList: (parent.sources || []).map((link) => ({
+      provider: link.provider,
+      providerLabel: link.providerLabel,
+      externalId: link.externalId,
+      externalType: link.externalType,
+      title: link.title,
+      url: link.url,
+      status: link.status,
+      tracking: link.tracking
+    }))
+  });
+  event(parent.id, 'task/spawned', { taskId: task.id, title: task.title, by });
+  emitTask(getTask(parent.id));
+  return task;
+}
+
+/** 卡与卡的流转：上一张（parent）和从它另起的后续卡（children）。 */
+export function taskLinks(taskId) {
+  const task = getTask(taskId);
+  if (!task) return { parent: null, children: [] };
+  const brief = (row) => (row ? { id: row.id, title: row.title, status: row.status, link_kind: row.link_kind || null, created_at: row.created_at } : null);
+  const parent = task.parent_id
+    ? brief(db.prepare('SELECT id, title, status, link_kind, created_at FROM tasks WHERE id = ?').get(task.parent_id)) || { id: task.parent_id, title: null, status: 'deleted' }
+    : null;
+  const children = db.prepare('SELECT id, title, status, link_kind, created_at FROM tasks WHERE parent_id = ? ORDER BY created_at ASC').all(taskId).map(brief);
+  return { parent, children };
 }
 
 export function deleteTask(taskId) {
@@ -745,6 +907,8 @@ export function deleteTask(taskId) {
     db.prepare('DELETE FROM approvals WHERE task_id = ?').run(taskId);
     db.prepare('DELETE FROM task_events WHERE task_id = ?').run(taskId);
     db.prepare('DELETE FROM task_runs WHERE task_id = ?').run(taskId);
+    // 绑定跟着任务走；source_items 是去重账本，留着，免得同一条外部单子又建一张卡。
+    sourceLinks.deleteForTask(taskId);
     db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
   });
   bus.emit('task/deleted', { id: taskId, task });

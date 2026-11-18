@@ -1,6 +1,6 @@
 {
   "name": "jingjing",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "静静 — 本地优先的个人 AI 工作站：Router + 调度器 + Worker + 长线记忆",
   "type": "module",

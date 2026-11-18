@@ -69,7 +69,7 @@ export async function start(config, ctx) {
 
 `poll` 的 ctx：`signal`、`since`（上次成功运行时间或 null）、`now`、`log(msg)`、`settings`、`state.get/set/delete`（持久化游标、同步 token）。`start` 的 ctx 另有 `ingest(items)`、`status(detail)`、`fail(reason, { retry })`。
 
-时间上限由静静强制：`poll` 90 秒、`test` 30 秒、`webhook` 15 秒、`reply` 20 秒、`start` 30 秒、停止函数 10 秒，超时按失败处理。条目只能交数据：派给哪个 Worker 由用户的工作流程和分配规则决定，条目内容里点名 Worker 不算数。
+时间上限由静静强制：`poll` 90 秒、`test` 30 秒、`webhook` 15 秒、`reply` 20 秒、`deliver` 15 秒、`start` 30 秒、停止函数 10 秒，超时按失败处理。条目只能交数据：派给哪个 Worker 由用户的工作流程和分配规则决定，条目内容里点名 Worker 不算数。
 
 条目格式（一次最多 10 条）：
 
@@ -87,7 +87,7 @@ export async function start(config, ctx) {
 }
 ```
 
-消息类来源想让静静把任务结果发回原会话：条目带 `replyTo`（比如 `{ chatId }`），并导出 `reply(config, { to, text, task }, ctx)` 去发，`to` 就是那个 `replyTo`，发不出去就抛错。什么时候发由静静和用户决定，插件不要自己发。
+消息类来源想让静静把任务结果发回原会话：条目带 `replyTo`（比如 `{ chatId }`），并导出 `reply(config, { to, text, task }, ctx)` 去发，`to` 就是那个 `replyTo`，发不出去就抛错。什么时候发由静静和用户决定，插件不要自己发。想让回执、状态播报、拍板卡片也回到渠道里，改为导出 `deliver(config, payload, ctx)`，渠道里的按钮和回复用 `ctx.interact()` 转给静静，见 README.md「消息类来源」。
 
 ## 二、Worker 插件（kind: "worker"）
 

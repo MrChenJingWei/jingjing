@@ -22868,6 +22868,141 @@ var require_index_cjs = __commonJS({
 
 // plugin-src/wecom/index.js
 var import_aibot_node_sdk = __toESM(require_index_cjs(), 1);
+
+// plugin-src/wecom/relay.js
+var STREAM_MAX_MS = 5 * 60 * 1e3;
+var STREAM_MARGIN_MS = 15 * 1e3;
+var STREAM_TEXT_MAX = 4e3;
+var MARKDOWN_MAX_BYTES = 4e3;
+var CARD_KEY = "jj";
+var MAX_BUTTONS = 6;
+function byteCut(text, maxBytes, tail = "\n\n\u2026\uFF08\u5B8C\u6574\u5185\u5BB9\u5728\u9759\u9759\u91CC\uFF09") {
+  const value = String(text || "");
+  if (Buffer.byteLength(value) <= maxBytes) return value;
+  const budget = maxBytes - Buffer.byteLength(tail);
+  let out = "";
+  for (const ch of value) {
+    if (Buffer.byteLength(out + ch) > budget) break;
+    out += ch;
+  }
+  return out + tail;
+}
+var cut = (text, max) => {
+  const chars = [...String(text || "")];
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}\u2026` : chars.join("");
+};
+function approvalCard(payload) {
+  const { task, approval } = payload;
+  const options = approval.options || [];
+  const buttons = options.slice(0, MAX_BUTTONS - 1).map((option, index) => ({
+    text: cut(`${index + 1}. ${option}`, 10),
+    style: index === 0 ? 1 : 2,
+    key: [CARD_KEY, "a", task.id, approval.id, index].join(":")
+  }));
+  if (approval.kind !== "recovery") {
+    buttons.push({ text: approval.kind === "routing" ? "\u4E0D\u5904\u7406" : "\u505C\u4E0B", style: 3, key: [CARD_KEY, "a", task.id, approval.id, -1].join(":") });
+  }
+  return {
+    card_type: "button_interaction",
+    source: { desc: "\u9759\u9759 \xB7 \u9700\u8981\u62CD\u677F" },
+    main_title: { title: cut(task.title, 26), desc: cut(approval.question, 60) },
+    sub_title_text: cut(options.map((option, index) => `${index + 1}. ${option}`).join("\n"), 112),
+    button_list: buttons,
+    // 同一个机器人内不能重复；只能有字母数字和 _-@。
+    task_id: `jj-${approval.id}`.replace(/[^A-Za-z0-9_\-@]/g, "").slice(0, 128)
+  };
+}
+function parseCardKey(key) {
+  const [tag, action, taskId, approvalId, choice] = String(key || "").split(":");
+  if (tag !== CARD_KEY || action !== "a" || !taskId) return null;
+  return { action: "approve", taskId, approvalId, choice: Number(choice) };
+}
+function createRelay({ client, newStreamId, log = () => {
+}, now = () => Date.now() }) {
+  const streams = /* @__PURE__ */ new Map();
+  const cards = /* @__PURE__ */ new Map();
+  function closeStream(entry) {
+    entry.open = false;
+    if (entry.timer) clearTimeout(entry.timer);
+    if (streams.get(entry.msgid) === entry) streams.delete(entry.msgid);
+  }
+  async function open(frame, msgid, text = "\u6536\u5230\uFF0C\u6B63\u5728\u770B\u2026") {
+    const entry = { msgid, frame, streamId: newStreamId(), startedAt: now(), open: true, text };
+    streams.set(msgid, entry);
+    entry.timer = setTimeout(() => {
+      if (!entry.open) return;
+      closeStream(entry);
+      client.replyStream(entry.frame, entry.streamId, entry.text, true).catch(() => {
+      });
+    }, STREAM_MAX_MS - STREAM_MARGIN_MS);
+    entry.timer.unref?.();
+    await client.replyStream(frame, entry.streamId, text, false).catch((err) => log(`\u56DE\u6267\u6CA1\u53D1\u51FA\u53BB\uFF1A${err.message}`));
+    return entry;
+  }
+  function liveStream(msgid) {
+    const entry = msgid ? streams.get(msgid) : null;
+    if (!entry || !entry.open) return null;
+    if (now() - entry.startedAt >= STREAM_MAX_MS - STREAM_MARGIN_MS) {
+      closeStream(entry);
+      return null;
+    }
+    return entry;
+  }
+  async function updateStream(entry, text, final) {
+    entry.text = String(text || "").slice(0, STREAM_TEXT_MAX);
+    if (final) closeStream(entry);
+    await client.replyStream(entry.frame, entry.streamId, entry.text, Boolean(final));
+  }
+  async function send(chatid, body) {
+    if (!chatid) throw new Error("\u4E0D\u77E5\u9053\u53D1\u5230\u54EA\u4E2A\u4F1A\u8BDD\uFF08\u7F3A\u5C11 chatid\uFF09");
+    await client.sendMessage(chatid, body);
+  }
+  async function deliver2(payload = {}) {
+    const to = payload.to || {};
+    const stream = liveStream(to.msgid);
+    if (payload.event === "waiting_approval" && payload.approval && payload.task) {
+      if (stream) await updateStream(stream, `\u300C${payload.task.title}\u300D\u9700\u8981\u62CD\u677F\uFF0C\u770B\u4E0B\u9762\u7684\u5361\u7247\u3002`, true);
+      const card = approvalCard(payload);
+      cards.set(card.task_id, card);
+      await send(to.chatid, { msgtype: "template_card", template_card: card });
+      return { mode: "sent" };
+    }
+    if (stream) {
+      await updateStream(stream, payload.text, payload.final);
+      return { mode: "updated" };
+    }
+    if (payload.transient) return { mode: "skipped" };
+    await send(to.chatid, { msgtype: "markdown", markdown: { content: byteCut(payload.text, MARKDOWN_MAX_BYTES) } });
+    return { mode: "sent" };
+  }
+  async function onCardEvent(frame, interact) {
+    const body = frame?.body || {};
+    const eventData = body.event || {};
+    const parsed = parseCardKey(eventData.event_key);
+    if (!parsed) return null;
+    const actor = body.from?.userid || "";
+    const result = await interact({ ...parsed, actor });
+    const original = cards.get(eventData.task_id) || { card_type: "button_interaction", main_title: { title: "\u9759\u9759" } };
+    const updated = {
+      ...original,
+      task_id: eventData.task_id || original.task_id,
+      sub_title_text: cut(result.message || (result.ok ? "\u597D\u4E86" : "\u6CA1\u529E\u6210"), 112),
+      button_list: [{ text: result.ok ? "\u5DF2\u5904\u7406" : "\u6CA1\u6709\u751F\u6548", style: result.ok ? 1 : 2, key: [CARD_KEY, "done"].join(":") }]
+    };
+    await client.updateTemplateCard(frame, updated, result.ok || !actor ? void 0 : [actor]).catch((err) => log(`\u66F4\u65B0\u5361\u7247\u5931\u8D25\uFF1A${err.message}`));
+    if (result.ok) cards.delete(eventData.task_id);
+    return result;
+  }
+  function dispose() {
+    for (const entry of streams.values()) closeStream(entry);
+    streams.clear();
+    cards.clear();
+  }
+  return { open, deliver: deliver2, onCardEvent, dispose, streams, cards };
+}
+
+// plugin-src/wecom/index.js
+var relays = /* @__PURE__ */ new Map();
 async function test(config) {
   if (!config.botId || !config.secret) return { ok: false, detail: "BotID \u548C Secret \u90FD\u8981\u586B" };
   return {
@@ -22877,6 +23012,11 @@ async function test(config) {
 }
 async function poll() {
   return { items: [] };
+}
+async function deliver(config, payload, ctx) {
+  const relay = relays.get(ctx.instanceId);
+  if (!relay) throw new Error("\u4F01\u4E1A\u5FAE\u4FE1\u957F\u8FDE\u63A5\u8FD8\u6CA1\u8FDE\u4E0A");
+  return relay.deliver(payload);
 }
 function messageTitle(body) {
   const user = body.from?.userid || "\u672A\u77E5\u6210\u5458";
@@ -22923,6 +23063,12 @@ async function start(config, ctx) {
       giveUp(`\u4F01\u4E1A\u5FAE\u4FE1\u957F\u8FDE\u63A5\u653E\u5F03\u91CD\u8FDE\uFF1A${err.message}`);
     }
   });
+  const relay = createRelay({
+    client,
+    newStreamId: () => (0, import_aibot_node_sdk.generateReqId)("stream"),
+    log: (message) => ctx.log(message)
+  });
+  relays.set(ctx.instanceId, relay);
   client.on("message.text", async (frame) => {
     const body = frame.body || {};
     const content = String(body.text?.content || "").trim();
@@ -22932,14 +23078,10 @@ async function start(config, ctx) {
 
 ${content}` : content;
     const occurredAt = body.create_time ? new Date(body.create_time * 1e3).toISOString() : null;
-    const streamId = (0, import_aibot_node_sdk.generateReqId)("stream");
-    const ack = config.replyAck !== false;
-    if (ack) {
-      await client.replyStream(frame, streamId, "\u6536\u5230\uFF0C\u6B63\u5728\u770B\u2026", false).catch(() => {
-      });
-    }
+    const policy = ctx.policy?.() || { ack: true };
+    if (policy.ack) await relay.open(frame, body.msgid);
     try {
-      const result = await ctx.ingest([
+      await ctx.ingest([
         {
           externalId: body.msgid,
           kind: "note",
@@ -22948,6 +23090,14 @@ ${content}` : content;
           title: messageTitle(body),
           content: text,
           occurredAt,
+          // 机器人只收得到私聊和群里 @ 它的消息：都是直接找过来的。
+          direct: true,
+          replyTo: {
+            chatid: body.chatid || body.from?.userid || "",
+            chattype: body.chattype || "single",
+            msgid: body.msgid,
+            userid: body.from?.userid || ""
+          },
           meta: {
             chatid: body.chatid || "",
             chattype: body.chattype || "single",
@@ -22955,30 +23105,18 @@ ${content}` : content;
           }
         }
       ]);
-      if (ack) {
-        const details = Array.isArray(result.details) ? result.details : [];
-        let reply;
-        if (result.created) {
-          const lines = details.filter((item) => item.status === "task").map((item) => `- ${item.title}\uFF1A${item.reason || "\u9700\u8981\u5904\u7406"}`);
-          reply = `\u6536\u5230\u3002\u5DF2\u7ECF\u5EFA\u4E86 ${result.created} \u4E2A\u4EFB\u52A1\uFF1A
-${lines.join("\n")}
-
-\u53EF\u4EE5\u5728\u9759\u9759\u4EFB\u52A1\u677F\u91CC\u67E5\u770B\u3002`;
-        } else if (details.some((item) => item.status === "merged")) {
-          reply = `\u6536\u5230\uFF0C\u5DF2\u5408\u5E76\u5230\u5DF2\u6709\u4EFB\u52A1\uFF1A${details.find((item) => item.status === "merged")?.title || ""}`;
-        } else if (details.length) {
-          reply = `\u770B\u8FC7\u4E86\uFF0C\u8FD9\u6761\u5148\u4E0D\u52A8\uFF1A${details[0].reason || "\u6682\u65F6\u4E0D\u9700\u8981\u5904\u7406"}`;
-        } else {
-          reply = "\u8FD9\u6761\u4E4B\u524D\u5DF2\u7ECF\u5904\u7406\u8FC7\u4E86\u3002";
-        }
-        await client.replyStream(frame, streamId, reply.slice(0, 4e3), true);
-      }
     } catch (err) {
       ctx.log(`\u5904\u7406\u4F01\u4E1A\u5FAE\u4FE1\u6D88\u606F\u5931\u8D25\uFF1A${err.message}`);
-      if (ack) {
-        await client.replyStream(frame, streamId, "\u5904\u7406\u8FD9\u6761\u6D88\u606F\u65F6\u51FA\u9519\u4E86\uFF0C\u7A0D\u540E\u518D\u8BD5\u3002", true).catch(() => {
-        });
-      }
+      await relay.deliver({ to: { msgid: body.msgid }, event: "received", text: "\u5904\u7406\u8FD9\u6761\u6D88\u606F\u65F6\u51FA\u9519\u4E86\uFF0C\u7A0D\u540E\u518D\u8BD5\u3002", final: true, transient: true }).catch(() => {
+      });
+    }
+  });
+  client.on("event.template_card_event", async (frame) => {
+    try {
+      const result = await relay.onCardEvent(frame, (request) => ctx.interact?.(request) || { ok: false, message: "\u8FD9\u4E2A\u7248\u672C\u7684\u9759\u9759\u4E0D\u652F\u6301\u5728\u4F01\u5FAE\u91CC\u62CD\u677F\u3002" });
+      if (result) ctx.log(`\u5361\u7247\u64CD\u4F5C\uFF1A${result.ok ? "\u5DF2\u6267\u884C" : "\u6CA1\u6267\u884C"}\uFF08${result.message}\uFF09`);
+    } catch (err) {
+      ctx.log(`\u5904\u7406\u5361\u7247\u6309\u94AE\u5931\u8D25\uFF1A${err.message}`);
     }
   });
   await new Promise((resolve, reject) => {
@@ -23014,6 +23152,8 @@ ${lines.join("\n")}
   });
   ready = true;
   return async () => {
+    if (relays.get(ctx.instanceId) === relay) relays.delete(ctx.instanceId);
+    relay.dispose();
     if (closed) return;
     closed = true;
     try {
@@ -23023,6 +23163,7 @@ ${lines.join("\n")}
   };
 }
 export {
+  deliver,
   poll,
   start,
   test

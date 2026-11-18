@@ -11,6 +11,7 @@ import './js/memory.js';
 import './js/settings.js';
 import './js/workers.js';
 import './js/plugins.js';
+import './js/plugin-docs.js';
 import './js/automation.js';
 import './js/system.js';
 import { applySnapshot, connectEvents, disconnectEvents, resync } from './js/sync.js';

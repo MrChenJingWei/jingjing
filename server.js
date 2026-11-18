@@ -20,6 +20,8 @@ import * as forge from './src/plugin-forge.js';
 import { chat as llmChat } from './src/llm.js';
 import * as plugins from './src/plugins.js';
 import * as discovery from './src/discovery.js';
+import * as sourceLinks from './src/source-links.js';
+import * as pluginDocs from './src/plugin-docs.js';
 import { installPluginZip } from './src/plugin-install.js';
 import * as auth from './src/auth.js';
 import { installLogCapture, recentLogs } from './src/logger.js';
@@ -346,7 +348,27 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { task });
     }
 
-    const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(approve|cancel|retry|learn|reply))?$/);
+    // 任务绑定的外部对象：手动刷新状态、停止 / 恢复跟踪、解除绑定。只改绑定，不改任务本身。
+    const sourceMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/sources\/([^/]+)(?:\/(refresh))?$/);
+    if (sourceMatch) {
+      const [, taskId, linkId, action] = sourceMatch;
+      if (!scheduler.getTask(taskId)) return fail(res, 404, '任务不存在');
+      if (req.method === 'POST' && action === 'refresh') {
+        const result = await discovery.refreshLink(taskId, linkId);
+        return json(res, 200, { result, task: scheduler.touchTask(taskId) });
+      }
+      if (req.method === 'PATCH' && !action) {
+        const body = await readBody(req);
+        sourceLinks.setTracking(taskId, linkId, Boolean(body.tracking));
+        return json(res, 200, { task: scheduler.touchTask(taskId) });
+      }
+      if (req.method === 'DELETE' && !action) {
+        sourceLinks.unlink(taskId, linkId);
+        return json(res, 200, { task: scheduler.touchTask(taskId) });
+      }
+    }
+
+    const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(approve|cancel|retry|learn|reply|continue))?$/);
     if (taskMatch) {
       const [, id, action] = taskMatch;
       if (req.method === 'PATCH' && !action) {
@@ -363,7 +385,7 @@ const server = http.createServer(async (req, res) => {
         const task = scheduler.getTask(id);
         if (!task) return fail(res, 404, '任务不存在');
         const approval = task.approval_id ? scheduler.getApproval(task.approval_id) : null;
-        return json(res, 200, { task, events: scheduler.taskEvents(id), approval, runs: scheduler.taskRuns(id) });
+        return json(res, 200, { task, events: scheduler.taskEvents(id), approval, runs: scheduler.taskRuns(id), links: scheduler.taskLinks(id) });
       }
       if (req.method === 'POST' && action === 'approve') {
         const body = await readBody(req);
@@ -371,6 +393,13 @@ const server = http.createServer(async (req, res) => {
         if (!task?.approval_id) return fail(res, 400, '这个任务没有待审批项');
         const result = scheduler.approve(task.approval_id, Number(body.choice), { by: body.by || 'web', answer: body.answer });
         return json(res, 200, result);
+      }
+      // 已经结束的卡：mode=same 在同一张卡上接着做，mode=new 另起一张连着的后续卡。
+      if (req.method === 'POST' && action === 'continue') {
+        const body = await readBody(req);
+        const mode = body.mode === 'new' ? 'new' : 'same';
+        const task = router.continueTask(id, body.text, { mode, worker: body.worker || null });
+        return json(res, 200, { task, parent: mode === 'new' ? scheduler.getTask(id) : null, stats: scheduler.stats() });
       }
       if (req.method === 'POST' && action === 'reply') {
         const body = await readBody(req).catch(() => ({}));
@@ -800,6 +829,30 @@ const server = http.createServer(async (req, res) => {
       const errors = plugins.pluginErrors();
       bus.emit('plugins/updated', { plugins: list, errors });
       return json(res, 200, { plugins: list, workers: availability(), errors });
+    }
+
+    // 「怎么写插件」：随 App 发布的文档、官方例子源码（只读），以及把模板复制成「我的」插件。
+    const docsMatch = pathname.match(/^\/api\/plugin-docs\/(source|worker)(?:\/(examples)\/([^/]+)|\/(template))?$/);
+    if (docsMatch) {
+      const [, kind, examplesPart, exampleId, templatePart] = docsMatch;
+      if (req.method === 'GET' && !examplesPart && !templatePart) return json(res, 200, pluginDocs.guide(kind));
+      if (req.method === 'GET' && examplesPart) return json(res, 200, pluginDocs.exampleFiles(kind, exampleId));
+      if (req.method === 'POST' && templatePart) {
+        const made = pluginDocs.createFromTemplate(kind);
+        await discovery.stopLifecycles();
+        const list = await plugins.reloadPlugins();
+        await discovery.startLifecycles();
+        const errors = plugins.pluginErrors();
+        bus.emit('plugins/updated', { plugins: list, errors });
+        return json(res, 200, { ...made, plugins: list, workers: availability(), errors, canReveal: process.platform === 'darwin' });
+      }
+    }
+    if (req.method === 'POST' && pathname === '/api/plugin-docs/reveal') {
+      const body = await readBody(req);
+      const dir = pluginDocs.userPluginDir(body.id);
+      if (process.platform !== 'darwin') return fail(res, 400, '只有 macOS 上能直接打开文件夹');
+      execFile('/usr/bin/open', [dir], () => {});
+      return json(res, 200, { ok: true, dir });
     }
 
     if (req.method === 'POST' && pathname === '/api/plugins/install') {

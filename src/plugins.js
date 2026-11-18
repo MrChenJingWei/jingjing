@@ -386,6 +386,33 @@ function maskConfig(manifest, config) {
   return out;
 }
 
+/** 插件能不能往原会话说话：导出了 deliver()（完整的播报接口）或旧的 reply()（只能发结果和闲聊回复）。 */
+export function canSpeak(module) {
+  return typeof module?.deliver === 'function' || typeof module?.reply === 'function';
+}
+
+export const RELAY_STATUS = ['off', 'key', 'progress'];
+
+/**
+ * 往外说话的策略，存在静静这边（插件代码里不放）：
+ * ack 收到消息先回执；status 状态播报（off 不播 / key 只播等拍板、完成、失败 / progress 再加进度）；
+ * owners 能在群里拍板、接着做的人（渠道里的用户 id，逗号分隔），默认没有人。
+ */
+export function relayPolicy(row) {
+  let raw = {};
+  try { raw = row?.relay ? JSON.parse(row.relay) : {}; } catch { raw = {}; }
+  // 还没设置过：沿用旧版企微插件配置里的「收到消息后回执」（replyAck）。
+  if (!row?.relay) {
+    try { if (JSON.parse(row?.config || '{}').replyAck === false) raw.ack = false; } catch { /* 没有就算了 */ }
+  }
+  return {
+    ack: raw.ack !== false,
+    status: RELAY_STATUS.includes(raw.status) ? raw.status : 'key',
+    owners: String(raw.owners || '').split(/[\s,，;；]+/).map((s) => s.trim()).filter(Boolean),
+    autoResult: Boolean(row?.auto_reply)
+  };
+}
+
 export function listPlugins() {
   const out = [];
   for (const row of instanceRows()) {
@@ -417,9 +444,12 @@ export function listPlugins() {
       removable: item.source !== 'official' || row.id !== pluginId,
       webhook: manifest.type === 'webhook',
       lifecycle: manifest.type === 'stream',
-      // 插件导出了 reply() 就能把任务结果发回原会话；autoReply 是用户打开的「完成后自动发回」。
-      canReply: typeof item.module?.reply === 'function',
-      autoReply: Boolean(row.auto_reply) && typeof item.module?.reply === 'function',
+      // 插件导出了 reply() / deliver() 就能把任务结果发回原会话；autoReply 是用户打开的「完成后自动发回」。
+      canReply: canSpeak(item.module),
+      autoReply: Boolean(row.auto_reply) && canSpeak(item.module),
+      // 导出了 deliver()：收到回执、状态播报、在渠道里拍板都由静静按 relay 策略来管。
+      canDeliver: typeof item.module?.deliver === 'function',
+      relay: (({ autoResult: _a, ...rest }) => ({ ...rest, owners: rest.owners.join(', ') }))(relayPolicy(row)),
       webhookPath: token ? `/api/hooks/${token}` : null,
       workspaceId: row.workspace_id || null,
       config: maskConfig(manifest, config),
@@ -467,7 +497,7 @@ export function getPlugin(instanceId) {
   };
 }
 
-export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, label, autoReply } = {}) {
+export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, label, autoReply, relay } = {}) {
   const plugin = getPlugin(id);
   if (!plugin) throw new Error('插件不存在');
   const row = plugin.row;
@@ -504,11 +534,20 @@ export function savePlugin(id, { enabled, config, workspaceId, intervalMinutes, 
   }
   const nextLabel = label === undefined ? (row.label || plugin.manifest.name) : (String(label).trim().slice(0, 60) || plugin.manifest.name);
   const nextAutoReply = autoReply === undefined ? Boolean(row.auto_reply) : Boolean(autoReply);
-  if (nextAutoReply && typeof plugin.module?.reply !== 'function') {
+  if (nextAutoReply && !canSpeak(plugin.module)) {
     const err = new Error('这个插件不支持把结果发回原会话');
     err.statusCode = 400;
     throw err;
   }
+  let nextRelay = row.relay || null;
+  if (relay !== undefined) {
+    const current = relayPolicy(row);
+    const status = relay.status === undefined ? current.status : relay.status;
+    if (!RELAY_STATUS.includes(status)) throw Object.assign(new Error('状态播报只能是 off / key / progress'), { statusCode: 400 });
+    const owners = relay.owners === undefined ? current.owners.join(',') : String(relay.owners || '').slice(0, 1000);
+    nextRelay = JSON.stringify({ ack: relay.ack === undefined ? current.ack : Boolean(relay.ack), status, owners });
+  }
+  db.prepare('UPDATE source_plugins SET relay = ? WHERE id = ?').run(nextRelay, id);
   db.prepare(`
     UPDATE source_plugins SET label = ?, enabled = ?, config = ?, workspace_id = ?, interval_minutes = ?, auto_reply = ?, updated_at = ? WHERE id = ?
   `).run(nextLabel, nextEnabled ? 1 : 0, JSON.stringify(normalized), nextWorkspace, nextInterval, nextAutoReply ? 1 : 0, now(), id);

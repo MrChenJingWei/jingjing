@@ -15,7 +15,7 @@ import { db, now, getSettings, pluginSettings, settingsRevision } from './db.js'
 import { validateManifest, validateConfig, validateWorkerLimits, WORKER_DEFAULTS, WORKER_LIMIT_RANGES } from './plugin-spec.js';
 import { chat, demoTaskOutput, llmMode } from './llm.js';
 import { pickWorker } from './worker-routing.js';
-import { which, clearWhichCache as clearWhich, sleep, runCommand, extractApproval, estimateTokens, terminateChildren } from './worker-runtime.js';
+import { which, clearWhichCache as clearWhich, sleep, runCommand, extractApproval, estimateTokens, terminateChildren, APPROVAL_GUIDE } from './worker-runtime.js';
 import { importPluginEntry } from './plugin-loader.js';
 
 export { which, runCommand, extractApproval, terminateChildren };
@@ -368,6 +368,10 @@ function hostContext(descriptor, task, ctx) {
     // 只有随代码发布的内置 Worker 能拿到模型 Key（比如 DeepSeek Harness 要转交给子进程）。
     secrets: descriptor.source === 'builtin' ? { apiKey: settings.apiKey || '' } : {},
     resume: ctx.resume || null,
+    // 主人在已经结束的卡上「接着做」：{ round, text }。task.prompt 已经拼好了前几轮，能续会话的 Worker 可以只发 text。
+    followup: ctx.followup || null,
+    // 需要主人拍板时该怎么停下来问（[[APPROVAL]] 标记）；在提示词里转述给自己的 Agent。
+    approvalGuide: APPROVAL_GUIDE,
     sessionId: task.resume_payload?.session_id || null,
     // 任务级运行选项，比如插件草稿任务的 { allowEdits: true }：允许编码 Agent 在工作目录里直接改文件。
     options: parseTaskOptions(task.options),

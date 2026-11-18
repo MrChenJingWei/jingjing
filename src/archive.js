@@ -2,7 +2,7 @@
  * 旧数据归档：清理前先打包，之后可以查、可以恢复。
  *
  * 归档对象：已结束（done / failed / cancelled）且超过 afterDays 天的任务，连同它们的
- * task_events、approvals、task_runs，以及同期、且不属于仍保留任务的对话消息。
+ * task_events、approvals、task_runs、task_sources（来源绑定），以及同期、且不属于仍保留任务的对话消息。
  * 不动的：记忆（长期上下文）、来源条目 source_items（它是防重复派活的去重账本）。
  *
  * 文件格式：<data>/archive/archive-<时间>.jsonl.gz，每行一个 JSON：
@@ -18,7 +18,7 @@ import { db, now, getSettings, getSetting, setSetting } from './db.js';
 
 export const ARCHIVE_DIR = path.join(DATA_DIR, 'archive');
 const NAME_RE = /^archive-[0-9TZ-]+(?:-\d+)?\.jsonl\.gz$/;
-const TASK_TABLES = ['task_events', 'approvals', 'task_runs'];
+const TASK_TABLES = ['task_events', 'approvals', 'task_runs', 'task_sources'];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function settingsFor(days) {

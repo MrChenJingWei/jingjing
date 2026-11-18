@@ -38,7 +38,18 @@ export const EVENT_LABEL = {
   'task/merged': '合并了新事件',
   'workflow/skipped': '没有总结流程',
   'task/replied': '已发回原会话',
-  'task/reply_failed': '发回原会话失败'
+  'task/reply_failed': '发回原会话失败',
+  'task/followup': '接着做',
+  'task/spawned': '另起后续卡',
+  'source/linked': '绑定来源',
+  'source/unlinked': '解除来源绑定',
+  'source/status_changed': '来源状态变了',
+  'source/sync_failed': '来源同步失败',
+  'source/tracking_changed': '来源跟踪开关',
+  'task/relayed': '已在原会话里说',
+  'task/relay_failed': '原会话里没说出去',
+  'task/remote_action': '在原会话里操作',
+  'task/remote_denied': '原会话里有人想操作（不在名单）'
 };
 export const ACTIVE_STATUSES = ['queued', 'running', 'waiting_approval'];
 
@@ -121,15 +132,28 @@ function inline(text) {
 }
 
 /** 极简 Markdown：标题、列表、代码块、粗体、行内代码、链接。输入先转义，不会注入 HTML。 */
-export function md(src) {
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+function tableCells(line) {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map((cell) => inline(cell.trim().replace(/\\\|/g, '|')));
+}
+
+/**
+ * 轻量 Markdown：段落、列表、代码块、表格。
+ * levels：保留标题层级（# → h2 … #### → h5）并给标题编号 id，文档页用来做目录；默认所有标题都画成 h3。
+ */
+export function md(src, { levels = false, idPrefix = 'md-h' } = {}) {
   const lines = esc(src).split('\n');
   const out = [];
   let list = null;
   let code = null;
+  let heading = 0;
   const closeList = () => {
     if (list) { out.push(`</${list}>`); list = null; }
   };
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
     if (line.trim().startsWith('```')) {
       if (code === null) { closeList(); code = []; continue; }
       out.push(`<pre class="codeblock">${code.join('\n')}</pre>`);
@@ -138,8 +162,28 @@ export function md(src) {
     }
     if (code !== null) { code.push(line); continue; }
     if (!line.trim()) { closeList(); continue; }
-    const h = line.match(/^#{1,4}\s+(.*)$/);
-    if (h) { closeList(); out.push(`<h3>${inline(h[1])}</h3>`); continue; }
+    if (TABLE_ROW.test(line) && TABLE_RULE.test(lines[i + 1] || '')) {
+      closeList();
+      const head = tableCells(line);
+      const rows = [];
+      i += 2;
+      while (i < lines.length && TABLE_ROW.test(lines[i])) { rows.push(tableCells(lines[i])); i += 1; }
+      i -= 1;
+      out.push(`<div class="md-table"><table><thead><tr>${head.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+      continue;
+    }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      closeList();
+      if (levels) {
+        const tag = `h${h[1].length + 1}`;
+        out.push(`<${tag} id="${idPrefix}-${heading}">${inline(h[2])}</${tag}>`);
+        heading += 1;
+      } else {
+        out.push(`<h3>${inline(h[2])}</h3>`);
+      }
+      continue;
+    }
     const ul = line.match(/^\s*[-*]\s+(.*)$/);
     if (ul) {
       if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul'; }

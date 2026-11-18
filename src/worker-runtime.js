@@ -125,6 +125,17 @@ export function runCommand(cmd, args = [], { cwd, signal, onOutput, timeoutMs = 
   });
 }
 
+/**
+ * 交给编码 Agent（Claude Code、Codex……）的「怎么停下来问主人」约定。
+ * 不告诉它，它在结果里随口问一句「要我接着改吗？」，任务就直接算完成了。
+ */
+export const APPROVAL_GUIDE = [
+  '（静静的约定）如果做到一半必须由主人决定才能继续（选方案、确认有风险的操作、缺关键信息），',
+  '不要猜，也不要把问题埋在结果里：把已经做完的部分和问题写清楚，最后单独输出一行：',
+  '[[APPROVAL]] {"question":"要问的问题","options":["选项A","选项B"]}',
+  '主人回答后会接着这次的上下文继续。不需要主人决定时不要输出这个标记，直接把事情做完。'
+].join('\n');
+
 /** 解析输出末尾的 [[APPROVAL]] {"question":"…","options":[…]} 标记。 */
 export function extractApproval(text) {
   const idx = String(text || '').lastIndexOf('[[APPROVAL]]');

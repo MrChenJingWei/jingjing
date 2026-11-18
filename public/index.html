@@ -10,7 +10,7 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon-192.png" />
-  <link rel="stylesheet" href="/style.css?v=20261116-4" />
+  <link rel="stylesheet" href="/style.css?v=20261117-4" />
   <script>
     // 首帧前定好深浅色，避免先白后黑闪一下。
     try {
@@ -328,6 +328,7 @@
                       <input type="file" id="worker-file" accept=".zip,application/zip" hidden />
                       <label class="btn sm" for="worker-file" id="install-worker-btn" role="button" tabindex="0">安装插件</label>
                       <button type="button" class="btn sm" data-forge="worker">让静静写一个</button>
+                      <button type="button" class="btn sm ghost" data-plugin-docs="worker">怎么写插件</button>
                     </div>
                   </div>
                   <div class="row-list" id="worker-grid"></div>
@@ -397,6 +398,7 @@
                     <input type="file" id="plugin-file" accept=".zip,application/zip,application/x-zip-compressed" hidden />
                     <label for="plugin-file" class="btn sm" id="install-plugin-btn" role="button" tabindex="0">安装插件</label>
                     <button type="button" class="btn sm" data-forge="source">让静静写一个</button>
+                    <button type="button" class="btn sm ghost" data-plugin-docs="source">怎么写插件</button>
                     <button type="button" class="btn sm" id="reload-plugins">重新加载</button>
                   </div>
                   <div id="plugin-list" class="plugin-list"></div>
@@ -618,6 +620,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/app.js?v=20261116-4"></script>
+  <script type="module" src="/app.js?v=20261117-4"></script>
 </body>
 </html>
