@@ -14,6 +14,8 @@ import { ROOT, SANDBOX_DIR, HOST, PORT } from './config.js';
 import { db, now, getSettings, pluginSettings, settingsRevision } from './db.js';
 import { validateManifest, validateConfig, validateWorkerLimits, WORKER_DEFAULTS, WORKER_LIMIT_RANGES } from './plugin-spec.js';
 import { chat, demoTaskOutput, llmMode } from './llm.js';
+import { capabilityCatalog, capabilityLabels, normalizeCapabilityIds } from './capabilities.js';
+import { normalizeAliases } from './routing-signals.js';
 import { pickWorker } from './worker-routing.js';
 import { which, clearWhichCache as clearWhich, sleep, runCommand, extractApproval, estimateTokens, terminateChildren, APPROVAL_GUIDE } from './worker-runtime.js';
 import { importPluginEntry } from './plugin-loader.js';
@@ -182,6 +184,20 @@ function workerConfig(descriptor) {
   return { ...defaults, ...parseJson(workerRow(descriptor.id)?.config) };
 }
 
+function workerRouting(descriptor) {
+  const manifest = descriptor.manifest.worker || {};
+  const stored = parseJson(workerRow(descriptor.id)?.routing);
+  const aliases = normalizeAliases([
+    ...(Array.isArray(manifest.aliases) ? manifest.aliases : []),
+    ...(Array.isArray(stored.aliases) ? stored.aliases : [])
+  ]);
+  const base = Array.isArray(manifest.capabilities) ? manifest.capabilities : [];
+  const add = Array.isArray(stored?.capabilities?.add) ? stored.capabilities.add : [];
+  const remove = Array.isArray(stored?.capabilities?.remove) ? stored.capabilities.remove : [];
+  const capabilities = [...new Set([...base, ...add])].filter((id) => !remove.includes(id));
+  return { aliases, capabilities };
+}
+
 function maskConfig(descriptor, config) {
   const out = { ...config };
   for (const field of descriptor.manifest.config || []) {
@@ -214,7 +230,7 @@ export function workerLimits(id) {
 
 export const MAX_WORKER_NOTES = 300;
 
-export function saveWorkerConfig(id, { config, enabled, limits, notes } = {}) {
+export function saveWorkerConfig(id, { config, enabled, limits, notes, routing } = {}) {
   const descriptor = workerRegistry.get(id);
   if (!descriptor || isWorkerDeleted(id)) throw new Error('Worker 不存在');
   const row = workerRow(id);
@@ -230,11 +246,30 @@ export function saveWorkerConfig(id, { config, enabled, limits, notes } = {}) {
   if (nextNotes.length > MAX_WORKER_NOTES) {
     throw Object.assign(new Error(`补充说明最多 ${MAX_WORKER_NOTES} 字`), { statusCode: 400 });
   }
+  // 本机别名/能力：UI 传的是合并后的全量列表，这里换算成「在 manifest 基础上加/减」再存。
+  let nextRouting = row?.routing || null;
+  if (routing !== undefined) {
+    const catalog = capabilityCatalog(getSettings());
+    const currentRouting = workerRouting(descriptor);
+    const aliases = normalizeAliases(routing?.aliases ?? currentRouting.aliases);
+    const capabilities = normalizeCapabilityIds(
+      Array.isArray(routing?.capabilities) ? routing.capabilities : currentRouting.capabilities,
+      catalog
+    );
+    const base = descriptor.manifest.worker.capabilities || [];
+    nextRouting = JSON.stringify({
+      aliases,
+      capabilities: {
+        add: capabilities.filter((capability) => !base.includes(capability)),
+        remove: base.filter((capability) => !capabilities.includes(capability))
+      }
+    });
+  }
   db.prepare(`
-    INSERT INTO worker_configs(id, enabled, config, limits, notes, updated_at) VALUES(?, ?, ?, ?, ?, ?)
+    INSERT INTO worker_configs(id, enabled, config, limits, notes, routing, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, config = excluded.config,
-      limits = excluded.limits, notes = excluded.notes, updated_at = excluded.updated_at
-  `).run(id, nextEnabled ? 1 : 0, JSON.stringify(normalized), JSON.stringify(nextLimits), nextNotes || null, now());
+      limits = excluded.limits, notes = excluded.notes, routing = excluded.routing, updated_at = excluded.updated_at
+  `).run(id, nextEnabled ? 1 : 0, JSON.stringify(normalized), JSON.stringify(nextLimits), nextNotes || null, nextRouting, now());
   return availability()[id];
 }
 
@@ -286,11 +321,13 @@ export async function testWorker(id) {
 
 export function availability() {
   const out = {};
+  const catalog = capabilityCatalog(getSettings());
   for (const descriptor of workerRegistry.values()) {
     if (isWorkerDeleted(descriptor.id)) continue;
     const { manifest } = descriptor;
     const detection = workerDetection(descriptor);
     const row = workerRow(descriptor.id);
+    const routing = workerRouting(descriptor);
     out[descriptor.id] = {
       available: detection.available,
       detail: detection.detail,
@@ -306,6 +343,9 @@ export function availability() {
       abilities: manifest.worker.abilities,
       cost: manifest.worker.cost,
       keywords: manifest.worker.keywords,
+      aliases: routing.aliases,
+      capabilities: routing.capabilities,
+      capabilityLabels: capabilityLabels(routing.capabilities, catalog),
       recovery: manifest.worker.recovery,
       limits: workerLimits(descriptor.id),
       limitDefaults: limitDefaults(descriptor),
@@ -329,6 +369,9 @@ export function workerCatalog({ onlyAvailable = false } = {}) {
       abilities: item.abilities,
       cost: item.cost,
       keywords: item.keywords,
+      aliases: item.aliases,
+      capabilities: item.capabilities,
+      capabilityLabels: item.capabilityLabels,
       source: item.source
     }));
 }

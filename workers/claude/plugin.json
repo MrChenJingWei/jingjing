@@ -20,6 +20,16 @@
     "recovery": "resume",
     "timeoutMinutes": 60,
     "concurrency": 1,
-    "retries": 0
+    "retries": 0,
+    "aliases": [
+      "claude",
+      "claude code",
+      "claude-cli"
+    ],
+    "capabilities": [
+      "shell",
+      "git",
+      "npm"
+    ]
   }
 }

@@ -20,6 +20,15 @@
     "recovery": "ask",
     "timeoutMinutes": 60,
     "concurrency": 1,
-    "retries": 0
+    "retries": 0,
+    "aliases": [
+      "codex",
+      "codex cli"
+    ],
+    "capabilities": [
+      "shell",
+      "git",
+      "npm"
+    ]
   }
 }

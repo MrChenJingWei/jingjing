@@ -54,12 +54,15 @@ export const WORKER_DEFAULTS = Object.freeze({
   abilities: ['text'],
   cost: 3,
   keywords: '',
+  aliases: [],
+  capabilities: [],
   recovery: 'ask',
   timeoutMinutes: 30,
   concurrency: 2,
   retries: 0
 });
-const WORKER_KEYS = new Set(['abilities', 'cost', 'keywords', 'recovery', ...Object.keys(WORKER_LIMIT_RANGES)]);
+const WORKER_KEYS = new Set(['abilities', 'cost', 'keywords', 'aliases', 'capabilities', 'recovery', ...Object.keys(WORKER_LIMIT_RANGES)]);
+const CAPABILITY_ID_RE = /^[a-z][a-z0-9-]{1,31}$/;
 
 function intInRange(value, { min, max }, label) {
   const number = Number(value);
@@ -89,12 +92,31 @@ export function validateWorkerBlock(raw) {
   if (keywords) {
     try { new RegExp(keywords, 'i'); } catch (err) { bad(`worker.keywords 不是合法正则：${err.message}`); }
   }
+  const aliases = raw.aliases === undefined ? [] : raw.aliases;
+  if (!Array.isArray(aliases) || aliases.length > 8) bad('worker.aliases 必须是最多 8 个的数组');
+  const cleanAliases = [];
+  for (const alias of aliases) {
+    if (typeof alias !== 'string') bad('worker.aliases 的每一项必须是字符串');
+    const value = alias.trim();
+    if (!value || value.length > 30) bad('worker.aliases 的每一项必须是 1–30 个字符');
+    if (!cleanAliases.includes(value)) cleanAliases.push(value);
+  }
+  const capabilities = raw.capabilities === undefined ? [] : raw.capabilities;
+  if (!Array.isArray(capabilities) || capabilities.length > 20) bad('worker.capabilities 必须是最多 20 个的数组');
+  const cleanCapabilities = [];
+  for (const id of capabilities) {
+    const value = String(id || '').trim().toLowerCase();
+    if (!CAPABILITY_ID_RE.test(value)) bad(`worker.capabilities 里的 id 不合法：${id}`);
+    if (!cleanCapabilities.includes(value)) cleanCapabilities.push(value);
+  }
   const recovery = raw.recovery === undefined ? WORKER_DEFAULTS.recovery : raw.recovery;
   if (!WORKER_RECOVERY.includes(recovery)) bad(`worker.recovery 只能是 ${WORKER_RECOVERY.join(' / ')}`);
   const out = {
     abilities,
     cost: raw.cost === undefined ? WORKER_DEFAULTS.cost : intInRange(raw.cost, { min: 1, max: 5 }, 'worker.cost'),
     keywords,
+    aliases: cleanAliases,
+    capabilities: cleanCapabilities,
     recovery
   };
   for (const [key, range] of Object.entries(WORKER_LIMIT_RANGES)) {

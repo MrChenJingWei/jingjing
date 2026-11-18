@@ -1,0 +1,192 @@
+[
+  {
+    "id": "shell",
+    "label": "执行本机命令",
+    "keywords": [
+      "命令行",
+      "shell",
+      "终端"
+    ],
+    "description": "能在任务工作区里执行本机命令",
+    "risk": "write"
+  },
+  {
+    "id": "git",
+    "label": "Git",
+    "keywords": [
+      "git",
+      "版本控制"
+    ],
+    "description": "读写仓库、提交、切分支",
+    "risk": "write"
+  },
+  {
+    "id": "gh",
+    "label": "GitHub CLI",
+    "keywords": [
+      "gh",
+      "github cli",
+      "pull request",
+      "pr"
+    ],
+    "description": "用 gh 操作 issue、PR、Actions",
+    "risk": "write",
+    "hostTool": true
+  },
+  {
+    "id": "npm",
+    "label": "Node / npm",
+    "keywords": [
+      "npm",
+      "装包"
+    ],
+    "description": "安装依赖、跑脚本、构建前端",
+    "risk": "write"
+  },
+  {
+    "id": "python",
+    "label": "Python",
+    "keywords": [
+      "python",
+      "pip",
+      "venv",
+      "虚拟环境"
+    ],
+    "description": "跑 Python、装依赖",
+    "risk": "write"
+  },
+  {
+    "id": "docker",
+    "label": "Docker",
+    "keywords": [
+      "docker",
+      "容器",
+      "镜像"
+    ],
+    "description": "构建镜像、起容器",
+    "risk": "write",
+    "hostTool": true
+  },
+  {
+    "id": "kubectl",
+    "label": "Kubernetes",
+    "keywords": [
+      "kubectl",
+      "k8s",
+      "kubernetes",
+      "集群"
+    ],
+    "description": "查集群、看日志、滚动发布",
+    "risk": "deploy",
+    "hostTool": true
+  },
+  {
+    "id": "tapd-cli",
+    "label": "TAPD 命令行",
+    "keywords": [
+      "tapd",
+      "tapd-cli"
+    ],
+    "description": "用本机 tapd-cli 查需求、缺陷、迭代",
+    "risk": "read",
+    "hostTool": true
+  },
+  {
+    "id": "wecom",
+    "label": "企业微信",
+    "keywords": [
+      "企业微信",
+      "企微",
+      "wecom"
+    ],
+    "description": "发消息、读群聊、处理回执",
+    "risk": "write",
+    "hostTool": true
+  },
+  {
+    "id": "browser",
+    "label": "浏览器 / 网页",
+    "keywords": [
+      "浏览器",
+      "playwright"
+    ],
+    "description": "打开网页、点页面、截图",
+    "risk": "write",
+    "hostTool": true
+  },
+  {
+    "id": "database",
+    "label": "数据库",
+    "keywords": [
+      "数据库",
+      "sql",
+      "mysql",
+      "postgres",
+      "sqlite"
+    ],
+    "description": "连数据库、查数据、改表",
+    "risk": "write",
+    "hostTool": true
+  },
+  {
+    "id": "deploy",
+    "label": "部署 / 发布",
+    "keywords": [
+      "部署",
+      "上线"
+    ],
+    "description": "把服务发布到环境里",
+    "risk": "deploy",
+    "hostTool": true
+  },
+  {
+    "id": "ffmpeg",
+    "label": "音视频处理",
+    "keywords": [
+      "ffmpeg",
+      "视频",
+      "转码",
+      "音频"
+    ],
+    "description": "转码、剪辑、抽帧",
+    "risk": "write",
+    "hostTool": true
+  },
+  {
+    "id": "image",
+    "label": "图片处理",
+    "keywords": [
+      "图片处理",
+      "imagemagick",
+      "压缩图片",
+      "缩略图"
+    ],
+    "description": "压缩、裁剪、转格式",
+    "risk": "write",
+    "hostTool": true
+  },
+  {
+    "id": "ssh",
+    "label": "远程服务器",
+    "keywords": [
+      "ssh",
+      "远程服务器",
+      "登录机器"
+    ],
+    "description": "连远程主机执行命令",
+    "risk": "deploy",
+    "hostTool": true
+  },
+  {
+    "id": "http",
+    "label": "HTTP 接口",
+    "keywords": [
+      "curl",
+      "http 请求",
+      "接口调试"
+    ],
+    "description": "调接口、抓响应",
+    "risk": "read",
+    "hostTool": true
+  }
+]

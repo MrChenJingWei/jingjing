@@ -7,8 +7,10 @@ import { SANDBOX_DIR } from './config.js';
 import * as memory from './memory.js';
 import * as scheduler from './scheduler.js';
 import { workerCatalog, isWorker, defaultWorker } from './workers.js';
-import { pickWorker, describeWorker } from './worker-routing.js';
+import { pickWorker, describeWorker, namedWorker, detectNeed } from './worker-routing.js';
 import { matchWorkerRule } from './worker-rules.js';
+import { capabilityCatalog, matchCapabilities, normalizeCapabilityIds } from './capabilities.js';
+import { evidenceMatches, matchTerm } from './routing-signals.js';
 import { classify, heuristicClassify, chat as llmChat, chatWithTools, toolsSupported, demoReply, makeTitle, llmMode } from './llm.js';
 import * as workflows from './workflows.js';
 import * as forge from './plugin-forge.js';
@@ -131,7 +133,7 @@ function resolveFolderCwd(text, base) {
       .filter((d) => d.isDirectory())
       .map((d) => d.name);
     for (const name of dirs) {
-      if (text.includes(name)) return path.join(base, name);
+      if (matchTerm(text, name) || text.includes(name)) return path.join(base, name);
     }
     const quoted = text.match(/[「"'“]([^」"'”]+)[」"'”]/);
     if (quoted) {
@@ -144,7 +146,10 @@ function resolveFolderCwd(text, base) {
 
 function mentionedWorkspace(text, settings) {
   const list = Array.isArray(settings.workspaces) ? settings.workspaces : [];
-  return list.find((workspace) => text.includes(workspace.name) || text.includes(path.basename(workspace.path))) || null;
+  return list.find((workspace) => {
+    const names = [workspace.name, path.basename(workspace.path || ''), ...(workspace.aliases || [])].filter(Boolean);
+    return names.some((name) => matchTerm(text, name) || text.includes(name));
+  }) || null;
 }
 
 function workspaceById(id, settings) {
@@ -157,7 +162,7 @@ function pickWorkspace(text, settings) {
   const matched = mentionedWorkspace(text, settings);
   if (matched) return matched;
   const list = Array.isArray(settings.workspaces) ? settings.workspaces : [];
-  if (/(桌面|desktop)/i.test(text)) {
+  if (matchTerm(text, '桌面') || /desktop/i.test(text)) {
     const desktop = path.join(os.homedir(), 'Desktop');
     if (fs.existsSync(desktop)) return { id: 'desktop', name: '桌面', path: desktop };
   }
@@ -200,9 +205,10 @@ function chatTurns(history, clean) {
   return conversation.asTurns([...history, { role: 'user', text: clean }], { maxChars: 600 });
 }
 
-function routerTools(workers, flows) {
+function routerTools(workers, flows, capabilities = []) {
   const workerIds = workers.map((w) => w.id);
   const flowIds = flows.map((f) => f.id);
+  const capabilityIds = capabilities.map((item) => item.id);
   const fn = (name, description, properties = {}, required = []) => ({
     type: 'function',
     function: { name, description, parameters: { type: 'object', properties, required } }
@@ -211,7 +217,10 @@ function routerTools(workers, flows) {
     fn('create_task', '用户明确要求你去做一件具体的事（写、做、整理、修复、生成、处理、执行……）时调用，把它变成任务交给 Worker。闲聊和咨询不要调用。', {
       title: { type: 'string', description: '不超过 24 字的任务名，不要带「帮我」之类的客套词' },
       worker: { type: 'string', description: '最合适、开销最低的 Worker id', ...(workerIds.length ? { enum: workerIds } : {}) },
-      ...(flowIds.length ? { workflow: { type: 'string', description: '请求明显属于某个工作流程时填它的 id', enum: flowIds } } : {})
+      ...(flowIds.length ? { workflow: { type: 'string', description: '请求明显属于某个工作流程时填它的 id', enum: flowIds } } : {}),
+      ...(capabilityIds.length ? { capability: { type: 'string', description: '这件事需要的具体能力 id（比如 git、docker），不确定就留空', enum: capabilityIds } } : {}),
+      evidence: { type: 'string', description: '用户原话里能证明这个选择的片段，必须逐字引用；没有明确依据就留空' },
+      confidence: { type: 'number', description: '你对这个选择有多确定，0–1' }
     }, ['title']),
     fn('create_plugin', '用户要你给静静写一个新的插件时调用：任务来源插件（接收 / 拉取外部消息、事件）或 Worker 插件（执行任务）。', {
       kind: { type: 'string', enum: ['source', 'worker'], description: 'source：来源插件；worker：Worker 插件' }
@@ -229,15 +238,20 @@ function routerTools(workers, flows) {
 async function routeWithTools(clean, { sessionId, history, settings }) {
   const workers = workerCatalog({ onlyAvailable: true });
   const flows = workflows.catalog();
+  const capabilities = capabilityCatalog(settings);
   const system = [
     chatSystemPrompt(clean, sessionId, settings),
     '',
     '你可以直接用文字回答，也可以调用一个工具。只有用户明确要你去做一件事时才调用 create_task。',
+    '用户明确点名了某个 Worker 时，worker 填它，并在 evidence 里逐字引用那句原话；',
+    '用户描述的是需要什么工具/能力（比如 git、docker）而不是 Worker 名字时，capability 填对应 id，worker 可以留空；',
+    '不确定就不要猜，留空让宿主按能力和兜底决定。',
     '可用的 Worker：',
     ...workers.map(describeWorker),
-    ...(flows.length ? ['用户配置的工作流程：', ...flows.map((f) => `- ${f.id}：${f.name}${f.when ? `（触发词：${f.when}）` : ''}`)] : [])
+    ...(capabilities.length ? ['能力目录（capability 从这里选 id）：', ...capabilities.map((item) => `- ${item.id}：${item.label}${item.description ? `，${item.description}` : ''}`)] : []),
+    ...(flows.length ? ['用户配置的工作流程：', ...flows.map((f) => `- ${f.id}：${f.name}${f.when ? `（触发词：${f.triggers?.length ? f.triggers.join('、') : f.when}）` : ''}`)] : [])
   ].join('\n');
-  const res = await chatWithTools({ system, messages: chatTurns(history, clean), tools: routerTools(workers, flows) });
+  const res = await chatWithTools({ system, messages: chatTurns(history, clean), tools: routerTools(workers, flows, capabilities) });
   const call = res.toolCall;
   if (!call) return { decision: { intent: 'chat', reason: 'model' }, reply: res.text || '' };
   const args = call.arguments || {};
@@ -248,7 +262,10 @@ async function routeWithTools(clean, { sessionId, history, settings }) {
         reason: 'model',
         title: args.title ? String(args.title).slice(0, 30) : makeTitle(clean),
         worker: workers.some((w) => w.id === args.worker) ? args.worker : null,
-        workflow: flows.some((f) => f.id === args.workflow) ? args.workflow : null
+        workflow: flows.some((f) => f.id === args.workflow) ? args.workflow : null,
+        capability: args.capability ? String(args.capability) : null,
+        evidence: args.evidence ? String(args.evidence).slice(0, 200) : '',
+        confidence: Number.isFinite(Number(args.confidence)) ? Number(args.confidence) : null
       },
       reply: null
     };
@@ -295,6 +312,17 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
       workflows: workflows.catalog()
     });
   }
+  // 模型给的选择必须有原文依据；给的能力 id 也必须在目录里。文本里点到的能力同样收窄候选。
+  const caps = capabilityCatalog(settings);
+  const modelCaps = normalizeCapabilityIds([decision.capability].filter(Boolean), caps);
+  const textCaps = matchCapabilities(clean, caps);
+  const capabilityIds = [...new Set([...modelCaps, ...textCaps])];
+  let evidenceNote = '';
+  if (decision.worker && decision.evidence && !evidenceMatches(clean, decision.evidence)) {
+    evidenceNote = '（模型给的理由在原文里找不到，已忽略它的选择）';
+    decision.worker = null;
+  }
+
   let reply = '';
   let task = null;
 
@@ -355,7 +383,11 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
       || workflows.resolveWorkspace(workflow, settings)
       || pickWorkspace(clean, settings);
     const catalog = workerCatalog();
-    // 优先级：工作流程指定的 Worker > Worker 分配规则 > 按能力挑选。
+    // 优先级：明确点名 > 工作流程指定的 Worker > 分配规则 > 模型 > 能力 > 兜底。
+    const need = detectNeed(clean, { decided: true });
+    const named = namedWorker(clean, catalog, { aliases: true });
+    const namedAny = namedWorker(clean, catalog, { aliases: true, includeUnavailable: true });
+    const namedUsable = named && (!need || (named.abilities || []).includes(need)) ? named : null;
     const flowWorker = workflow?.worker ? catalog.find((w) => w.id === workflow.worker) : null;
     const matchedRule = workflow?.worker
       ? null
@@ -363,21 +395,31 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     let worker;
     let note = '';
     let ruleNote = '';
-    if (flowWorker?.available) {
+    if (namedUsable) {
+      worker = namedUsable.id;
+      note = `（按你说的点名「${namedUsable.label || namedUsable.id}」）`;
+    } else if (namedAny && !named) {
+      note = `（你点名了「${namedAny.label || namedAny.id}」，但它${namedAny.available === false ? '现在不可用' : '不具备这件事需要的能力'}，已改派）`;
+    }
+    if (!worker && flowWorker?.available) {
       worker = flowWorker.id;
-    } else if (matchedRule) {
+    } else if (!worker && matchedRule) {
       worker = matchedRule.worker;
       ruleNote = `（按分配规则「${matchedRule.name}」）`;
-    } else {
-      ({ worker, note } = pickWorker({
+    } else if (!worker) {
+      let pickedNote = '';
+      ({ worker, note: pickedNote } = pickWorker({
         text: clean,
         requested: workflow?.worker || decision.worker || null,
         decided: Boolean(workflow?.worker) || (decision.reason === 'model' && Boolean(decision.worker)),
         workers: catalog,
         fallback: settings.fallbackWorker || null,
         // 主人自己在聊天里说「用 deepseek 去做」= DeepSeek Harness；外部来源走 discovery，不认这个别名。
-        aliases: true
+        aliases: true,
+        capabilityIds,
+        capabilityCatalog: caps
       }));
+      note += pickedNote || '';
     }
     if (!worker) {
       throw Object.assign(new Error('本机没有可用的 Worker，先在设置 → Worker 里启用或安装一个'), { statusCode: 400 });
@@ -403,7 +445,8 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     });
     const workerLabel = picked?.label || worker;
     const flowNote = workflow ? `按${workflow.source === 'learned' ? '习惯' : '工作流程'}「${workflow.name}」，` : '';
-    reply = `好，${flowNote}我把「${title}」派给了「${workerLabel}」Worker${note}${ruleNote}，工作区是「${workspace.name}」。进度会在这条对话里更新，需要你拍板时我会停下来等你。`;
+    const allNotes = `${note}${ruleNote}${evidenceNote}`;
+    reply = `好，${flowNote}我把「${title}」派给了「${workerLabel}」Worker${allNotes}，工作区是「${workspace.name}」。进度会在这条对话里更新，需要你拍板时我会停下来等你。`;
   } else {
     let answer;
     if (directReply) {

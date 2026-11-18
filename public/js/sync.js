@@ -10,6 +10,7 @@ export function applySnapshot(data) {
   Object.assign(state, {
     settings: data.settings,
     workers: data.workers,
+    capabilities: data.capabilities || state.capabilities,
     stats: data.stats,
     tasks: data.tasks,
     approvals: data.approvals,

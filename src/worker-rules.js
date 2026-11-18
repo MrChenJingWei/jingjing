@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { db, now, getSettings } from './db.js';
 import { availability, isWorker } from './workers.js';
+import { matchTerm, splitTerms } from './routing-signals.js';
 
 function rowRule(row) {
   return {
@@ -26,10 +27,16 @@ function typeMatches(pattern, type) {
 export function ruleMatches(rule, { text = '', source = '', eventType = '', workspaceId = '' } = {}) {
   if (!rule.enabled) return false;
   if (rule.pattern) {
-    try {
-      if (!new RegExp(rule.pattern, 'i').test(String(text || ''))) return false;
-    } catch {
-      return false;
+    // 老规则（没有 pattern_mode）仍按正则解释；新规则默认关键词，写人话不会被元字符误伤。
+    const mode = rule.pattern_mode === 'keywords' ? 'keywords' : 'regex';
+    if (mode === 'keywords') {
+      if (!splitTerms(rule.pattern).some((term) => matchTerm(text, term))) return false;
+    } else {
+      try {
+        if (!new RegExp(rule.pattern, 'i').test(String(text || ''))) return false;
+      } catch {
+        return false;
+      }
     }
   }
   if (rule.source) {
@@ -70,7 +77,8 @@ export function saveWorkerRule(id, patch = {}) {
   if (!isWorker(worker)) throw new Error('规则里的 Worker 不存在');
 
   const pattern = String(patch.pattern ?? current?.pattern ?? '').trim();
-  if (pattern) {
+  const patternMode = (patch.pattern_mode ?? current?.pattern_mode) === 'regex' ? 'regex' : 'keywords';
+  if (pattern && patternMode === 'regex') {
     try { new RegExp(pattern, 'i'); } catch (err) { throw new Error(`正则表达式无效：${err.message}`); }
   }
 
@@ -90,9 +98,9 @@ export function saveWorkerRule(id, patch = {}) {
   } else {
     const max = db.prepare('SELECT COALESCE(MAX(position), -1) AS p FROM worker_rules').get().p;
     db.prepare(`
-      INSERT INTO worker_rules(id, name, enabled, position, pattern, source, event_type, workspace_id, worker, created_at)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(ruleId, name, enabled ? 1 : 0, max + 1, pattern, source, eventType, workspaceId, worker, now());
+      INSERT INTO worker_rules(id, name, enabled, position, pattern, pattern_mode, source, event_type, workspace_id, worker, created_at)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(ruleId, name, enabled ? 1 : 0, max + 1, pattern, patternMode, source, eventType, workspaceId, worker, now());
   }
   return listWorkerRules().find((rule) => rule.id === ruleId);
 }

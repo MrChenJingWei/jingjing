@@ -5,7 +5,9 @@
  *
  *   ---
  *   name: 写周报
- *   when: 周报, weekly        # 触发词（正则，逗号分隔表示「或」）
+ *   when: 周报, weekly        # 触发词（逗号/顿号/竖线分隔；默认当字面词，不再当正则）
+ *   whenRegex: false          # true：when 按正则解释（高级用法，兼容老流程）
+ *   notWhen: 周报怎么用       # 可选：命中这些词就不触发（排除问句/反例）
  *   worker: file              # 可选：派给哪个 Worker
  *   workspace: 默认工作区      # 可选：工作区名称或 id
  *   status: active            # active / candidate / dismissed / disabled
@@ -27,6 +29,7 @@ import crypto from 'node:crypto';
 import { DATA_DIR } from './config.js';
 import { db, now, getSettings } from './db.js';
 import { chat, llmMode, makeTitle } from './llm.js';
+import { compileTerms, matchCompiled } from './routing-signals.js';
 
 export const WORKFLOW_DIR = path.join(DATA_DIR, 'workflows');
 export const LEARNED_DIR = path.join(WORKFLOW_DIR, 'learned');
@@ -77,16 +80,23 @@ export function parseFrontmatter(text) {
   return out;
 }
 
-/** 把 when 编译成正则：逗号/顿号分隔的每一段都是一个正则片段，任一命中即可。 */
-export function compileTrigger(when) {
+/**
+ * 把 when 编译成运行时能用的形状：
+ * - 默认 keywords：按逗号/顿号/竖线拆词，转义后匹配，用户写人话不会被正则元字符误伤；
+ * - whenRegex: true 时按正则解释，兼容老流程。
+ * 保留 trigger 正则给老代码/测试使用，terms 供归一化匹配。
+ */
+export function compileTrigger(when, { mode = 'keywords', negatives = '' } = {}) {
   const raw = String(when || '').trim().replace(/^\[|\]$/g, '');
-  if (!raw) return { trigger: null, error: null };
-  const parts = raw.split(/\s*[,，、]\s*/).map((part) => unquote(part)).filter(Boolean);
-  try {
-    return { trigger: new RegExp(parts.join('|'), 'i'), error: null };
-  } catch (err) {
-    return { trigger: null, error: `when 不是合法的正则：${err.message}` };
-  }
+  if (!raw) return { trigger: null, terms: [], negatives: [], mode, error: null };
+  const compiled = compileTerms(raw, { mode, negatives });
+  return {
+    trigger: compiled.trigger,
+    terms: compiled.terms,
+    negatives: compiled.negatives,
+    mode: compiled.mode,
+    error: compiled.error ? `when ${compiled.error}` : null
+  };
 }
 
 const TRUE_RE = /^(true|yes|on|1|是|开)$/i;
@@ -135,14 +145,20 @@ export function parseWorkflow(raw, { file = '', mtimeMs = 0 } = {}) {
   const name = String(meta.name || heading || fallback).trim().slice(0, 60) || fallback;
   const source = meta.source === 'learned' ? 'learned' : 'doc';
   const fileStatus = STATUSES.includes(meta.status) ? meta.status : (source === 'learned' ? 'candidate' : 'active');
-  const { trigger, error: triggerError } = compileTrigger(meta.when);
+  const whenMode = TRUE_RE.test(String(meta.whenregex || meta.when_regex || '')) ? 'regex' : 'keywords';
+  const notWhen = String(meta.notwhen || meta.not_when || '');
+  const { trigger, error: triggerError, terms, negatives, mode } = compileTrigger(meta.when, { mode: whenMode, negatives: notWhen });
   const { answers, error: answersError } = parseAnswers(meta.answers);
   return {
     id: idFor(file || name),
     file: file ? path.resolve(file) : '',
     name,
     when: meta.when || '',
+    notWhen,
+    mode,
     trigger,
+    terms,
+    negatives,
     worker: meta.worker || '',
     workspace: meta.workspace || '',
     source,
@@ -338,15 +354,15 @@ export function matchWorkflow(text, { workflows = all(), includeInactive = false
   const pool = workflows.filter((w) => includeInactive || w.status === 'active');
   let best = null;
   for (const workflow of pool) {
-    if (!workflow.trigger) continue;
-    const hit = String(text || '').match(workflow.trigger);
+    if (!workflow.trigger && !workflow.terms?.length) continue;
+    const hit = matchCompiled(text, workflow);
     if (!hit) continue;
-    const score = (workflow.source === 'doc' ? 1000 : 0) + hit[0].length;
+    const score = (workflow.source === 'doc' ? 1000 : 0) + hit.length;
     if (!best || score > best.score) best = { workflow, how: 'when', score };
   }
   if (best) return best;
   for (const workflow of pool) {
-    if (workflow.trigger || workflow.source !== 'doc') continue;
+    if (workflow.trigger || workflow.terms?.length || workflow.source !== 'doc') continue;
     const score = implicitScore(workflow, text);
     if (score >= 0.6 && (!best || score > best.score)) best = { workflow, how: 'name', score };
   }
@@ -358,7 +374,14 @@ export function catalog() {
   return all()
     .filter((w) => w.status === 'active')
     .slice(0, 30)
-    .map((w) => ({ id: w.id, name: w.name, when: w.when, worker: w.worker, hint: w.steps.split('\n').find(Boolean)?.slice(0, 60) || '' }));
+    .map((w) => ({
+      id: w.id,
+      name: w.name,
+      when: w.when,
+      triggers: w.terms || [],
+      worker: w.worker,
+      hint: w.steps.split('\n').find(Boolean)?.slice(0, 60) || ''
+    }));
 }
 
 /** 追加到任务指令末尾的流程说明。 */
@@ -579,7 +602,7 @@ export async function learnFromTask(task, events = [], { workerLabel, workspaceN
   const core = corePhrase(task.title || task.prompt);
   let when = draft?.when || '';
   // 触发词至少要能认出这次任务本身，否则退回到标题里的核心短语。
-  if (!when || compileTrigger(when).error || !compileTrigger(when).trigger.test(task.prompt)) when = escapeRegExp(core);
+  if (!when || compileTrigger(when).error || !compileTrigger(when).trigger.test(task.prompt)) when = core;
   const name = draft?.name || makeTitle(task.title || task.prompt).slice(0, 24) || core;
   const steps = draft?.steps?.length
     ? draft.steps.map((step, i) => `${i + 1}. ${step.replace(/^\d+[.、]\s*/, '')}`).join('\n')

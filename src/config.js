@@ -79,7 +79,10 @@ export function normalizeWorkspaces(settings) {
     const dir = String(item.path || '').trim();
     if (!id || !name || !dir || ids.has(id)) continue;
     ids.add(id);
-    cleaned.push({ id, name: name.slice(0, 60), path: dir });
+    const aliases = Array.isArray(item.aliases)
+      ? [...new Set(item.aliases.map((alias) => String(alias || '').trim().slice(0, 40)).filter(Boolean))].slice(0, 8)
+      : [];
+    cleaned.push({ id, name: name.slice(0, 60), path: dir, ...(aliases.length ? { aliases } : {}) });
   }
   if (!cleaned.length) {
     cleaned.push({

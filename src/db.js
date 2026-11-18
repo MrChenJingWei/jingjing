@@ -224,6 +224,9 @@ ensureColumn('worker_configs', 'deleted', 'INTEGER');
 ensureColumn('worker_configs', 'limits', 'TEXT');
 // notes：用户补充的「这台机器上它还能做什么」（比如已接入 TAPD MCP），挑 Worker 时和描述一起给模型看。
 ensureColumn('worker_configs', 'notes', 'TEXT');
+// routing：本机给这个 Worker 加的别名/能力（{ aliases: [], capabilities: { add: [], remove: [] } }）。
+ensureColumn('worker_configs', 'routing', 'TEXT');
+ensureColumn('worker_rules', 'pattern_mode', 'TEXT');
 ensureColumn('tasks', 'workflow_id', 'TEXT');
 ensureColumn('messages', 'meta', 'TEXT');
 ensureColumn('tasks', 'run_id', 'TEXT');

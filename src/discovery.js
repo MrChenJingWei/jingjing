@@ -102,7 +102,7 @@ function routingHold({ id, plugin, item, rawText, title, fallback, catalog, flow
   if (named && named.id !== fallback) {
     candidate = named;
     reason = `点名要用「${named.label}」`;
-    rule = { name: `${sourceLabel}里点名「${named.label}」的消息`, pattern: named.keywords };
+    rule = { name: `${sourceLabel}里点名「${named.label}」的消息`, pattern: named.keywords || (named.aliases || []).join('|') };
   } else {
     const steps = flow?.steps || '';
     const fromMessage = needSignal(rawText, { decided: true }) || toolSignal(rawText);

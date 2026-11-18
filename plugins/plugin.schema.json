@@ -4,10 +4,16 @@
   "title": "静静插件清单（任务来源 / Worker）",
   "description": "plugins/<id>/plugin.json 与 workers/<id>/plugin.json 的规范。运行时由 src/plugin-spec.js 做同样的校验。",
   "type": "object",
-  "required": ["id", "name", "entry"],
+  "required": [
+    "id",
+    "name",
+    "entry"
+  ],
   "additionalProperties": false,
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "id": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]{1,31}$",
@@ -19,22 +25,46 @@
       "maximum": 1,
       "default": 1
     },
-    "name": { "type": "string", "minLength": 1, "maxLength": 60 },
-    "version": { "type": "string", "maxLength": 24, "default": "0.0.0" },
-    "description": { "type": "string", "maxLength": 500 },
-    "icon": { "type": "string", "maxLength": 8, "default": "插" },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 24,
+      "default": "0.0.0"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "icon": {
+      "type": "string",
+      "maxLength": 8,
+      "default": "插"
+    },
     "entry": {
       "type": "string",
       "minLength": 1,
       "description": "插件目录内的相对路径"
     },
     "kind": {
-      "enum": ["source", "worker"],
+      "enum": [
+        "source",
+        "worker"
+      ],
       "default": "source",
       "description": "source = 任务来源；worker = 执行器 Worker"
     },
     "type": {
-      "enum": ["poll", "webhook", "stream", "manual", "watch"],
+      "enum": [
+        "poll",
+        "webhook",
+        "stream",
+        "manual",
+        "watch"
+      ],
       "default": "poll",
       "description": "来源类型；决定核心如何调度它"
     },
@@ -63,15 +93,23 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "network": { "type": "boolean" },
-        "read": { "type": "boolean" },
-        "write": { "type": "boolean" }
+        "network": {
+          "type": "boolean"
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "write": {
+          "type": "boolean"
+        }
       }
     },
     "config": {
       "type": "array",
       "maxItems": 40,
-      "items": { "$ref": "#/$defs/field" }
+      "items": {
+        "$ref": "#/$defs/field"
+      }
     },
     "worker": {
       "type": "object",
@@ -82,8 +120,18 @@
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "enum": ["text", "write-file", "manage-files", "code", "memory"] },
-          "default": ["text"],
+          "items": {
+            "enum": [
+              "text",
+              "write-file",
+              "manage-files",
+              "code",
+              "memory"
+            ]
+          },
+          "default": [
+            "text"
+          ],
           "description": "text 文本问答；write-file 在工作区生成文件；manage-files 整理/移动文件；code 读写代码仓库、执行命令；memory 整理记忆"
         },
         "cost": {
@@ -99,73 +147,196 @@
           "default": "",
           "description": "正则（忽略大小写）。任务文本命中时优先派给这个 Worker，比如 \"飞书|lark\""
         },
-        "timeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 1440, "default": 30 },
-        "concurrency": { "type": "integer", "minimum": 1, "maximum": 4, "default": 2 },
+        "timeoutMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1440,
+          "default": 30
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "default": 2
+        },
         "retries": {
           "type": "integer",
           "minimum": 0,
           "maximum": 3,
           "default": 0,
           "description": "失败后自动重试次数；超时和 retryable: false 的失败不重试"
+        },
+        "aliases": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30
+          },
+          "default": [],
+          "description": "用户可能用来称呼它的名字（Claude Code / claude-cli…）。命中视为明确点名"
+        },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,31}$"
+          },
+          "default": [],
+          "description": "能力 id，参考能力目录（git、npm、tapd-cli…）。分配器按它匹配具体工具/领域"
         }
       }
     }
   },
-  "if": { "not": { "properties": { "kind": { "const": "worker" } }, "required": ["kind"] } },
-  "then": { "not": { "required": ["worker"] } },
+  "if": {
+    "not": {
+      "properties": {
+        "kind": {
+          "const": "worker"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    }
+  },
+  "then": {
+    "not": {
+      "required": [
+        "worker"
+      ]
+    }
+  },
   "$defs": {
     "field": {
       "type": "object",
-      "required": ["key", "label", "type"],
+      "required": [
+        "key",
+        "label",
+        "type"
+      ],
       "additionalProperties": false,
       "properties": {
         "key": {
           "type": "string",
           "pattern": "^[A-Za-z][A-Za-z0-9_]{0,39}$"
         },
-        "label": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
         "type": {
-          "enum": ["text", "url", "password", "number", "checkbox", "textarea", "select"]
+          "enum": [
+            "text",
+            "url",
+            "password",
+            "number",
+            "checkbox",
+            "textarea",
+            "select"
+          ]
         },
         "default": {},
-        "placeholder": { "type": "string", "maxLength": 200 },
-        "help": { "type": "string", "maxLength": 300 },
-        "required": { "type": "boolean", "default": false },
-        "wide": { "type": "boolean" },
-        "min": { "type": "number" },
-        "max": { "type": "number" },
+        "placeholder": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "help": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "wide": {
+          "type": "boolean"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
         "options": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "object",
-            "required": ["value", "label"],
+            "required": [
+              "value",
+              "label"
+            ],
             "additionalProperties": false,
             "properties": {
-              "value": { "type": "string" },
-              "label": { "type": "string" }
+              "value": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
             }
           }
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "type": { "const": "select" } }, "required": ["type"] },
-          "then": { "required": ["options"] }
+          "if": {
+            "properties": {
+              "type": {
+                "const": "select"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "options"
+            ]
+          }
         },
         {
-          "if": { "properties": { "type": { "const": "number" } }, "required": ["type"] },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "number"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
           "then": {
             "properties": {
-              "default": { "type": "number" }
+              "default": {
+                "type": "number"
+              }
             }
           }
         },
         {
-          "if": { "properties": { "type": { "const": "checkbox" } }, "required": ["type"] },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "checkbox"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
           "then": {
             "properties": {
-              "default": { "type": "boolean" }
+              "default": {
+                "type": "boolean"
+              }
             }
           }
         }

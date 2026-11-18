@@ -1,5 +1,6 @@
 import { getSettings } from './db.js';
 import { normalizeProvider } from './config.js';
+import { capabilityCatalog } from './capabilities.js';
 
 const truncate = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -390,22 +391,27 @@ export function makeTitle(text) {
 
 export async function classify(text, { history = [], workers = [], workflows = [] } = {}) {
   const cfg = getSettings();
+  const capabilities = capabilityCatalog(cfg);
   if (llmMode(cfg) === 'demo') return heuristicClassify(text);
 
   const system = [
     '你是个人 AI 管家「静静」的 Router。结合最近对话，把用户当前这句话分类成一个意图，只输出 JSON。',
     'intent 取值：chat（闲聊/咨询）、remember（要求记住事实或偏好）、task（要求执行一件事）、status（询问任务进度）、recall（检索记忆）、plugin（要求给静静写一个新的任务来源插件或 Worker 插件）。',
     'pluginKind 仅在 intent=plugin 时填写：source（接收 / 拉取外部消息、事件的来源插件）或 worker（执行任务的 Worker 插件）。',
-    'worker 仅在 intent=task 时填写，从下面的可用 Worker 里选最合适、开销最低的一个：',
+    'worker 仅在 intent=task 且用户明确点名、或从下面的列表里看得很清楚时填写；不确定就留空，让宿主按能力兜底。',
+    'evidence 必须逐字引用用户原话里能支持你选择 worker/capability 的片段；没有明确依据就留空。',
+    'capability 仅在 intent=task 且用户说的是需要什么工具/能力（比如 git、docker）而不是 Worker 名字时填写，从下面的能力目录里选 id，否则留空。',
+    '可用 Worker：',
     ...(workers.length
       ? workers.map(describeWorker)
       : ['-（当前没有可用的 Worker，worker 留空）']),
+    ...(capabilities.length ? ['能力目录（capability 从这里选 id）：', ...capabilities.map((item) => `- ${item.id}：${item.label}${item.description ? `，${item.description}` : ''}`)] : []),
     'title 仅在 intent=task 时填写：不超过 24 字的任务名，不要带「帮我」等客套词。',
     ...(workflows.length ? [
       'workflow 仅在 intent=task 且请求明显属于下面某个用户配置的工作流程时填写它的 id，否则留空：',
       ...workflows.map((w) => `- ${w.id}：${w.name}${w.when ? `（触发词：${w.when}）` : ''}${w.hint ? `，${w.hint}` : ''}`)
     ] : []),
-    'JSON 结构：{"intent":"...","worker":"...","title":"...","workflow":"","pluginKind":""}'
+    'JSON 结构：{"intent":"...","worker":"","capability":"","evidence":"","confidence":0.8,"title":"","workflow":"","pluginKind":""}'
   ].join('\n');
 
   try {
@@ -427,6 +433,9 @@ export async function classify(text, { history = [], workers = [], workflows = [
       intent: parsed.intent,
       // 模型选了不存在的 Worker 时交给 worker-routing 按能力兜底。
       worker: allowed.has(parsed.worker) ? parsed.worker : null,
+      capability: parsed.capability ? String(parsed.capability) : null,
+      evidence: parsed.evidence ? truncate(String(parsed.evidence), 200) : '',
+      confidence: Number.isFinite(Number(parsed.confidence)) ? Number(parsed.confidence) : null,
       title: parsed.title ? truncate(String(parsed.title), 30) : makeTitle(text),
       workflow: workflows.some((w) => w.id === parsed.workflow) ? parsed.workflow : null,
       pluginKind: ['source', 'worker'].includes(parsed.pluginKind) ? parsed.pluginKind : null,

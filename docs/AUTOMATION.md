@@ -44,7 +44,8 @@
 ```markdown
 ---
 name: TAPD bug 修复
-when: TAPD,可自动修
+when: TAPD, 可自动修
+notWhen: TAPD 怎么用, 查一下 TAPD
 worker: dsh
 workspace: 渔童
 ---
@@ -54,6 +55,8 @@ workspace: 渔童
 3. 测试通过才提交、推分支；合并 beta 按下面的条件……
 4. 结果写明：改了什么、commit、分支、没修的为什么
 ```
+
+> `when` 默认按逗号/顿号/竖线分隔的**字面关键词**匹配，不再当正则；确实要用正则时在头部加 `whenRegex: true`。`notWhen` 用来排除问句或反例。
 
 3. 加一条自动化：每天 02:30（或 07:30）→ 扫描 TAPD 来源 → 按「TAPD bug 修复」流程处理；
 4. 想更稳就只自动推分支 + 开 MR，合 beta 留到早上自己点。

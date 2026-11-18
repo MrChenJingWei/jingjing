@@ -137,7 +137,7 @@ test('Worker manifest：校验能力词表、关键词正则和运行限制范�
     return validateManifest(raw, { dir, dirName: 'demo' }).worker;
   };
   assert.deepEqual(ok({ abilities: ['code', 'text', 'code'], cost: 4, keywords: '飞书|lark', timeoutMinutes: 90, concurrency: 1, retries: 0 }), {
-    abilities: ['code', 'text'], cost: 4, keywords: '飞书|lark', recovery: 'ask', timeoutMinutes: 90, concurrency: 1, retries: 0
+    abilities: ['code', 'text'], cost: 4, keywords: '飞书|lark', aliases: [], capabilities: [], recovery: 'ask', timeoutMinutes: 90, concurrency: 1, retries: 0
   });
   assert.equal(ok({ recovery: 'resume' }).recovery, 'resume');
   assert.throws(() => ok({ recovery: 'later' }), /recovery 只能是/);

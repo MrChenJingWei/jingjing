@@ -58,6 +58,7 @@ export const ACTIVE_STATUSES = ['queued', 'running', 'waiting_approval'];
 export const state = {
   settings: null,
   workers: {},
+  capabilities: [],
   workerRules: [],
   workflows: { workflows: [], dirs: [], errors: [], root: '' },
   pluginDrafts: [],

@@ -36,6 +36,8 @@
 
 发版与升级流程见 [docs/RELEASING.md](docs/RELEASING.md)（`npm run release -- 0.7.1 --notes "..."`）。
 
+路由与派活顺序（点名 / 流程 / 规则 / 模型 / 能力 / 兜底）见 [docs/ROUTING.md](docs/ROUTING.md)。
+
 ---
 
 ## 安装

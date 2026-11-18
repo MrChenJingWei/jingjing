@@ -38,7 +38,8 @@ function renderWorkerList() {
     const removable = w.origin !== 'builtin' && w.origin !== 'official';
     // 开关只管「用不用」；开着但这台机器上跑不了（没装、缺 Key）时单独标出来，让用户知道差什么。
     const cls = !w.enabled ? 'is-off' : w.available ? '' : 'is-unavailable';
-    const status = !w.enabled ? '已停用' : w.detail || (w.available ? '可用' : '不可用');
+    const caps = w.capabilityLabels?.length ? ` · ${w.capabilityLabels.join('、')}` : '';
+    const status = (!w.enabled ? '已停用' : w.detail || (w.available ? '可用' : '不可用')) + caps;
     const id = esc(key);
     return `
       <div class="lrow ${cls}" title="${esc([w.description, w.notes ? `本机补充：${w.notes}` : ''].filter(Boolean).join('\n'))}">
@@ -76,6 +77,21 @@ function workerConfigFields(w) {
   }).join('');
 }
 
+function workerRoutingFields(w) {
+  const aliases = (w.aliases || []).join(', ');
+  const chosen = new Set(w.capabilities || []);
+  const catalog = state.capabilities || [];
+  return `
+    <label class="field span-2"><span>别名</span>
+      <input name="worker.aliases" value="${esc(aliases)}" placeholder="claude, claude-cli" />
+      <small>用户这样称呼它时算明确点名；大小写、全半角、标点都不影响。</small>
+    </label>
+    <div class="field span-2"><span>能用什么</span>
+      <div class="cap-list">${catalog.map((item) => `<label class="cap-item" title="${esc(item.description || '')}"><input type="checkbox" name="cap.${esc(item.id)}" ${chosen.has(item.id) ? 'checked' : ''} /><span>${esc(item.label)}</span></label>`).join('')}</div>
+      <small>只勾这台机器上它真能用的；本机装了 tapd-cli，就在对应的 Worker 上勾「TAPD 命令行」。</small>
+    </div>`;
+}
+
 function workerLimitFields(w) {
   return WORKER_LIMIT_FIELDS.map((field) => {
     const value = w.limits?.[field.key] ?? '';
@@ -92,7 +108,7 @@ function configureWorker(id) {
     desc: `${w.description ? `${w.description}\n` : ''}这些配置只属于当前主机的这个 Worker；运行限制留空表示用默认值。`,
     body: `
       <label class="switch-row"><span><b>启用</b><small>关掉后不会再派活给它。</small></span><input type="checkbox" class="switch" name="worker.enabled" ${w.enabled ? 'checked' : ''}></label>
-      <div class="grid-2">${workerConfigFields(w)}</div>
+      <div class="grid-2">${workerConfigFields(w)}${workerRoutingFields(w)}</div>
       <div class="grid-2">${workerLimitFields(w)}</div>
       <label class="field"><span>本机补充说明</span>
         <textarea name="worker.notes" maxlength="300" rows="3" placeholder="比如：已接入 TAPD MCP，能查需求、缺陷和迭代进度">${esc(w.notes || '')}</textarea>
@@ -111,7 +127,9 @@ function configureWorker(id) {
         // 和默认值相同就不存覆盖，以后 Worker 升级默认值时能跟着变。
         if (raw !== '' && Number(raw) !== w.limitDefaults?.[field.key]) limits[field.key] = Number(raw);
       }
-      const data = await api(`/api/workers/${id}`, { method: 'PUT', body: { config: configValues, limits, notes: values['worker.notes'] ?? '', enabled: Boolean(values['worker.enabled']) } });
+      const aliases = String(values['worker.aliases'] || '').split(/[,，、]/).map((item) => item.trim()).filter(Boolean);
+      const capabilities = Object.keys(values).filter((key) => key.startsWith('cap.') && values[key]).map((key) => key.slice(4));
+      const data = await api(`/api/workers/${id}`, { method: 'PUT', body: { config: configValues, limits, notes: values['worker.notes'] ?? '', routing: { aliases, capabilities }, enabled: Boolean(values['worker.enabled']) } });
       state.workers = data.workers;
       changed('workers');
       toast('Worker 配置已保存。');
@@ -211,7 +229,7 @@ $('#worker-file')?.addEventListener('change', async (event) => {
 
 function workerRuleCondition(rule) {
   const parts = [];
-  if (rule.pattern) parts.push(`匹配 /${rule.pattern}/`);
+  if (rule.pattern) parts.push(rule.pattern_mode === 'keywords' ? `关键词 ${rule.pattern}` : `匹配 /${rule.pattern}/`);
   if (rule.source) parts.push(`来源 ${rule.source}`);
   if (rule.event_type) parts.push(`事件 ${rule.event_type}`);
   if (rule.workspace_id) {
@@ -245,7 +263,11 @@ function renderWorkerRules() {
 function workerRuleForm(rule = {}) {
   return `
     <label class="field"><span>规则名称</span><input name="name" value="${esc(rule.name || '')}" placeholder="例如：GitHub 通知交给 Claude" /></label>
-    <label class="field"><span>匹配文本（正则，可空）</span><input name="pattern" value="${esc(rule.pattern || '')}" placeholder="例如：github|pull request" /></label>
+    <label class="field"><span>匹配文本（可空）</span><input name="pattern" value="${esc(rule.pattern || '')}" placeholder="例如：github, pull request" /></label>
+    <label class="field"><span>匹配方式</span><select name="pattern_mode">
+      <option value="keywords" ${(rule.pattern_mode || (rule.id ? 'regex' : 'keywords')) === 'keywords' ? 'selected' : ''}>关键词（逗号/竖线分隔，推荐）</option>
+      <option value="regex" ${(rule.pattern_mode || (rule.id ? 'regex' : 'keywords')) === 'regex' ? 'selected' : ''}>正则（高级）</option>
+    </select></label>
     <div class="grid-2">
       <label class="field"><span>来源（可空，支持 plugin:*）</span><input name="source" value="${esc(rule.source || '')}" placeholder="web / plugin:* / plugin:email-imap" /></label>
       <label class="field"><span>事件类型（可空，支持 * / foo.*）</span><input name="event_type" value="${esc(rule.event_type || '')}" placeholder="email.unread / chat.message" /></label>
@@ -270,6 +292,7 @@ function openWorkerRule(rule = null) {
       const body = {
         name: values.name,
         pattern: values.pattern,
+        pattern_mode: values.pattern_mode,
         source: values.source,
         event_type: values.event_type,
         workspace_id: values.workspace_id,

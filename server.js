@@ -13,6 +13,7 @@ import * as scheduler from './src/scheduler.js';
 import * as router from './src/router.js';
 import * as channels from './src/channels.js';
 import { availability, testWorker, saveWorkerConfig, isShippedWorker, unhideShippedWorkers, loadBuiltinWorkers, defaultWorker } from './src/workers.js';
+import { capabilityCatalog } from './src/capabilities.js';
 import * as workerRules from './src/worker-rules.js';
 import * as workflows from './src/workflows.js';
 import * as archive from './src/archive.js';
@@ -130,6 +131,7 @@ function bootstrap() {
     rules: router.listRules(),
     workerRules: workerRules.listWorkerRules(),
     workers: availability(),
+    capabilities: capabilityCatalog(settings),
     workflows: workflows.overview(),
     pluginDrafts: forge.listDrafts(),
     stats: scheduler.stats(),

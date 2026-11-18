@@ -46,7 +46,11 @@ test('解析：头部字段可选，没有头部时用一级标题或文件名�
 
   assert.equal(wf.parseWorkflow('# 部署流程\n\n先跑测试', { file: '/x/deploy.md' }).name, '部署流程');
   assert.equal(wf.parseWorkflow('先跑测试', { file: '/x/发布检查.md' }).name, '发布检查');
-  assert.match(wf.parseWorkflow('---\nwhen: (\n---\n', { file: '/x/b.md' }).error, /when 不是合法的正则/);
+  // 默认把 when 当关键词：正则元字符不再报错，也不会被当成正则。
+  assert.equal(wf.parseWorkflow('---\nwhen: (\n---\n', { file: '/x/b.md' }).error, null);
+  assert.ok(wf.parseWorkflow('---\nwhen: (\n---\n', { file: '/x/b2.md' }).trigger.test('帮我填 ( 这个空'));
+  // 老流程显式声明 whenRegex 时仍按正则解释，非法正则照样报错。
+  assert.match(wf.parseWorkflow('---\nwhen: (\nwhenRegex: true\n---\n', { file: '/x/b3.md' }).error, /when 不是合法的正则/);
 
   const learned = wf.parseWorkflow('---\nname: x\nsource: learned\n---\n', { file: '/x/c.md' });
   assert.equal(learned.status, 'candidate');
@@ -167,4 +171,15 @@ test('从任务学流程时，默认工作区不写死，别的工作区才记�
   assert.equal(def.workflow.workspace, '', '默认工作区不写进流程');
   const yu = await wf.learnFromTask({ ...task, id: 't_learn_ws2', prompt: '整理佣金字段的命名和引用' }, [], { workerLabel: '问答', workspaceName: '渔童', force: true });
   assert.equal(yu.workflow.workspace, '渔童');
+});
+
+test('流程触发词：默认按字面词匹配，支持排除词；老流程可显式用正则', () => {
+  const flow = wf.parseWorkflow('---\nname: 修接口\nwhen: 接口, C++\nnotWhen: 接口怎么用\n---\n1. 修', { file: '/x/api.md' });
+  assert.equal(flow.error, null);
+  assert.ok(wf.matchWorkflow('帮我修一下 C++ 接口', { workflows: [flow] }));
+  assert.equal(wf.matchWorkflow('接口怎么用？', { workflows: [flow] }), null);
+
+  const legacy = wf.parseWorkflow('---\nname: 老流程\nwhen: ^周报\nwhenRegex: true\n---\n1. 写', { file: '/x/legacy.md' });
+  assert.ok(wf.matchWorkflow('周报汇总', { workflows: [legacy] }));
+  assert.equal(wf.matchWorkflow('写周报', { workflows: [legacy] }), null);
 });

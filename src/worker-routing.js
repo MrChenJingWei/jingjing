@@ -5,6 +5,8 @@
  *
  * 纯函数，方便单测；可用 Worker 列表由调用方（workers.workerCatalog）传入。
  */
+import { matchTerm } from './routing-signals.js';
+import { candidatesForCapabilities } from './capabilities.js';
 
 const WRITE_FILE_RE = [
   /(?:生成|写|创建|新建|建|保存|导出|做一个|做一份).{0,40}(?:文件|文档|txt|md|markdown|tex|json|csv|html)/i,
@@ -72,11 +74,10 @@ const HANDOFF_RE = /^\s*(?:改用|换用|换成|改派给?|转交给?|交给|让
 const CHAT_ALIASES = [['deepseek', 'dsh']];
 
 function aliasWorker(text, workers) {
-  const t = String(text || '');
   for (const [word, id] of CHAT_ALIASES) {
     const worker = workers.find((w) => w.id === id && w.available !== false);
-    // 用边界排除「deepseek-chat」这类模型名，避免把模型配置说成换 Worker。
-    if (worker && new RegExp(`(^|[^a-z0-9_-])${word}([^a-z0-9_-]|$)`, 'i').test(t)) return worker;
+    // matchTerm 会处理边界，避免把「deepseek-chat」这类模型名说成换 Worker。
+    if (worker && matchTerm(text, word)) return worker;
   }
   return null;
 }
@@ -94,6 +95,16 @@ export function cheapestWith(workers, ability) {
 function keywordRe(worker) {
   if (!worker.keywords) return null;
   try { return new RegExp(worker.keywords, 'i'); } catch { return null; }
+}
+
+/** Worker 的名字/别名（大小写、全半角、标点都不影响）。 */
+function aliasHit(worker, text) {
+  return (worker.aliases || []).some((alias) => matchTerm(text, alias));
+}
+
+/** 用户是不是点名了这个 Worker：先看别名，老插件的 keywords 正则继续兼容。 */
+function namedHit(worker, text) {
+  return aliasHit(worker, text) || Boolean(keywordRe(worker)?.test(text));
 }
 
 /** 开销低的优先；同开销时内置优先，再按 id 排，保证结果稳定。 */
@@ -114,7 +125,9 @@ export function describeWorker(w) {
   const desc = w.description ? `：${w.description}` : '';
   const notes = w.notes ? `；本机补充：${w.notes}` : '';
   const abilities = w.abilities?.length ? ` [能力：${w.abilities.join(', ')}]` : '';
-  return `- ${w.id}（${w.label || w.id}）${desc}${notes}${abilities}`;
+  const aliases = w.aliases?.length ? ` [别名：${w.aliases.join('、')}]` : '';
+  const capabilities = w.capabilityLabels?.length ? ` [能用：${w.capabilityLabels.join('、')}]` : '';
+  return `- ${w.id}（${w.label || w.id}）${desc}${notes}${abilities}${aliases}${capabilities}`;
 }
 
 /**
@@ -122,14 +135,15 @@ export function describeWorker(w) {
  * 点名了多个时取开销最低的；没点名或点名的不可用时返回 null。
  * aliases=true 时额外认主人对话里的口语别名（目前只有「deepseek」→ dsh），外部来源不要传。
  */
-export function namedWorker(text, workers = [], { aliases = false } = {}) {
+export function namedWorker(text, workers = [], { aliases = false, includeUnavailable = false } = {}) {
   const t = String(text || '');
   if (!t) return null;
+  const pool = workers.filter((w) => includeUnavailable || w.available !== false);
   if (aliases) {
-    const alias = aliasWorker(t, workers);
+    const alias = aliasWorker(t, pool);
     if (alias) return alias;
   }
-  return workers.filter((w) => w.available !== false && keywordRe(w)?.test(t)).sort(byPreference)[0] || null;
+  return pool.filter((w) => namedHit(w, t)).sort(byPreference)[0] || null;
 }
 
 /**
@@ -142,7 +156,16 @@ export function namedWorker(text, workers = [], { aliases = false } = {}) {
  * @param {boolean} input.aliases  是否认主人对话里的口语别名（外部来源不要传）
  * @returns {{ worker: string|null, need: string|null, reason: string, note: string }}
  */
-export function pickWorker({ text = '', requested = null, decided = false, workers = [], fallback: preferred = null, aliases = false } = {}) {
+export function pickWorker({
+  text = '',
+  requested = null,
+  decided = false,
+  workers = [],
+  fallback: preferred = null,
+  aliases = false,
+  capabilityIds = [],
+  capabilityCatalog = []
+} = {}) {
   const usable = workers.filter((w) => w.available !== false);
   const byId = new Map(workers.map((w) => [w.id, w]));
   // 用户点名了一个本机不可用的 Worker（比如「用 codex 跑」但没装 codex）：按它被请求处理，好在回复里说明改派。
@@ -156,8 +179,8 @@ export function pickWorker({ text = '', requested = null, decided = false, worke
     ? `（本机没有可用的「${label(requestedWorker) || requested}」Worker，改派给「${label(picked)}」）`
     : '');
 
-  // 1. 插件声明的关键词：用户点名了某个工具时优先交给它。
-  const hits = usable.filter((w) => keywordRe(w)?.test(text));
+  // 1. 用户点名：别名（新）或插件关键词（老）优先。
+  const hits = usable.filter((w) => namedHit(w, text));
   if (aliases) {
     const alias = aliasWorker(text, usable);
     if (alias && !hits.some((w) => w.id === alias.id)) hits.push(alias);
@@ -167,17 +190,40 @@ export function pickWorker({ text = '', requested = null, decided = false, worke
     return { worker: picked.id, need: null, reason: 'keywords', note: unavailableNote(picked) };
   }
 
-  // 2. 文本明确需要某种能力时，要求 Worker 具备它。
+  // 2. 文本里点到的具体能力（tapd-cli、git…）：先收窄候选。
+  const wanted = [...new Set(capabilityIds.filter(Boolean))];
+  const cap = wanted.length ? candidatesForCapabilities(wanted, usable, capabilityCatalog) : { workers: [], fallback: false };
+  const showCapability = (worker) => wanted.length && cap.fallback
+    ? `（它没声明具体工具，但能执行本机命令）`
+    : '';
+
+  // 3. 模型选择：可用、满足硬能力，并且符合文本提到的具体能力。
   const need = detectNeed(text, { decided });
   if (requestedUsable && (!need || can(requestedWorker, need))) {
-    return { worker: requested, need, reason: decided ? 'model' : 'requested', note: '' };
+    const fitsCapability = !wanted.length || !cap.workers.length || cap.workers.some((w) => w.id === requested);
+    if (fitsCapability) {
+      return { worker: requested, need, reason: decided ? 'model' : 'requested', note: '' };
+    }
   }
+  // 4. 能力候选：唯一直接选；多个按偏好；模型优先在候选里。
+  if (cap.workers.length) {
+    const picked = requestedUsable && cap.workers.some((w) => w.id === requested)
+      ? requestedWorker
+      : cap.workers.slice().sort(byPreference)[0];
+    return {
+      worker: picked.id,
+      need,
+      reason: 'capability',
+      note: `${showCapability(picked)}${wanted.length ? `（按能力「${wanted.join('、')}」）` : ''}`
+    };
+  }
+  // 5. 文本明确需要某种能力时，要求 Worker 具备它。
   if (need) {
     const picked = cheapest(usable, (w) => can(w, need));
     if (picked) return { worker: picked.id, need, reason: 'ability', note: unavailableNote(picked) };
   }
 
-  // 3. 兜底：主人指定的兜底 Worker（比如舍得花钱的用 Claude Code），否则最便宜的文本 Worker。
+  // 6. 兜底：主人指定的兜底 Worker（比如舍得花钱的用 Claude Code），否则最便宜的文本 Worker。
   const fallback = (preferred ? usable.find((w) => w.id === preferred) : null)
     || cheapest(usable, (w) => can(w, 'text')) || usable.slice().sort(byPreference)[0] || null;
   if (fallback) {
