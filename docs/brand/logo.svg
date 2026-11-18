@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<defs>
+  <clipPath id="r"><rect x="32" y="32" width="448" height="448" rx="120"/></clipPath>
+  <radialGradient id="o1"><stop offset="0" stop-color="#FF2A6D"/><stop offset=".6" stop-color="#FF2A6D"/><stop offset="1" stop-color="#FF2A6D" stop-opacity="0"/></radialGradient>
+  <radialGradient id="o2"><stop offset="0" stop-color="#00E5FF"/><stop offset=".6" stop-color="#00E5FF"/><stop offset="1" stop-color="#00E5FF" stop-opacity="0"/></radialGradient>
+  <radialGradient id="o3"><stop offset="0" stop-color="#8A2BFF"/><stop offset=".55" stop-color="#8A2BFF"/><stop offset="1" stop-color="#8A2BFF" stop-opacity="0"/></radialGradient>
+  <filter id="frost" filterUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><feGaussianBlur stdDeviation="9"/></filter>
+  <mask id="catm"><g fill="#fff"><path d="M112 350 C112 254 184 196 270 196 C356 196 408 252 408 316 C408 366 370 392 316 392 H170 C136 392 112 376 112 350Z"/><path d="M150 268 L156 196 L206 236 Z"/><path d="M232 222 L262 160 L282 222 Z" transform="rotate(-8 256 200)"/><circle cx="200" cy="300" r="74"/></g><g stroke="#fff"><path d="M396 340 C440 330 444 404 380 402 H214" fill="none" stroke-linecap="round" stroke-width="30"/></g></mask>
+  <filter id="rim" filterUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><feMorphology in="SourceAlpha" operator="erode" radius="3" result="e"/><feComposite in="SourceGraphic" in2="e" operator="out"/></filter>
+  <linearGradient id="rimg" x1="120" y1="170" x2="420" y2="410" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff"/><stop offset=".55" stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#fff" stop-opacity=".8"/></linearGradient>
+  <mask id="rimfade"><rect width="512" height="512" fill="url(#rimg)"/></mask>
+  <linearGradient id="tint" x1="0" y1="170" x2="0" y2="400" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff" stop-opacity=".38"/><stop offset="1" stop-color="#fff" stop-opacity=".16"/></linearGradient>
+  <filter id="glow" filterUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<g clip-path="url(#r)">
+  <g id="bg">
+    <rect width="512" height="512" fill="#0A0820"/>
+    <circle cx="140" cy="170" r="150" fill="url(#o1)"/>
+    <circle cx="390" cy="130" r="120" fill="url(#o3)"/>
+    <circle cx="430" cy="430" r="150" fill="url(#o2)"/>
+  </g>
+  <filter id="sh" filterUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><feGaussianBlur stdDeviation="14"/></filter>
+  <ellipse cx="270" cy="404" rx="170" ry="20" fill="#000" opacity=".55" filter="url(#sh)"/>
+  <!-- 磨砂玻璃猫身 -->
+  <g mask="url(#catm)">
+    <use href="#bg" filter="url(#frost)"/>
+    <rect width="512" height="512" fill="url(#tint)"/>
+    <ellipse cx="236" cy="226" rx="150" ry="36" fill="#fff" opacity=".14" transform="rotate(-8 236 226)"/>
+  </g>
+  <!-- 清晰的玻璃边缘高光 -->
+  <g mask="url(#rimfade)"><g filter="url(#rim)"><g fill="#fff"><path d="M112 350 C112 254 184 196 270 196 C356 196 408 252 408 316 C408 366 370 392 316 392 H170 C136 392 112 376 112 350Z"/><path d="M150 268 L156 196 L206 236 Z"/><path d="M232 222 L262 160 L282 222 Z" transform="rotate(-8 256 200)"/><circle cx="200" cy="300" r="74"/></g><g stroke="#fff"><path d="M396 340 C440 330 444 404 380 402 H214" fill="none" stroke-linecap="round" stroke-width="30"/></g></g></g>
+  <!-- 闭眼 -->
+  <path d="M162 300 Q177 316 192 300 M212 300 Q227 316 242 300" fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round" filter="url(#glow)"/>
+  <!-- z z -->
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M330 136 H356 L330 164 H356" stroke-width="8"/>
+    <path d="M372 100 H388 L372 118 H388" stroke-width="6" opacity=".75"/>
+  </g>
+</g>
+<rect x="33" y="33" width="446" height="446" rx="119" fill="none" stroke="#fff" stroke-opacity=".12" stroke-width="2"/>
+</svg>
