@@ -34,6 +34,8 @@
 
 系统架构图：[docs/diagrams/architecture.png](docs/diagrams/architecture.png)（可编辑源：[architecture.html](docs/diagrams/architecture.html)）
 
+发版与升级流程见 [docs/RELEASING.md](docs/RELEASING.md)（`npm run release -- 0.7.1 --notes "..."`）。
+
 ---
 
 ## 安装
