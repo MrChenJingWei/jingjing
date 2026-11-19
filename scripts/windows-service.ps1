@@ -119,6 +119,8 @@ switch ($Action) {
     if (-not (Test-Path -LiteralPath (Join-Path $AppDir 'server.js'))) { throw "程序目录里没有 server.js：$AppDir" }
     Stop-Supervisor
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    # 新建的用户配置里不一定有 Run 键。
+    if (-not (Test-Path -LiteralPath $RunKey)) { New-Item -Path $RunKey -Force | Out-Null }
     Set-ItemProperty -Path $RunKey -Name $Name -Value $command
     Start-Process -FilePath $ps -ArgumentList $arguments -WindowStyle Hidden
     Start-Sleep -Seconds 2

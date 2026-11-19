@@ -157,7 +157,8 @@ test('本机运行限制覆盖：空值沿用默认，越界报错', () => {
 });
 
 test('仓库里的内置 Worker 和 Worker 模板都符合规范', () => {
-  const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  // 不用 new URL(...).pathname：Windows 上它是 /D:/a/...，再 resolve 就成了 D:\D:\a\...。
+  const root = path.resolve(import.meta.dirname, '..');
   const builtinDir = path.join(root, 'workers');
   const ids = fs.readdirSync(builtinDir).filter((name) => !name.startsWith('.')).sort();
   assert.deepEqual(ids, ['claude', 'codex', 'dsh', 'file', 'llm', 'shell']);

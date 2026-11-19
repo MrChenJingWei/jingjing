@@ -16,8 +16,13 @@ test.after(() => removeTemp(dir));
 
 const fixture = path.join(dir, 'fixture.json');
 const calls = path.join(dir, 'calls.log');
-const bin = path.join(dir, 'tapd-cli');
-fs.writeFileSync(bin, `#!${process.execPath}
+// Windows 跑不了带 #! 的脚本：和 npm 装的一样，放一个 .cmd 包装脚本指向 js（顺便测到插件解析 .cmd 的那条路）。
+const windows = process.platform === 'win32';
+const bin = path.join(dir, windows ? 'tapd-cli.cmd' : 'tapd-cli');
+if (windows) {
+  fs.writeFileSync(bin, '@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\tapd-cli.js" %*\r\n) ELSE (\r\n  node  "%~dp0\\tapd-cli.js" %*\r\n)\r\n');
+}
+fs.writeFileSync(windows ? path.join(dir, 'tapd-cli.js') : bin, `#!${process.execPath}
 const fs = require('fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, token: process.env.TAPD_TOKEN }) + '\\n');

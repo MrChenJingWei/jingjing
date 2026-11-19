@@ -24,8 +24,9 @@ jobs:
         with:
           node-version: '24'
 
+      # 和 npm test 一样，另外把失败的用例打成注解，在提交页面上直接能看到。
       - name: 运行测试
-        run: npm test
+        run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./.github/scripts/test-annotations.mjs --test-reporter-destination=stdout "tests/*.test.js"
 
       - name: 检查插件与内置 Worker 清单
         run: npm run plugin:check
@@ -58,8 +59,9 @@ jobs:
         with:
           node-version: '24'
 
+      # 和 npm test 一样，另外把失败的用例打成注解，在提交页面上直接能看到。
       - name: 运行测试
-        run: npm test
+        run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./.github/scripts/test-annotations.mjs --test-reporter-destination=stdout "tests/*.test.js"
 
       - name: 检查插件与内置 Worker 清单
         run: npm run plugin:check

@@ -70,7 +70,8 @@ test('zip：系统工具打的包也能读（有 zip 命令或者 Windows 自带
   try {
     fs.mkdirSync(path.join(root, 'app', 'src'), { recursive: true });
     fs.writeFileSync(path.join(root, 'app', 'server.js'), 'export {};\n'.repeat(200));
-    fs.writeFileSync(path.join(root, 'app', 'src', '配置.js'), 'export const ok = true;\n');
+    // 系统工具写中文文件名的编码各不相同（Windows 的 tar 跟着系统代码页走），这里只用 ASCII；中文名在上面的用例里测。
+    fs.writeFileSync(path.join(root, 'app', 'src', 'config.js'), 'export const ok = true;\n');
     const zipPath = path.join(root, 'app.zip');
     const made = process.platform === 'win32'
       ? spawnSync('tar', ['-a', '-c', '-f', zipPath, 'app'], { cwd: root })
@@ -79,7 +80,7 @@ test('zip：系统工具打的包也能读（有 zip 命令或者 Windows 自带
     const out = path.join(root, 'out');
     extractZip(fs.readFileSync(zipPath), out);
     assert.equal(fs.readFileSync(path.join(out, 'app', 'server.js'), 'utf8'), 'export {};\n'.repeat(200));
-    assert.equal(fs.readFileSync(path.join(out, 'app', 'src', '配置.js'), 'utf8'), 'export const ok = true;\n');
+    assert.equal(fs.readFileSync(path.join(out, 'app', 'src', 'config.js'), 'utf8'), 'export const ok = true;\n');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
