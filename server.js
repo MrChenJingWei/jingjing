@@ -349,6 +349,16 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // 桌面 App 关服务用：Windows 上没有能让 node 收尾的 SIGTERM，App 请服务自己走正常退出。
+    // 只接受本机发来的请求（和其他接口一样要配对码）。
+    if (req.method === 'POST' && pathname === '/api/system/shutdown') {
+      const remote = String(req.socket.remoteAddress || '');
+      if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote)) return fail(res, 403, '只能在本机上关闭服务');
+      json(res, 200, { ok: true });
+      setImmediate(() => shutdown('api'));
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/api/health') {
       return json(res, 200, {
         ok: true,

@@ -98,9 +98,21 @@ jingjing status             # 看服务是否在跑
 
 常用参数：`--version v0.3.1` 装指定版本，`--prefix <目录>` 换安装位置，`--port` / `--host` 改监听，`--dry-run` 只演练，`--no-node` 禁止自动下载 Node。完整说明见 `bash scripts/install.sh --help`。
 
-### 3. Windows 命令行版（Windows 10 / 11，64 位）
+### 3. Windows（Windows 10 / 11，64 位）
 
-在 PowerShell 里运行（不需要管理员权限，也不需要预装 Node）：
+**桌面 App（推荐：托盘常驻 + 原生窗口 + 系统通知）**：下载 Release 里的 `jingjing-<版本>-windows-x64-setup.exe` 双击安装。按当前用户安装到 `%LOCALAPPDATA%\Programs\Jingjing`，不需要管理员权限，Node 运行时已经打包在里面。也可以在 PowerShell 里一条命令装好：
+
+```powershell
+irm https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.ps1 -OutFile "$env:TEMP\jingjing-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\jingjing-install.ps1" -App
+```
+
+装好后任务栏右下角的托盘里出现静静，服务自动启动。关掉窗口静静继续在托盘里运行，点托盘图标或按 `Ctrl+Alt+J` 随时唤出；右键托盘图标有配对码、手机访问、仅本机访问、开机时启动、重启服务、日志。数据在 `%LOCALAPPDATA%\Jingjing\`，配对码在同目录的 `access-key`；卸载 App 不会删数据。
+
+- 安装包没有代码签名，第一次运行如果被 SmartScreen 拦住：点「更多信息」→「仍要运行」。
+- 窗口用的是 Microsoft Edge WebView2（Windows 11 自带，Windows 10 绝大多数也已经装好；没有的话 App 会给出下载地址，也可以先在浏览器里用）。
+- 不想装安装包可以用同一个 Release 里的 `jingjing-<版本>-windows-x64.zip`：解压后直接运行 `Jingjing.exe`。
+
+**命令行版**（不要窗口、只要后台服务），在 PowerShell 里运行（不需要管理员权限，也不需要预装 Node）：
 
 ```powershell
 irm https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.ps1 -OutFile "$env:TEMP\jingjing-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\jingjing-install.ps1"
@@ -124,7 +136,6 @@ jingjing status             # 看服务是否在跑
 - Claude Code、Codex 这些 Worker 装好 Windows 版命令行就会被自动检测到（原生安装的 `claude.exe`、npm 装的 `claude.cmd` 都认）。
 - 设置里「选择文件夹」会在主机上弹出 Windows 的文件夹选择框。
 - 要先下载成文件再运行，不要 `irm … | iex`：Windows PowerShell 5.1 只有从带 BOM 的文件里读，才能正确显示中文提示。
-- 暂时没有 Windows 桌面 App（托盘 + 原生窗口）：在 Edge / Chrome 里打开后点地址栏的「安装」，可以装成独立窗口。
 
 ### 4. 从源码跑
 
@@ -340,10 +351,11 @@ git tag v0.3.1
 git push origin main --tags
 ```
 
-工作流 [.github/workflows/release.yml](.github/workflows/release.yml) 会先跑测试，然后分两个 job 发布：
+工作流 [.github/workflows/release.yml](.github/workflows/release.yml) 会先跑测试，然后分三个 job 发布：
 
 - `release`（ubuntu）：`dist/jingjing-app-<版本>.zip`、`dist/latest.json`（含 sha256）、`scripts/install.sh`；
-- `macos-app`（macos-latest / arm64，最低支持的系统版本按 `Info.plist` 编译）：`jingjing-<版本>-macos-arm64.pkg`、同名 zip、`SHA256SUMS`。
+- `macos-app`（macos-latest / arm64，最低支持的系统版本按 `Info.plist` 编译）：`jingjing-<版本>-macos-arm64.pkg`、同名 zip、`SHA256SUMS`；
+- `windows-app`（windows-latest，`packaging/windows/build.ps1`）：`jingjing-<版本>-windows-x64-setup.exe`、`jingjing-<版本>-windows-x64.zip`、`SHA256SUMS-windows.txt`。
 
 本地想验证发布产物：
 
@@ -598,7 +610,7 @@ jingjing/
 - `codex` Worker 已实现但没有在真实环境验证。
 - 来源插件在服务进程内运行，拥有当前用户权限；只安装你信得过的插件。
 - PWA 在后台/锁屏时没有系统推送；后台通知需要配 Telegram，或后续接 Web Push / APNs。
-- 主机 App 只支持 macOS，安装包没有 Apple 公证；Windows 有命令行版和常驻服务，还没有桌面 App；Linux 只有命令行版。
+- 桌面 App 有 macOS（Apple Silicon）和 Windows（x64）两个版本，安装包都没有签名 / 公证；Linux 只有命令行版。Windows App 的通知点开能直接跳到任务，但还不能像 macOS 那样在通知上直接点选项拍板，也没有手机安装二维码（用「手机访问…」看地址和配对码）。
 - 在线升级只更新代码层，且默认只靠 HTTPS 与 sha256 保证完整性；要防篡改请配置 Ed25519 公钥验签。
 - 热更新生效期间会多一个常驻的守护进程（负责转发信号与崩溃回退），内存约多占一个空载 Node 进程。
 - 没有做「恢复备份」按钮：数据库备份需要停服务后手动替换文件。
@@ -610,7 +622,7 @@ jingjing/
 
 1. **PWA 后台推送**：Web Push（Tailscale HTTPS）或接 FCM，让锁屏也能收到审批。
 2. **更多来源插件**：RSS、GitHub 通知、飞书群消息，照 [plugins/README.md](plugins/README.md) 各写一个目录。
-3. **主机 App 跨平台**：Windows 桌面 App（托盘 + 原生窗口）、Linux 安装包，以及开机自启开关。
+3. **主机 App 跨平台**：Linux 安装包；Windows App 的可操作通知（在通知上直接拍板）和代码签名。
 4. **记忆的自动整理**：定期把零散的情景记忆压缩成画像，淘汰过时偏好。
 5. **任务依赖图**：让 Router 能派生子任务，调度器按 DAG 执行。
 6. **多主机**：把 Worker 注册表拆成局域网内的执行节点，调度器统一排队。

@@ -146,10 +146,10 @@ test('runCommand：真的跑一个子进程，停止时能结束它', async () =
 
 test('PowerShell 脚本带 UTF-8 BOM：Windows PowerShell 5.1 没有 BOM 时按系统代码页读，中文会乱、甚至解析出错', () => {
   const root = path.resolve(import.meta.dirname, '..');
-  const files = ['scripts', path.join('.github', 'scripts')].flatMap((dir) => fs.readdirSync(path.join(root, dir))
-    .filter((name) => name.endsWith('.ps1'))
+  const files = ['scripts', path.join('.github', 'scripts'), path.join('packaging', 'windows')].flatMap((dir) => fs.readdirSync(path.join(root, dir))
+    .filter((name) => name.endsWith('.ps1') || name.endsWith('.iss'))
     .map((name) => path.join(root, dir, name)));
-  assert.ok(files.length >= 3, '至少有 install.ps1、windows-service.ps1 和 CI 的端到端脚本');
+  assert.ok(files.length >= 5, 'install.ps1、windows-service.ps1、CI 的端到端脚本、桌面 App 的 build.ps1 和安装包脚本');
   for (const file of files) {
     assert.deepEqual([...fs.readFileSync(file).subarray(0, 3)], [0xef, 0xbb, 0xbf], `${path.relative(root, file)} 缺少 BOM`);
   }

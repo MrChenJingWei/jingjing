@@ -281,7 +281,7 @@ export function updateInstallStatus() {
   const status = $('#install-status');
   if (status) {
     status.textContent = nativeApp
-      ? '你正在用 macOS App，这台电脑不需要再装；手机按上面的方式安装。'
+      ? `你正在用${/Windows/.test(navigator.userAgent) ? ' Windows' : ' macOS'} 桌面 App，这台电脑不需要再装；手机按上面的方式安装。`
       : standalone
         ? '已安装：当前是独立窗口运行。'
         : deferredInstallPrompt

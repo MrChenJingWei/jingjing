@@ -4,5 +4,8 @@ inbox/processed/
 dist/
 .toolchain/
 packaging/macos/build/
+packaging/windows/build/
+packaging/windows/bin/
+packaging/windows/obj/
 .DS_Store
 plugin-src/*/node_modules/

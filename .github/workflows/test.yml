@@ -51,13 +51,18 @@ jobs:
   # Windows：同一套测试，加上 PowerShell 脚本的语法检查、服务启动冒烟测试，以及 install.ps1 → 启动 → 常驻服务的端到端。
   windows:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+
+      # 顺带注册 C# 编译错误的匹配器：编译不过时错误直接打成注解。
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
 
       # 和 npm test 一样，另外把失败的用例打成注解，在提交页面上直接能看到。
       - name: 运行测试
@@ -99,3 +104,73 @@ jobs:
       - name: install.ps1 与常驻服务端到端
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .github/scripts/windows-e2e.ps1
+
+      - name: 构建 Windows 桌面 App 和安装包
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'desktop-build.log'
+          try {
+            ./packaging/windows/build.ps1 *>&1 | Tee-Object -FilePath $log
+          } catch {
+            $tail = Get-Content $log -Tail 60 -ErrorAction SilentlyContinue | Out-String
+            Write-Host ('::error title=构建 Windows 桌面 App 失败::' + "$_`n$tail".Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A'))
+            exit 1
+          }
+
+      - name: 桌面 App 冒烟测试（起服务 → 打开窗口加载界面 → 正常退出）
+        shell: pwsh
+        run: |
+          $env:JINGJING_DATA_DIR = Join-Path $env:RUNNER_TEMP 'jj-desktop'
+          $env:JINGJING_PORT = '17790'
+          $app = Start-Process packaging/windows/build/Jingjing/Jingjing.exe -ArgumentList '--smoke-test' -PassThru -Wait
+          $report = Get-Content (Join-Path $env:JINGJING_DATA_DIR 'smoke-test.txt') -Raw -ErrorAction SilentlyContinue
+          $log = Get-Content (Join-Path $env:JINGJING_DATA_DIR 'logs/server.log') -Tail 40 -ErrorAction SilentlyContinue | Out-String
+          Write-Host $report
+          Write-Host $log
+          if ($app.ExitCode -ne 0) {
+            $message = "退出码 $($app.ExitCode)`n$report`n----- server.log -----`n$log"
+            Write-Host ('::error title=桌面 App 冒烟测试失败::' + $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A'))
+            exit 1
+          }
+          $sizes = Get-ChildItem dist -Filter 'jingjing-*-windows-*' | ForEach-Object { '{0}  {1:N1} MB' -f $_.Name, ($_.Length / 1MB) } | Out-String
+          Write-Host ('::notice title=桌面 App 冒烟测试通过::' + "$report`n$sizes".Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A'))
+
+      - name: 安装包端到端（静默安装 → 运行 → 覆盖安装时自动退出 → 卸载）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:JINGJING_DATA_DIR = Join-Path $env:RUNNER_TEMP 'jj-installed'
+          $env:JINGJING_PORT = '17791'
+          $setup = (Get-ChildItem dist -Filter 'jingjing-*-windows-x64-setup.exe' | Select-Object -First 1).FullName
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\Jingjing\Jingjing.exe'
+          $silent = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-')
+          function Wait-Until([scriptblock]$condition, [string]$what, [int]$seconds = 45) {
+            $deadline = (Get-Date).AddSeconds($seconds)
+            while ((Get-Date) -lt $deadline) { if (& $condition) { return }; Start-Sleep -Seconds 1 }
+            throw "等了 $seconds 秒：$what"
+          }
+          function Healthy { try { return [bool](Invoke-RestMethod "http://127.0.0.1:17791/api/health" -TimeoutSec 2).ok } catch { return $false } }
+          $steps = New-Object System.Collections.Generic.List[string]
+          try {
+            Start-Process $setup -ArgumentList $silent -Wait
+            if (-not (Test-Path $exe)) { throw "安装后没有 $exe" }
+            $steps.Add('安装：' + (Split-Path $exe))
+            $app = Start-Process $exe -ArgumentList '--background' -PassThru
+            Wait-Until { Healthy } '装好的 App 没有把服务起来'
+            $steps.Add('装好的 App 启动了服务')
+            Start-Process $setup -ArgumentList $silent -Wait
+            Wait-Until { $app.HasExited } '覆盖安装时正在运行的 App 没有退出' 10
+            Wait-Until { -not (Healthy) } '覆盖安装后旧的服务还在跑' 15
+            $steps.Add('覆盖安装：先让正在运行的 App 正常退出了')
+            # 卸载程序会把自己复制到临时目录再运行，-Wait 等不到它结束：看程序文件被删掉没有。
+            Start-Process (Join-Path (Split-Path $exe) 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+            Wait-Until { -not (Test-Path $exe) } '卸载后程序文件还在'
+            if (-not (Test-Path (Join-Path $env:JINGJING_DATA_DIR 'access-key'))) { throw '卸载把数据目录也删了' }
+            $steps.Add('卸载：程序删掉了，数据目录保留')
+            Write-Host ('::notice title=安装包端到端通过::' + ($steps -join '%0A'))
+          } catch {
+            $log = Get-Content (Join-Path $env:JINGJING_DATA_DIR 'logs/server.log') -Tail 30 -ErrorAction SilentlyContinue | Out-String
+            $message = "$_`n完成的步骤：`n$($steps -join "`n")`n----- server.log -----`n$log"
+            Write-Host ('::error title=安装包端到端失败::' + $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A'))
+            exit 1
+          }

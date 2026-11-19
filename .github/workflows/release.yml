@@ -112,3 +112,38 @@ jobs:
             "dist/jingjing-$VERSION-macos-arm64.zip" \
             "dist/SHA256SUMS" \
             --clobber
+
+  # Windows 桌面 App（托盘 + 原生窗口）：只能在 Windows 上打（.NET + Inno Setup），单独一个 job。
+  windows-app:
+    needs: release
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 运行测试
+        run: npm test
+
+      - name: 构建 App / 安装包 / zip
+        shell: pwsh
+        run: ./packaging/windows/build.ps1
+
+      - name: 上传到 Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = '${{ needs.release.outputs.version }}'
+          gh release upload "v$version" `
+            "dist/jingjing-$version-windows-x64-setup.exe" `
+            "dist/jingjing-$version-windows-x64.zip" `
+            "dist/SHA256SUMS-windows.txt" `
+            --clobber

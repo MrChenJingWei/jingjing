@@ -1,8 +1,11 @@
 ﻿<#
-静静安装脚本（Windows 命令行版）：一条命令装好，不需要管理员权限，也不需要预装 Node.js。
+静静安装脚本（Windows）：一条命令装好，不需要管理员权限，也不需要预装 Node.js。
 
-  在 PowerShell 里运行：
+  命令行版，在 PowerShell 里运行：
     irm https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.ps1 -OutFile "$env:TEMP\jingjing-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\jingjing-install.ps1"
+
+  桌面 App（托盘 + 原生窗口），在上面这条命令最后加上 -App。也可以直接下载 Release 里的
+  jingjing-<版本>-windows-x64-setup.exe 双击安装。
 
   先下载成文件再运行（而不是 irm | iex）：Windows PowerShell 5.1 才能按 UTF-8 读出中文提示。
 
@@ -16,6 +19,7 @@ param(
   [string]$Prefix = '',
   [string]$ListenHost = '0.0.0.0',
   [int]$Port = 7777,
+  [switch]$App,
   [switch]$Service,
   [switch]$NoNode,
   [switch]$NoPath,
@@ -51,6 +55,7 @@ function Show-Usage {
   install.ps1 [选项]
 
 选项：
+  -App               安装桌面 App（托盘 + 原生窗口），而不是命令行版
   -Version <版本>     指定版本，如 v0.9.4（默认最新 Release）
   -Prefix <目录>      安装目录（默认 %LOCALAPPDATA%\Jingjing\cli）
   -ListenHost <地址>  服务监听地址（默认 0.0.0.0，手机/局域网可访问）
@@ -303,8 +308,68 @@ function Add-UserPath([string]$dir) {
   return $true
 }
 
+# 读 Release 清单（latest.json），返回里面的对象；请求的版本和清单对不上就报错。
+function Get-ReleaseMeta([string]$work) {
+  $wanted = if ($Version) { $Version.Trim().TrimStart('v') } else { '' }
+  $metaUrl = if ($wanted) { "$ReleaseBase/download/v$wanted/latest.json" } else { "$ReleaseBase/latest/download/latest.json" }
+  Info "读取 Release 信息：$metaUrl"
+  $metaFile = Join-Path $work 'latest.json'
+  Get-Download $metaUrl $metaFile
+  $meta = Get-Content -Raw -Encoding UTF8 -LiteralPath $metaFile | ConvertFrom-Json
+  if (-not $meta.version) { throw "Release 清单里没有 version 字段：$metaUrl" }
+  if ($wanted -and $wanted -ne $meta.version) { throw "请求的版本是 $wanted，但清单里的版本是 $($meta.version)" }
+  Info "目标版本：$($meta.version)"
+  return $meta
+}
+
+# 桌面 App：下载安装包、按 SHA256SUMS-windows.txt 校验、静默安装到 %LOCALAPPDATA%\Programs\Jingjing，然后打开。
+function Install-DesktopApp {
+  $work = Join-Path ([IO.Path]::GetTempPath()) ('jingjing-install-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+  New-Item -ItemType Directory -Force -Path $work | Out-Null
+  try {
+    $release = [string](Get-ReleaseMeta $work).version
+    $setupName = "jingjing-$release-windows-x64-setup.exe"
+    $setupUrl = "$ReleaseBase/download/v$release/$setupName"
+    $sumsUrl = "$ReleaseBase/download/v$release/SHA256SUMS-windows.txt"
+    $exe = Join-Path $env:LOCALAPPDATA 'Programs\Jingjing\Jingjing.exe'
+    if ($DryRun) {
+      Info "（演练）下载：$setupUrl"
+      Info "（演练）校验：$sumsUrl"
+      Info "（演练）静默安装后打开 $exe"
+      return
+    }
+    $setup = Join-Path $work $setupName
+    Info "下载 App 安装包：$setupUrl"
+    Get-Download $setupUrl $setup
+    $sums = Join-Path $work 'SHA256SUMS-windows.txt'
+    Get-Download $sumsUrl $sums
+    $line = Get-Content -LiteralPath $sums | Where-Object { $_ -match ('^[0-9a-f]{64}\s+' + [regex]::Escape($setupName) + '$') } | Select-Object -First 1
+    if (-not $line) { throw "SHA256SUMS-windows.txt 里没有 $setupName" }
+    Assert-Sha256 (($line -split '\s+')[0]) $setup
+    Info '安装中（会先让正在运行的静静正常退出）'
+    $process = Start-Process -FilePath $setup -ArgumentList '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' -Wait -PassThru
+    if ($process.ExitCode -ne 0) { throw "安装程序退出码 $($process.ExitCode)" }
+    if (-not (Test-Path -LiteralPath $exe)) { throw "安装完成但没找到 $exe" }
+    Start-Process -FilePath $exe
+    Write-Host ''
+    Write-Host "静静桌面 App 已安装  v$release" -ForegroundColor White
+    Write-Host ''
+    Write-Host '  · 任务栏右下角的托盘里出现静静，服务自动启动（默认 7777 端口）'
+    Write-Host "  · 程序目录：$(Split-Path -Parent $exe)"
+    Write-Host "  · 数据目录：$(Join-Path $env:LOCALAPPDATA 'Jingjing')"
+    Write-Host '  · 开始菜单里搜「静静」可以再打开；Ctrl+Alt+J 随时唤出 / 收起窗口'
+    Write-Host ''
+  } finally {
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Install-Jingjing {
   if (-not $env:LOCALAPPDATA) { throw '找不到 %LOCALAPPDATA%：这个脚本只能在 Windows 上运行（macOS / Linux 请用 install.sh）。' }
+  if ($App) {
+    Install-DesktopApp
+    return
+  }
   $root = if ($Prefix) { $Prefix } else { Join-Path $env:LOCALAPPDATA 'Jingjing\cli' }
   $root = [IO.Path]::GetFullPath($root).TrimEnd('\')
   $dataDir = if ($env:JINGJING_DATA_DIR) { [IO.Path]::GetFullPath($env:JINGJING_DATA_DIR).TrimEnd('\') } else { Join-Path $root 'data' }
@@ -314,16 +379,8 @@ function Install-Jingjing {
   $work = Join-Path $root ('.install-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
   New-Item -ItemType Directory -Force -Path $work | Out-Null
   try {
-    $wanted = if ($Version) { $Version.Trim().TrimStart('v') } else { '' }
-    $metaUrl = if ($wanted) { "$ReleaseBase/download/v$wanted/latest.json" } else { "$ReleaseBase/latest/download/latest.json" }
-    Info "读取 Release 信息：$metaUrl"
-    $metaFile = Join-Path $work 'latest.json'
-    Get-Download $metaUrl $metaFile
-    $meta = Get-Content -Raw -Encoding UTF8 -LiteralPath $metaFile | ConvertFrom-Json
-    if (-not $meta.version) { throw "Release 清单里没有 version 字段：$metaUrl" }
-    if ($wanted -and $wanted -ne $meta.version) { throw "请求的版本是 $wanted，但清单里的版本是 $($meta.version)" }
+    $meta = Get-ReleaseMeta $work
     $release = [string]$meta.version
-    Info "目标版本：$release"
 
     $node = Find-Node $root
     if ($node) {

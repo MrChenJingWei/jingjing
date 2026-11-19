@@ -36,19 +36,21 @@ npm run release -- 0.7.1 --notes "v0.7.1 修复：设置页模型下拉在窄窗
 
 ## CI 会产出什么
 
-推送 tag 后，`.github/workflows/release.yml` 跑两个 job：
+推送 tag 后，`.github/workflows/release.yml` 跑三个 job：
 
 - **release**：校验 tag 与 `package.json` 一致 → `npm test` → `scripts/package-update.sh` 生成代码升级包 → 创建 GitHub Release。
   产物：`jingjing-app-<version>.zip`、`latest.json`、`install.sh`、`install.ps1`（Windows 用同一个升级包）。
 - **macos-app**：构建 App 安装包并传进同一个 Release。
   产物：`jingjing-<version>-macos-arm64.pkg`、`.zip`、`SHA256SUMS`。
+- **windows-app**：构建 Windows 桌面 App（`packaging/windows/build.ps1`：.NET + WebView2 外壳、打包 Node 运行时、Inno Setup 安装包）并传进同一个 Release。
+  产物：`jingjing-<version>-windows-x64-setup.exe`、`jingjing-<version>-windows-x64.zip`、`SHA256SUMS-windows.txt`。
 
-两个 job 都绿，旧用户才能检查到更新。
+三个 job 都绿，旧用户才能检查到更新、新用户才下得到对应的安装包。
 
 ## 验收
 
 ```bash
-gh run list --workflow=release          # 等两个 job 变绿
+gh run list --workflow=release          # 等三个 job 变绿
 gh release view v0.7.1                  # 确认资产齐全
 curl -sL https://github.com/MrChenJingWei/jingjing/releases/latest/download/latest.json
 ```
@@ -65,14 +67,15 @@ curl -sL https://github.com/MrChenJingWei/jingjing/releases/latest/download/late
 
 ## 什么时候必须发新 pkg
 
-改了原生外壳才需要用户重装 App：Swift 代码、`Info.plist`、图标、最低系统版本。
-代码层的改动（服务端、前端、Worker、插件）都不需要。
+改了原生外壳才需要用户重装 App：macOS 是 Swift 代码、`Info.plist`、图标、最低系统版本；
+Windows 是 `packaging/windows/` 里的 C# 外壳、安装包脚本。
+代码层的改动（服务端、前端、Worker、插件）都不需要：两个桌面 App 都从数据目录加载在线更新的代码。
 
 ## 常见问题
 
 - **tag 与 package.json 不一致**：CI 直接失败。先改版本号提交，再打 tag。
 - **发出去发现有问题**：再发一个补丁版本（0.7.2），不要覆盖已发布的版本号，用户可能已经装了。
-- **macOS job 失败**：在 Actions 里重跑该 job，或手动 `workflow_dispatch`（按当前 `package.json` 版本重新上传）。
+- **macOS / Windows job 失败**：在 Actions 里重跑该 job，或手动 `workflow_dispatch`（按当前 `package.json` 版本重新上传）。
 - **要撤掉发错的 tag**：`git push --delete origin v0.7.1` 后重打；但用户已经拉到的更新不会自动回滚。
 - **更新说明从哪来**：CI 读 tag 的附注；脚本把 `--notes` 写进 tag，所以写用户能看懂的话。
 
