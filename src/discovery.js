@@ -245,7 +245,8 @@ export function normalizeItem(raw) {
     actor: normalizeActor(raw.actor),
     // 对方直接找过来的消息（私聊、群里 @ 机器人）：不是要办的事也不直接丢掉，交给静静按人格决定回不回。
     direct: raw.direct === true,
-    // 带状态的来源（TAPD 缺陷、PR……）：外部状态和类型，建卡时绑到任务上；track: false 表示不要跟踪。
+    // 带状态的来源（TAPD 缺陷、PR……）：外部状态和类型，建卡时绑到任务上。
+    // track: false = 条目自身不跟踪（如评论），若带 node 则改绑到那个外部对象。
     status: sourceLinks.normalizeStatus(raw.status),
     externalType: String(raw.externalType || '').slice(0, 30),
     track: raw.track !== false,
@@ -462,11 +463,31 @@ function refreshKnown(id, items) {
   return touched.size;
 }
 
-/** 这条条目建卡时要绑的外部对象：条目带了状态，或者插件能同步状态（导出了 syncStatus）才绑。 */
+/**
+ * 这条条目建卡时要绑的外部对象。
+ * - 默认：带状态、或插件能 syncStatus、或有归类节点 → 绑上并跟踪。
+ * - track: false：条目自身不跟踪（比如评论），但若挂在外部对象树上（node），改绑到那个对象——
+ *   可打开原单，也可跟单子状态；发现去重仍用条目自己的 externalId。
+ */
 function sourceLinkFor(id, plugin, item) {
-  if (item.track === false) return null;
+  const label = plugin.label || plugin.manifest?.name || id;
+  if (item.track === false) {
+    const node = item.tree?.node;
+    if (!node?.id || !node.workspace) return null;
+    const typeLabel = plugin.manifest?.classification?.nodeLabels?.[node.type] || node.type;
+    return sourceLinks.linkFromItem(id, label, {
+      externalId: node.id,
+      externalType: typeLabel,
+      title: node.title || item.title,
+      url: node.url || item.url,
+      status: null,
+      track: true,
+      meta: { workspaceId: node.workspace, entity: node.type },
+      nodeKey: item.nodeKey || null
+    });
+  }
   if (!item.status && typeof plugin.module?.syncStatus !== 'function' && !item.nodeKey) return null;
-  return sourceLinks.linkFromItem(id, plugin.label || plugin.manifest?.name || id, item);
+  return sourceLinks.linkFromItem(id, label, item);
 }
 
 async function processFresh(id, plugin, fresh, verb, override = null) {

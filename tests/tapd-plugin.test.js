@@ -243,9 +243,15 @@ test('评论提醒：第一次只记游标、认出参与过的单子，不回�
   assert.match(reopen.title, /测试甲 评论了：分给我的缺陷/);
   assert.match(reopen.content, /场景：流转状态从 \[已解决\] 到 \[重新打开\] 添加/);
   assert.equal(reopen.groupKey, 'tapd:123:bug:7001');
-  assert.equal(reopen.track, false, '评论不绑状态跟踪');
+  assert.equal(reopen.track, false, '评论本身不跟踪；绑到所在缺陷/需求');
   assert.equal(reopen.workspace, 'ws_comment', '评论也落到它所在项目的工作区');
-  assert.deepEqual(reopen.node, { workspace: '123', type: 'bug', id: '7001' });
+  assert.deepEqual(reopen.node, {
+    workspace: '123',
+    type: 'bug',
+    id: '7001',
+    title: '分给我的缺陷',
+    url: 'https://www.tapd.cn/123/bugtrace/bugs/view?bug_id=7001'
+  });
   assert.equal(reopen.url, 'https://www.tapd.cn/123/bugtrace/bugs/view?bug_id=7001');
   assert.match(talked.title, /我参与讨论的需求/, '不是分给我的单子，标题另查');
   assert.equal(mention.eventType, 'tapd.comment.mention');

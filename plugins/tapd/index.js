@@ -7,6 +7,7 @@
 // - 需求：node = 需求；parent = 父需求（parent_id），没有就是树根（parent: null）；
 // - 缺陷：node = 缺陷；parent = 唯一关联的需求；关联了多个需求时 TAPD 没有「主」的概念，
 //   按协议给 parent: null + links，让静静提示主人选一个，绝不自己挑一个凑数。
+// - 评论：track: false（不去重绑评论自己），node = 所在缺陷/需求（带 url），静静绑到那张单子。
 // 自动归类关着（ctx.classify === 'off'）时不查关联，不多调一次接口。
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
@@ -504,6 +505,7 @@ function commentItem(config, ws, comment, { title, mention, workspace = '' }) {
   const entryId = String(comment.entry_id);
   const name = title || `${entry.label} #${entryId.slice(-7)}`;
   const view = entry.kind === 'task' ? TASK_VIEW : ENTITIES[entry.kind].view;
+  const entryUrl = `${webBase(config)}/${view(ws, entryId)}`;
   const flow = String(comment.title || '').trim();
   const body = plainText(comment.description).slice(0, 1500);
   const facts = [
@@ -520,14 +522,14 @@ function commentItem(config, ws, comment, { title, mention, workspace = '' }) {
     eventType: mention ? 'tapd.comment.mention' : 'tapd.comment',
     title: `${comment.author}${mention ? ' @ 了你' : ' 评论了'}：${name}`.slice(0, 120),
     content: [facts.join('\n'), body].filter(Boolean).join('\n\n'),
-    url: `${webBase(config)}/${view(ws, entryId)}`,
+    url: entryUrl,
     occurredAt: isoTime(comment.created),
     // 同一张单子上的多条评论：在排队的卡上合并，不各建一张。
     groupKey: `tapd:${ws}:${entry.kind}:${entryId}`,
-    // 评论没有自己的状态可跟踪；单子的状态由单子本身那张卡跟。
+    // 评论本身不跟踪；挂在缺陷/需求上（node），静静建卡时绑到那张单子，可打开原单、跟单子状态。
     track: false,
-    // 归类：评论挂在哪张单子上（父节点之前拉单子时已经交过，这次不说）。
-    ...(ENTITIES[entry.kind] ? { node: { workspace: ws, type: entry.kind, id: entryId } } : {}),
+    // 归类 / 绑定：评论挂在哪张单子上（父节点之前拉单子时已经交过，这次不说 parent）。
+    ...(ENTITIES[entry.kind] ? { node: { workspace: ws, type: entry.kind, id: entryId, title: name, url: entryUrl } } : {}),
     // 评论人：TAPD 里用昵称当身份。
     ...(comment.author ? { actor: { id: comment.author, name: comment.author } } : {}),
     meta: { workspaceId: ws, entity: entry.kind, entryId, commentId: String(comment.id), author: comment.author, mention },

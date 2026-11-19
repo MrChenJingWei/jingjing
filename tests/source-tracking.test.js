@@ -178,9 +178,30 @@ test('停止跟踪 / 解除绑定；来源停用时显示暂停、不能刷新',
   assert.ok(scheduler.taskEvents(task.id).some((e) => e.type === 'source/unlinked'));
 });
 
-test('track: false 的条目不绑；后续卡继承绑定；删任务删绑定但去重账本还在', async () => {
+test('track: false 的条目不绑；挂在 node 上的改绑到该对象；后续卡继承绑定；删任务删绑定但去重账本还在', async () => {
   const untracked = await ingestOne(ticket('T-5', pending(), { track: false }));
   assert.deepEqual(untracked.sources, []);
+
+  // 评论之类：条目 id 仍是 comment:…（发现去重），绑定落到所在单子，可打开原单。
+  const comment = await ingestOne(ticket('comment:99', null, {
+    track: false,
+    externalType: '评论',
+    title: '有人评论了：登录闪退',
+    url: 'https://tickets.example.com/7001',
+    node: { workspace: 'ws1', type: 'bug', id: '7001', title: '登录闪退', url: 'https://tickets.example.com/7001' }
+  }));
+  assert.ok(comment, '评论也该建卡');
+  assert.equal(comment.sources.length, 1);
+  assert.equal(comment.sources[0].externalId, '7001');
+  assert.equal(comment.sources[0].externalType, 'bug');
+  assert.equal(comment.sources[0].url, 'https://tickets.example.com/7001');
+  assert.equal(comment.sources[0].title, '登录闪退');
+  assert.equal(comment.sources[0].tracking, true);
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS c FROM source_items WHERE source = 'fake-tracker' AND external_id = 'comment:99'").get().c,
+    1,
+    '发现去重仍用评论自己的 id'
+  );
 
   const task = await ingestOne(ticket('T-6', pending()));
   await settled(task.id);
