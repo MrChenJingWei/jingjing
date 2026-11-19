@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-automation-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -17,7 +18,7 @@ const router = await import('../src/router.js');
 const discovery = await import('../src/discovery.js');
 const scheduler = await import('../src/scheduler.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 await workers.loadBuiltinWorkers();
 // 先建好假来源并 reload（reload 会清掉之前注册的插件 Worker），再注册假 Worker。

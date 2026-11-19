@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-stream-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -12,7 +13,7 @@ process.env.JINGJING_DATA_DIR = dataDir;
 const plugins = await import('../src/plugins.js');
 const discovery = await import('../src/discovery.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 Object.assign(discovery.limits, { startMs: 80, stopMs: 80, restartBaseMs: 40, restartMaxMs: 200, stableMs: 60 * 1000 });
 

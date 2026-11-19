@@ -7,7 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-guards-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -22,11 +23,12 @@ const workers = await import('../src/workers.js');
 
 test.after(() => {
   releaseInstanceLock();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  removeTemp(dataDir);
 });
 
 function tryLockInOtherProcess(dir) {
-  const lockModule = path.join(ROOT, 'src', 'instance-lock.js');
+  // Windows 上 import 绝对路径要写成 file:// URL。
+  const lockModule = pathToFileURL(path.join(ROOT, 'src', 'instance-lock.js')).href;
   const script = `import { acquireInstanceLock } from ${JSON.stringify(lockModule)}; console.log(JSON.stringify(acquireInstanceLock(${JSON.stringify(dir)})));`;
   const out = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
   return JSON.parse(out.stdout.trim());

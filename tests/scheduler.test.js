@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-scheduler-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -12,7 +13,7 @@ const { validateManifest } = await import('../src/plugin-spec.js');
 const workers = await import('../src/workers.js');
 const scheduler = await import('../src/scheduler.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 function fakeWorker(id, worker, execute) {
   const manifest = validateManifest({ id, kind: 'worker', name: id, entry: 'index.js', worker });

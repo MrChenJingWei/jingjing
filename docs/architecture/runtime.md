@@ -67,10 +67,10 @@
 
 ## 正常退出
 
-SIGINT / SIGTERM / 桌面 App 退出 / 父进程消失都走 `shutdown()`：
+SIGINT / SIGTERM / 桌面 App 退出 / 父进程消失都走 `shutdown()`（Windows 上没有 SIGTERM，是 Ctrl+C 的 SIGINT、Ctrl+Break 的 SIGBREAK 和关掉控制台窗口的 SIGHUP）：
 
 1. 停来源轮询、Telegram、长连接的重连定时器；
-2. `scheduler.shutdown()`：所有执行以 `shutdown` 为原因中止，子进程整组 SIGTERM，1.5 秒后 SIGKILL；执行记录记为 `interrupted`，任务保持 `running`，等下次启动由 `recover()` 接手；
+2. `scheduler.shutdown()`：所有执行以 `shutdown` 为原因中止，子进程整组 SIGTERM，1.5 秒后 SIGKILL（Windows 上没有进程组，用 `taskkill /T /F` 结束整棵进程树）；执行记录记为 `interrupted`，任务保持 `running`，等下次启动由 `recover()` 接手；
 3. 关长连接、关 HTTP 服务；
 4. 不管卡在哪，最多 4 秒后强制退出。
 

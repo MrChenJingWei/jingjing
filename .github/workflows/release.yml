@@ -64,12 +64,13 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           if gh release view "v$VERSION" >/dev/null 2>&1; then
             gh release upload "v$VERSION" \
-              "dist/jingjing-app-$VERSION.zip" "dist/latest.json" "scripts/install.sh" --clobber
+              "dist/jingjing-app-$VERSION.zip" "dist/latest.json" "scripts/install.sh" "scripts/install.ps1" --clobber
           else
             gh release create "v$VERSION" \
               "dist/jingjing-app-$VERSION.zip" \
               "dist/latest.json" \
               "scripts/install.sh" \
+              "scripts/install.ps1" \
               --title "v$VERSION" \
               --generate-notes
           fi

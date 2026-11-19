@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-ingest-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -21,7 +22,7 @@ const discovery = await import('../src/discovery.js');
 const memory = await import('../src/memory.js');
 const router = await import('../src/router.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 const dir = path.join(plugins.USER_PLUGIN_DIR, 'feed-test');
 fs.mkdirSync(dir, { recursive: true });

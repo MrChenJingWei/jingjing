@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-wsdirs-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -11,7 +12,7 @@ const { normalizeWorkspaces } = await import('../src/config.js');
 const { extraDirsFor } = await import('../src/workers.js');
 const claude = await import('../workers/claude/index.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 test('normalizeWorkspaces：保留附加文件夹，去重、去掉和主目录相同的', () => {
   const settings = normalizeWorkspaces({ workspaces: [{ id: 'w', name: '前后端', path: '/a/web', extraPaths: ['/a/api', '/a/api', '/a/web', '', '/a/docs'] }] });
@@ -22,8 +23,9 @@ test('normalizeWorkspaces：保留附加文件夹，去重、去掉和主目录�
 
 test('extraDirsFor：按任务主目录找到工作区，返回它的附加文件夹', () => {
   const settings = { workspaces: [{ id: 'w', name: 'x', path: '/a/web', extraPaths: ['/a/api'] }] };
-  assert.deepEqual(extraDirsFor('/a/web', settings), ['/a/api']);
-  assert.deepEqual(extraDirsFor('/a/web/', settings), ['/a/api'], '尾部斜杠不影响匹配');
+  // 返回的是解析过的绝对路径（Windows 上会带盘符）。
+  assert.deepEqual(extraDirsFor('/a/web', settings), [path.resolve('/a/api')]);
+  assert.deepEqual(extraDirsFor('/a/web/', settings), [path.resolve('/a/api')], '尾部斜杠不影响匹配');
   assert.deepEqual(extraDirsFor('/somewhere/else', settings), []);
 });
 

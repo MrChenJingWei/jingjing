@@ -41,7 +41,7 @@
    wecom-cli auth init        # 扫码，或 --manual 填 BotID / Secret
    wecom-cli auth show        # 看到已授权即可
    ```
-   静静会自动找 `wecom-cli`；找不到时在「wecom-cli 路径」里填 `which wecom-cli` 的结果。它的通讯录只能按姓名 / 拼音 / 别名搜，静静拿 userid 去搜、userid 完全一致才算查到——userid 不是拼音的成员可能搜不到。
+   静静会自动找 `wecom-cli`；找不到时在「wecom-cli 路径」里填 `which wecom-cli`（Windows 上是 `where wecom-cli`，选 `.cmd` 那一行）的结果。它的通讯录只能按姓名 / 拼音 / 别名搜，静静拿 userid 去搜、userid 完全一致才算查到——userid 不是拼音的成员可能搜不到。
    接了多个企业的机器人时，每个实例用自己的配置目录：`WECOM_CLI_CONFIG_DIR=~/.config/wecom-b wecom-cli auth init`，再把目录填进「wecom-cli 配置目录」。
    注意：官方预编译版会把调用它的程序名回传给企业微信（见 wecom-cli 的数据收集说明）。
 2. **自建应用（备用）**：填「自建应用 CorpID」和「自建应用 Secret」，wecom-cli 搜不到的人用它按 userid 精确查。应用可见范围要包含这些成员，主机出口 IP 要加进应用的「企业可信 IP」，否则报 60020。

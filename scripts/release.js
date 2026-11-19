@@ -21,6 +21,7 @@ import { spawnSync } from 'node:child_process';
 import readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { compareVersions, normalizeVersion } from '../src/version.js';
+import { findCommand, resolveSpawn } from '../src/worker-runtime.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG_PATH = path.join(ROOT, 'package.json');
@@ -79,10 +80,13 @@ function detail(message) {
 
 /** 跑一条命令并返回输出；失败时把 stderr 一起带出来。 */
 function run(command, args, { inherit = false, allowFail = false } = {}) {
-  const result = spawnSync(command, args, {
+  // Windows 上 npm 是 .cmd，不能直接 spawn；resolveSpawn 会换成能跑的方式。
+  const target = resolveSpawn(findCommand(command) || command, args);
+  const result = spawnSync(target.cmd, target.args, {
     cwd: ROOT,
     encoding: 'utf8',
-    stdio: inherit ? 'inherit' : ['ignore', 'pipe', 'pipe']
+    stdio: inherit ? 'inherit' : ['ignore', 'pipe', 'pipe'],
+    ...target.options
   });
   if (result.error) {
     if (allowFail) return { ok: false, stdout: '', stderr: result.error.message };

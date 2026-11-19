@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-official-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -11,7 +12,7 @@ process.env.JINGJING_DATA_DIR = dataDir;
 const plugins = await import('../src/plugins.js');
 const { db } = await import('../src/db.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 const userDir = (id) => path.join(plugins.USER_PLUGIN_DIR, id);
 const copyOfficial = (id) => fs.cpSync(path.join(plugins.PLUGIN_DIR, id), userDir(id), { recursive: true });

@@ -32,25 +32,55 @@ const MAX_LINKS = 8;
 
 /* ------------------------------ 调用 tapd-cli ------------------------------ */
 
+const WINDOWS = process.platform === 'win32';
+
 function findBin(config) {
-  const configured = String(config.bin || '').trim().replace(/^~(?=\/)/, os.homedir());
+  const configured = String(config.bin || '').trim().replace(/^~(?=[\\/])/, os.homedir());
   if (configured) return configured;
-  // 从「应用程序」打开时 PATH 里通常没有这些目录。
-  const candidates = [
-    path.join(os.homedir(), '.local/bin/tapd-cli'),
-    '/opt/homebrew/bin/tapd-cli',
-    '/usr/local/bin/tapd-cli',
-    path.join(os.homedir(), '.bun/bin/tapd-cli')
-  ];
-  return candidates.find((file) => fs.existsSync(file)) || 'tapd-cli';
+  // 从「应用程序」或后台服务启动时 PATH 里通常没有这些目录。
+  const candidates = WINDOWS
+    ? [
+      path.join(os.homedir(), '.local', 'bin', 'tapd-cli.exe'),
+      path.join(os.homedir(), '.bun', 'bin', 'tapd-cli.exe'),
+      process.env.APPDATA && path.join(process.env.APPDATA, 'npm', 'tapd-cli.cmd'),
+      ...String(process.env.PATH || '').split(';').filter(Boolean).flatMap((dir) => ['.exe', '.cmd'].map((ext) => path.join(dir, `tapd-cli${ext}`)))
+    ]
+    : [
+      path.join(os.homedir(), '.local/bin/tapd-cli'),
+      '/opt/homebrew/bin/tapd-cli',
+      '/usr/local/bin/tapd-cli',
+      path.join(os.homedir(), '.bun/bin/tapd-cli')
+    ];
+  return candidates.find((file) => file && fs.existsSync(file)) || 'tapd-cli';
+}
+
+/**
+ * Windows 上 npm 装的命令是 .cmd 包装脚本，Node 不允许不经过 shell 直接跑（CVE-2024-27980）：
+ * 读出它真正调用的 js 用 node 跑，或者直接跑它指向的 exe。和宿主 src/worker-runtime.js 的 resolveSpawn
+ * 是同一套规则（插件不 import 核心模块）。认不出来时返回 null。
+ */
+function spawnTarget(bin) {
+  if (!WINDOWS || !/\.(?:cmd|bat)$/i.test(bin)) return { cmd: bin, pre: [] };
+  try {
+    const text = fs.readFileSync(bin, 'utf8');
+    const rel = [...text.matchAll(/"%~?dp0%?\\?([^"%*]+)"/gi)].map((m) => m[1].trim())
+      .filter((p) => p && !/(?:^|\\)node(?:\.exe)?$/i.test(p)).pop();
+    const full = rel && path.resolve(path.dirname(bin), ...rel.split(/[\\/]+/).filter(Boolean));
+    if (full && fs.existsSync(full) && /\.[cm]?js$/i.test(full)) return { cmd: process.execPath, pre: [full] };
+    if (full && fs.existsSync(full) && /\.exe$/i.test(full)) return { cmd: full, pre: [] };
+  } catch { /* 认不出来 */ }
+  return null;
 }
 
 function envFor(config, bin) {
   const token = String(config.token || '').trim() || process.env.TAPD_TOKEN || '';
   if (!token) throw new Error('没有 TAPD 个人令牌：在插件设置里填「个人令牌」（或者在启动静静的环境里设 TAPD_TOKEN）');
+  const env = { ...process.env };
+  // Windows 上环境变量名不分大小写，原来叫 Path 就改 Path，别多出一个 PATH。
+  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
+  env[pathKey] = [path.dirname(bin), env[pathKey] || ''].filter(Boolean).join(path.delimiter);
   return {
-    ...process.env,
-    PATH: [path.dirname(bin), process.env.PATH || ''].filter(Boolean).join(':'),
+    ...env,
     TAPD_API_ENDPOINT: String(config.endpoint || '').trim() || process.env.TAPD_API_ENDPOINT || 'https://api.tapd.cn',
     TAPD_TOKEN: token,
     TAPD_CLI_LOG: 'silent'
@@ -61,10 +91,12 @@ function envFor(config, bin) {
 export function runCli(config, args, { signal } = {}) {
   const bin = findBin(config);
   const env = envFor(config, bin);
+  const target = spawnTarget(bin);
+  if (!target) return Promise.reject(new Error(`认不出 ${bin} 这个包装脚本：在插件设置里填 tapd-cli 真正的可执行文件（.exe 或 .js）`));
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { env, signal, timeout: CALL_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(target.cmd, [...target.pre, ...args], { env, signal, timeout: CALL_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       if (err && err.code === 'ENOENT') {
-        reject(new Error(`找不到 tapd-cli（${bin}）。在插件设置里填它的完整路径，终端里 which tapd-cli 可以查到`));
+        reject(new Error(`找不到 tapd-cli（${bin}）。在插件设置里填它的完整路径，终端里 ${WINDOWS ? 'where' : 'which'} tapd-cli 可以查到`));
         return;
       }
       let json = null;

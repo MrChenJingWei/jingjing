@@ -636,8 +636,8 @@ Worker 只通过 `ctx` 使用宿主能力，不要 import 静静的核心模块�
 | `workers` | 当前可用的 Worker 列表（`id`、`label`、`abilities`…） |
 | `llm.mode` | `'demo'` / `'openai'`（OpenAI 兼容接口，含 DeepSeek、Kimi、GLM、中转站）/ `'ollama'` |
 | `llm.chat({ system, messages, json, temperature, maxTokens })` | 调用用户配置的模型，自动跟随 `signal` 中止；返回 `{ text, tokens, cost }` |
-| `exec(cmd, args, { cwd, env, onOutput, timeoutMs })` | 运行外部命令；`signal` 触发时自动 SIGTERM → SIGKILL 并返回 `{ error: 'aborted' }`。`env` 里值为 `null` 的键会被删除；子进程自动带上 `JINGJING_RUN_ID` / `JINGJING_RUN_TOKEN` / `JINGJING_REPORT_URL` |
-| `which(bin)` | 在 PATH 和常见安装目录里找可执行文件 |
+| `exec(cmd, args, { cwd, env, onOutput, timeoutMs })` | 运行外部命令；`signal` 触发时自动 SIGTERM → SIGKILL（Windows 上结束整棵进程树）并返回 `{ error: 'aborted' }`。`env` 里值为 `null` 的键会被删除；子进程自动带上 `JINGJING_RUN_ID` / `JINGJING_RUN_TOKEN` / `JINGJING_REPORT_URL`。Windows 上 npm 装的 `.cmd` 命令也能直接传进来，参数里的换行会原样保留 |
+| `which(bin)` | 在 PATH 和常见安装目录里找可执行文件（Windows 上按 PATHEXT 找 `.exe` / `.cmd`） |
 | `sleep(ms)` | 可被取消的等待 |
 | `parseApproval(text)` | 解析输出末尾的 `[[APPROVAL]] {...}` 标记 |
 | `estimateTokens(text)` | 粗略估算 token 数 |

@@ -51,7 +51,7 @@
 
 桌面是「左侧栏 + 内容区」：侧栏放导航和正在发生的事（等你拍板、进行中），任务页左边列表、右边详情，设置页左边分类、右边内容。窗口拉窄或在手机上打开，自动换成底部标签栏的单列布局。
 
-<sub>快捷键：⌘1–4 切换对话 / 任务 / 记忆 / 设置，`/` 聚焦输入框或搜索框，设置页 ⌘S 保存，Esc 关闭详情。</sub>
+<sub>快捷键：⌘1–4 切换对话 / 任务 / 记忆 / 设置，`/` 聚焦输入框或搜索框，设置页 ⌘S 保存，Esc 关闭详情（Windows 上 ⌘ 换成 Ctrl）。</sub>
 
 系统架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：先讲分层和四条主线，每个核心模块（Router、发现核心、调度器、Worker、插件、通道、记忆、归类与知识……）在 [docs/architecture/](docs/architecture/) 下各有一篇展开说明。
 
@@ -63,7 +63,7 @@
 
 ## 安装
 
-三种方式任选一种。装完都能用同一个界面、同一套数据格式。
+四种方式任选一种。装完都能用同一个界面、同一套数据格式。
 
 ### 1. macOS App（推荐：菜单栏常驻 + 原生窗口 + 系统通知）
 
@@ -98,7 +98,35 @@ jingjing status             # 看服务是否在跑
 
 常用参数：`--version v0.3.1` 装指定版本，`--prefix <目录>` 换安装位置，`--port` / `--host` 改监听，`--dry-run` 只演练，`--no-node` 禁止自动下载 Node。完整说明见 `bash scripts/install.sh --help`。
 
-### 3. 从源码跑
+### 3. Windows 命令行版（Windows 10 / 11，64 位）
+
+在 PowerShell 里运行（不需要管理员权限，也不需要预装 Node）：
+
+```powershell
+irm https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.ps1 -OutFile "$env:TEMP\jingjing-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\jingjing-install.ps1"
+```
+
+脚本会读取最新 Release、校验 sha256，装到 `%LOCALAPPDATA%\Jingjing\cli`；本机没有 Node.js 23.4+ 时自动下载官方 Node 24，并把 `<安装目录>\bin` 加进用户 PATH。装好后**新开一个终端**：
+
+```powershell
+jingjing                    # 前台启动，然后打开 http://127.0.0.1:7777
+jingjing open               # 用浏览器打开（自动带上配对码）
+jingjing service install    # 登录后自动在后台启动、崩溃自动拉起
+jingjing status             # 看服务是否在跑
+```
+
+数据目录是 `<安装目录>\data`，常驻服务的日志在 `<安装目录>\data\logs`。常用参数：`-Version v0.9.4` 装指定版本，`-Prefix <目录>` 换安装位置，`-ListenHost` / `-Port` 改监听，`-Service` 装完直接装成常驻服务，`-NoNode` 禁止自动下载 Node，`-NoPath` 不改 PATH，`-DryRun` 只演练。
+
+几点说明：
+
+- 常驻服务不需要管理员权限：开机项写在当前用户的注册表 Run 键里，任务管理器的「启动应用」里能看到、能停用；`jingjing service uninstall` 卸掉。
+- 第一次启动时 Windows 防火墙会问要不要允许 node 联网：要用手机访问就点「允许」；只在本机用可以装的时候加 `-ListenHost 127.0.0.1`。
+- Claude Code、Codex 这些 Worker 装好 Windows 版命令行就会被自动检测到（原生安装的 `claude.exe`、npm 装的 `claude.cmd` 都认）。
+- 设置里「选择文件夹」会在主机上弹出 Windows 的文件夹选择框。
+- 要先下载成文件再运行，不要 `irm … | iex`：Windows PowerShell 5.1 只有从带 BOM 的文件里读，才能正确显示中文提示。
+- 暂时没有 Windows 桌面 App（托盘 + 原生窗口）：在 Edge / Chrome 里打开后点地址栏的「安装」，可以装成独立窗口。
+
+### 4. 从源码跑
 
 要求 Node.js **23.4+**（用到了内置的 `node:sqlite`，推荐 24），不需要安装任何依赖。
 
@@ -108,7 +136,7 @@ cd jingjing
 npm start
 ```
 
-打开 <http://127.0.0.1:7777>。
+打开 <http://127.0.0.1:7777>。macOS 和 Windows 上都可以用 `npm run service:install` 装成常驻服务（`npm run service:uninstall` 卸掉）。
 
 ---
 
@@ -117,7 +145,7 @@ npm start
 第一次打开需要配对码，它保存在数据目录的 `access-key`（从源码跑就是 `data/access-key`，命令行版是 `<安装目录>/data/access-key`）：
 
 ```bash
-cat data/access-key
+cat data/access-key          # Windows：type data\access-key
 ```
 
 也可以直接打开 `http://127.0.0.1:7777/pair?key=<配对码>` 自动登录。配对码同时用于手机访问和 API。
@@ -570,7 +598,7 @@ jingjing/
 - `codex` Worker 已实现但没有在真实环境验证。
 - 来源插件在服务进程内运行，拥有当前用户权限；只安装你信得过的插件。
 - PWA 在后台/锁屏时没有系统推送；后台通知需要配 Telegram，或后续接 Web Push / APNs。
-- 主机 App 只支持 macOS，安装包没有 Apple 公证；Windows / Linux 还没有安装包。
+- 主机 App 只支持 macOS，安装包没有 Apple 公证；Windows 有命令行版和常驻服务，还没有桌面 App；Linux 只有命令行版。
 - 在线升级只更新代码层，且默认只靠 HTTPS 与 sha256 保证完整性；要防篡改请配置 Ed25519 公钥验签。
 - 热更新生效期间会多一个常驻的守护进程（负责转发信号与崩溃回退），内存约多占一个空载 Node 进程。
 - 没有做「恢复备份」按钮：数据库备份需要停服务后手动替换文件。
@@ -582,7 +610,7 @@ jingjing/
 
 1. **PWA 后台推送**：Web Push（Tailscale HTTPS）或接 FCM，让锁屏也能收到审批。
 2. **更多来源插件**：RSS、GitHub 通知、飞书群消息，照 [plugins/README.md](plugins/README.md) 各写一个目录。
-3. **主机 App 跨平台**：Windows / Linux 安装包，以及开机自启开关。
+3. **主机 App 跨平台**：Windows 桌面 App（托盘 + 原生窗口）、Linux 安装包，以及开机自启开关。
 4. **记忆的自动整理**：定期把零散的情景记忆压缩成画像，淘汰过时偏好。
 5. **任务依赖图**：让 Router 能派生子任务，调度器按 DAG 执行。
 6. **多主机**：把 Worker 注册表拆成局域网内的执行节点，调度器统一排队。

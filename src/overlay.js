@@ -84,19 +84,27 @@ export async function activateOverlay() {
       JINGJING_DATA_DIR: DATA_DIR,
       JINGJING_OVERLAY_GUARD: '1',
       JINGJING_OVERLAY_VERSION: overlay.version,
-      JINGJING_BUNDLED_VERSION: VERSION
+      JINGJING_BUNDLED_VERSION: VERSION,
+      // 守护进程被强制结束时（Windows 上结束进程不会连带子进程），子进程据此跟着退出。
+      JINGJING_GUARD_PID: String(process.pid)
     },
     stdio: 'inherit'
   });
 
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(signal, () => {
-      try {
-        child.kill(signal);
-      } catch {
-        /* 子进程已退出 */
-      }
-    });
+  if (process.platform === 'win32') {
+    // Windows 上 child.kill() 等于直接结束进程，新版本来不及收尾；而 Ctrl+C / 关窗口本来就会同时传给
+    // 共用一个控制台的子进程。所以这里只接住信号、不转发，等子进程自己收尾退出后再跟着退出。
+    for (const signal of ['SIGINT', 'SIGBREAK', 'SIGHUP']) process.on(signal, () => {});
+  } else {
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+      process.on(signal, () => {
+        try {
+          child.kill(signal);
+        } catch {
+          /* 子进程已退出 */
+        }
+      });
+    }
   }
 
   child.on('error', (err) => {

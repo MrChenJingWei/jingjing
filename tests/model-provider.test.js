@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-provider-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -13,7 +14,7 @@ const { saveSettings, getSettings } = await import('../src/db.js');
 const { normalizeProvider } = await import('../src/config.js');
 const llm = await import('../src/llm.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 const realFetch = globalThis.fetch;
 test.afterEach(() => { globalThis.fetch = realFetch; });

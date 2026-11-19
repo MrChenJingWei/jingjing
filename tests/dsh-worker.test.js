@@ -25,7 +25,7 @@ test('findHarness：Harness 环境变量优先，其次 PATH 里的 dsh，最后
     appDirs
   });
   assert.equal(inHarness.cmd, '/h/node');
-  assert.deepEqual(inHarness.args, ['/h/install/lib/bin.js']);
+  assert.deepEqual(inHarness.args, [path.join('/h/install', 'lib/bin.js')]);
   assert.equal(inHarness.env.DSH_HOME, '/h/home');
 
   const onPath = findHarness({ which: () => '/usr/local/bin/dsh', env: {}, platform: 'darwin', appDirs });

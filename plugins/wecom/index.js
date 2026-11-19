@@ -23086,10 +23086,17 @@ import os from "node:os";
 import path from "node:path";
 var CALL_TIMEOUT_MS = 20 * 1e3;
 var KEYWORDS_PER_CALL = 10;
+var WINDOWS = process.platform === "win32";
 function findCli(config = {}) {
-  const configured = String(config.cliPath || "").trim().replace(/^~(?=\/)/, os.homedir());
+  const configured = String(config.cliPath || "").trim().replace(/^~(?=[\\/])/, os.homedir());
   if (configured) return configured;
-  const dirs = [
+  const dirs = WINDOWS ? [
+    ...String(process.env.PATH || "").split(";"),
+    path.dirname(process.execPath),
+    process.env.APPDATA && path.join(process.env.APPDATA, "npm"),
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "pnpm"),
+    path.join(os.homedir(), ".volta", "bin")
+  ] : [
     ...String(process.env.PATH || "").split(":"),
     path.dirname(process.execPath),
     "/opt/homebrew/bin",
@@ -23098,20 +23105,46 @@ function findCli(config = {}) {
     path.join(os.homedir(), ".local/bin"),
     path.join(os.homedir(), ".volta/bin"),
     path.join(os.homedir(), "Library/pnpm")
-  ].filter(Boolean);
-  for (const dir of dirs) {
-    const file = path.join(dir, "wecom-cli");
-    try {
-      fs.accessSync(file, fs.constants.X_OK);
-      return file;
-    } catch {
+  ];
+  const names = WINDOWS ? ["wecom-cli.exe", "wecom-cli.cmd"] : ["wecom-cli"];
+  for (const dir of dirs.filter(Boolean)) {
+    for (const name of names) {
+      const file = path.join(dir, name);
+      try {
+        fs.accessSync(file, fs.constants.X_OK);
+        if (fs.statSync(file).isFile()) return file;
+      } catch {
+      }
     }
   }
   return null;
 }
+function spawnTarget(bin) {
+  if (!WINDOWS || !/\.(?:cmd|bat)$/i.test(bin)) return { cmd: bin, pre: [] };
+  try {
+    const text = fs.readFileSync(bin, "utf8");
+    const rel = [...text.matchAll(/"%~?dp0%?\\?([^"%*]+)"/gi)].map((m) => m[1].trim()).filter((p) => p && !/(?:^|\\)node(?:\.exe)?$/i.test(p)).pop();
+    const full = rel && path.resolve(path.dirname(bin), ...rel.split(/[\\/]+/).filter(Boolean));
+    if (full && fs.existsSync(full) && /\.[cm]?js$/i.test(full)) return { cmd: process.execPath, pre: [full] };
+    if (full && fs.existsSync(full) && /\.exe$/i.test(full)) return { cmd: full, pre: [] };
+  } catch {
+  }
+  return null;
+}
+function execCli(config, bin, args, options, callback) {
+  const target = spawnTarget(bin);
+  if (!target) {
+    const err = Object.assign(new Error(`\u8BA4\u4E0D\u51FA ${bin} \u8FD9\u4E2A\u5305\u88C5\u811A\u672C\uFF1A\u5728\u63D2\u4EF6\u8BBE\u7F6E\u91CC\u586B wecom-cli \u771F\u6B63\u7684\u53EF\u6267\u884C\u6587\u4EF6\uFF08.exe \u6216 .js\uFF09`), { code: "NO_CLI" });
+    process.nextTick(() => callback(err, "", ""));
+    return;
+  }
+  execFile(target.cmd, [...target.pre, ...args], { env: envFor(config, bin), windowsHide: true, ...options }, callback);
+}
 function envFor(config, bin) {
-  const env = { ...process.env, PATH: [path.dirname(bin), path.dirname(process.execPath), process.env.PATH || ""].filter(Boolean).join(":") };
-  const dir = String(config.cliConfigDir || "").trim().replace(/^~(?=\/)/, os.homedir());
+  const env = { ...process.env };
+  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") || "PATH";
+  env[pathKey] = [path.dirname(bin), path.dirname(process.execPath), env[pathKey] || ""].filter(Boolean).join(path.delimiter);
+  const dir = String(config.cliConfigDir || "").trim().replace(/^~(?=[\\/])/, os.homedir());
   if (dir) env.WECOM_CLI_CONFIG_DIR = dir;
   return env;
 }
@@ -23133,9 +23166,13 @@ function runCli(config, args, { signal } = {}) {
   const bin = findCli(config);
   if (!bin) return Promise.reject(Object.assign(new Error("\u6CA1\u88C5 wecom-cli\uFF1A\u7EC8\u7AEF\u91CC\u8FD0\u884C npm install -g @wecom/cli\uFF0C\u518D\u8FD0\u884C wecom-cli auth init \u6388\u6743"), { code: "NO_CLI" }));
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { env: envFor(config, bin), signal, timeout: CALL_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execCli(config, bin, args, { signal, timeout: CALL_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err?.code === "NO_CLI") {
+        reject(err);
+        return;
+      }
       if (err?.code === "ENOENT") {
-        reject(Object.assign(new Error(`\u627E\u4E0D\u5230 wecom-cli\uFF08${bin}\uFF09\u3002\u5728\u63D2\u4EF6\u8BBE\u7F6E\u91CC\u586B\u5B83\u7684\u5B8C\u6574\u8DEF\u5F84\uFF0C\u7EC8\u7AEF\u91CC which wecom-cli \u53EF\u4EE5\u67E5\u5230`), { code: "NO_CLI" }));
+        reject(Object.assign(new Error(`\u627E\u4E0D\u5230 wecom-cli\uFF08${bin}\uFF09\u3002\u5728\u63D2\u4EF6\u8BBE\u7F6E\u91CC\u586B\u5B83\u7684\u5B8C\u6574\u8DEF\u5F84\uFF0C\u7EC8\u7AEF\u91CC ${WINDOWS ? "where" : "which"} wecom-cli \u53EF\u4EE5\u67E5\u5230`), { code: "NO_CLI" }));
         return;
       }
       const data = parseJson(stdout);
@@ -23155,7 +23192,7 @@ async function cliStatus(config, { signal } = {}) {
   const bin = findCli(config);
   if (!bin) return { ok: false, detail: "\u6CA1\u88C5 wecom-cli\uFF08npm install -g @wecom/cli\uFF09" };
   return new Promise((resolve) => {
-    execFile(bin, ["auth", "show", "--status"], { env: envFor(config, bin), signal, timeout: CALL_TIMEOUT_MS }, (err, stdout) => {
+    execCli(config, bin, ["auth", "show", "--status"], { signal, timeout: CALL_TIMEOUT_MS }, (err, stdout) => {
       const status = String(stdout || "").trim();
       if (status === "authorized") resolve({ ok: true, detail: "wecom-cli \u5DF2\u6388\u6743" });
       else if (status === "unauthorized") resolve({ ok: false, detail: "wecom-cli \u8FD8\u6CA1\u6388\u6743\uFF1A\u7EC8\u7AEF\u91CC\u8FD0\u884C wecom-cli auth init" });

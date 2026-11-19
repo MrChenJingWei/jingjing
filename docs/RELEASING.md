@@ -39,7 +39,7 @@ npm run release -- 0.7.1 --notes "v0.7.1 修复：设置页模型下拉在窄窗
 推送 tag 后，`.github/workflows/release.yml` 跑两个 job：
 
 - **release**：校验 tag 与 `package.json` 一致 → `npm test` → `scripts/package-update.sh` 生成代码升级包 → 创建 GitHub Release。
-  产物：`jingjing-app-<version>.zip`、`latest.json`、`install.sh`。
+  产物：`jingjing-app-<version>.zip`、`latest.json`、`install.sh`、`install.ps1`（Windows 用同一个升级包）。
 - **macos-app**：构建 App 安装包并传进同一个 Release。
   产物：`jingjing-<version>-macos-arm64.pkg`、`.zip`、`SHA256SUMS`。
 
@@ -60,7 +60,7 @@ curl -sL https://github.com/MrChenJingWei/jingjing/releases/latest/download/late
 - **已装 App**：设置 → 关于与更新 → 检查更新 → 下载并校验 → 提示「重启服务后生效」。
   升级的是代码层（`server.js` / `src` / `public` / `workers`），**不用重装 pkg**，数据不动。
 - **源码启动**：`git pull` 即可。
-- **新装 / 重装**：用 Release 里的 `.pkg`，或 `install.sh`。
+- **新装 / 重装**：用 Release 里的 `.pkg`，或 `install.sh`（macOS / Linux）、`install.ps1`（Windows）。
 - overlay 只在「已装版本严格大于当前运行版本」时生效，所以版本号必须递增。
 
 ## 什么时候必须发新 pkg

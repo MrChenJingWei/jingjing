@@ -163,8 +163,10 @@ function pickWorkspace(text, settings) {
   if (matched) return matched;
   const list = Array.isArray(settings.workspaces) ? settings.workspaces : [];
   if (matchTerm(text, '桌面') || /desktop/i.test(text)) {
-    const desktop = path.join(os.homedir(), 'Desktop');
-    if (fs.existsSync(desktop)) return { id: 'desktop', name: '桌面', path: desktop };
+    // Windows 开了 OneDrive 备份时，桌面在 OneDrive 文件夹里。
+    const candidates = [path.join(os.homedir(), 'Desktop'), process.env.OneDrive && path.join(process.env.OneDrive, 'Desktop')];
+    const desktop = candidates.find((dir) => dir && fs.existsSync(dir));
+    if (desktop) return { id: 'desktop', name: '桌面', path: desktop };
   }
   return list.find((workspace) => workspace.id === settings.defaultWorkspaceId)
     || list[0]

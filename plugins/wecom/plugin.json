@@ -34,7 +34,7 @@
       "label": "wecom-cli 路径（选填）",
       "type": "text",
       "placeholder": "自动查找",
-      "help": "认人用：静静用企业微信官方命令行（npm i -g @wecom/cli，再 wecom-cli auth init 授权）查发消息的人叫什么、在哪个部门。找不到时填完整路径，终端里 which wecom-cli 可以查到"
+      "help": "认人用：静静用企业微信官方命令行（npm i -g @wecom/cli，再 wecom-cli auth init 授权）查发消息的人叫什么、在哪个部门。找不到时填完整路径，终端里 which wecom-cli（Windows 上是 where wecom-cli）可以查到"
     },
     {
       "key": "cliConfigDir",

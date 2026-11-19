@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { readZipEntries, extractZip, isSafeEntry, moveDir } from './zip.js';
 import { VERSION, compareVersions, normalizeVersion, readVersion } from './version.js';
 import { UPDATES_DIR, CURRENT_FILE, installedUpdate, writeCurrentRecord } from './overlay.js';
 
@@ -48,23 +48,7 @@ function writeCache(payload) {
   }
 }
 
-export function isSafeEntry(entry) {
-  const normalized = String(entry || '').replace(/\\/g, '/').trim();
-  if (!normalized) return false;
-  if (normalized.startsWith('/')) return false;
-  if (/^[A-Za-z]:/.test(normalized)) return false;
-  return !normalized.split('/').includes('..');
-}
-
-export function listZip(zipPath) {
-  try {
-    const output = execFileSync('unzip', ['-Z1', zipPath], { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
-    return output.split('\n').map((line) => line.trim()).filter(Boolean);
-  } catch (err) {
-    if (err.code === 'ENOENT') throw updaterError('系统缺少 unzip 命令，无法安装更新', 500);
-    throw updaterError(`无法读取更新包：${err.message}`, 502);
-  }
-}
+export { isSafeEntry };
 
 export function findAppRoot(outDir) {
   if (fs.existsSync(path.join(outDir, 'server.js'))) return outDir;
@@ -219,15 +203,6 @@ async function downloadUpdate(info) {
   return buffer;
 }
 
-function directorySize(dir) {
-  let total = 0;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    total += entry.isDirectory() ? directorySize(full) : fs.statSync(full).size;
-  }
-  return total;
-}
-
 function pruneUpdates(record) {
   const keep = new Set([record.version, record.previous?.version].filter(Boolean).map((value) => path.resolve(path.join(UPDATES_DIR, value))));
   for (const entry of fs.readdirSync(UPDATES_DIR, { withFileTypes: true })) {
@@ -235,7 +210,7 @@ function pruneUpdates(record) {
     if (entry.name.startsWith('.')) continue;
     const full = path.resolve(path.join(UPDATES_DIR, entry.name));
     if (keep.has(full)) continue;
-    fs.rmSync(full, { recursive: true, force: true });
+    fs.rmSync(full, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 
@@ -250,25 +225,27 @@ export function installUpdate(buffer, { version, sha256: expected, source = '', 
 
   fs.mkdirSync(UPDATES_DIR, { recursive: true });
   const work = fs.mkdtempSync(path.join(UPDATES_DIR, `.install-${targetVersion}-`));
-  const zipPath = path.join(work, 'update.zip');
   const outDir = path.join(work, 'out');
-  fs.writeFileSync(zipPath, buffer);
 
   try {
-    const entries = listZip(zipPath);
+    let entries;
+    try {
+      entries = readZipEntries(buffer);
+    } catch (err) {
+      throw updaterError(`无法读取更新包：${err.message}`, 502);
+    }
     if (!entries.length) throw updaterError('更新包是空的');
     if (entries.length > MAX_FILES) throw updaterError(`更新包文件太多（最多 ${MAX_FILES} 个）`);
     for (const entry of entries) {
-      if (!isSafeEntry(entry)) throw updaterError(`更新包含非法路径：${entry}`);
+      if (!isSafeEntry(entry.name)) throw updaterError(`更新包含非法路径：${entry.name}`);
     }
+    if (entries.reduce((sum, entry) => sum + entry.size, 0) > MAX_UNPACKED_BYTES) throw updaterError('更新包解压后超过 300MB');
 
-    fs.mkdirSync(outDir, { recursive: true });
     try {
-      execFileSync('unzip', ['-q', '-o', zipPath, '-d', outDir], { stdio: 'pipe', maxBuffer: 20 * 1024 * 1024 });
+      extractZip(buffer, outDir, { entries, maxBytes: MAX_UNPACKED_BYTES });
     } catch (err) {
       throw updaterError(`解压更新包失败：${err.message}`, 502);
     }
-    if (directorySize(outDir) > MAX_UNPACKED_BYTES) throw updaterError('更新包解压后超过 300MB');
 
     const root = findAppRoot(outDir);
     const packagedVersion = normalizeVersion(readVersion(root));
@@ -278,8 +255,8 @@ export function installUpdate(buffer, { version, sha256: expected, source = '', 
     if (!fs.existsSync(path.join(root, 'server.js'))) throw updaterError('更新包缺少 server.js');
 
     const destination = path.join(UPDATES_DIR, targetVersion);
-    fs.rmSync(destination, { recursive: true, force: true });
-    fs.renameSync(root, destination);
+    fs.rmSync(destination, { recursive: true, force: true, maxRetries: 3 });
+    moveDir(root, destination);
 
     const previous = installedUpdate();
     const record = {
@@ -295,7 +272,7 @@ export function installUpdate(buffer, { version, sha256: expected, source = '', 
     pruneUpdates(record);
     return record;
   } finally {
-    fs.rmSync(work, { recursive: true, force: true });
+    fs.rmSync(work, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 

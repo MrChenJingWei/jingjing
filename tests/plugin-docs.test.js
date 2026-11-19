@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-docs-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -13,7 +14,7 @@ const plugins = await import('../src/plugins.js');
 const docs = await import('../src/plugin-docs.js');
 await plugins.reloadPlugins();
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 test('文档按「## Worker 插件」切成两份', () => {
   const source = docs.guide('source');

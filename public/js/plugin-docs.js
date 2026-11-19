@@ -130,7 +130,7 @@ async function makeTemplate(kind, root, button) {
       <div>${icon('check', 'sm')}已复制成「我的」插件 <code>${esc(made.id)}</code>，默认停用：</div>
       <div class="pdocs-path"><code>${esc(made.dir)}</code></div>
       <div class="pdocs-made-actions">
-        ${made.canReveal ? `<button type="button" class="btn xs" data-pdocs-reveal="${esc(made.id)}">在 Finder 中打开</button>` : ''}
+        ${made.canReveal ? `<button type="button" class="btn xs" data-pdocs-reveal="${esc(made.id)}">${esc(made.revealLabel || '在 Finder 中打开')}</button>` : ''}
         <button type="button" class="btn xs ghost" data-pdocs-copy="${esc(made.dir)}">复制路径</button>
       </div>
       <p class="note">改好 <code>plugin.json</code> 和 <code>index.js</code> 后，在「设置 → 任务来源」点「重新加载」${kind === 'worker' ? '（Worker 插件也一起加载），再去「设置 → Worker」' : '，在列表里'}填配置、点测试。</p>`;

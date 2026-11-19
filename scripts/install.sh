@@ -4,6 +4,8 @@
 #   命令行版（macOS / Linux）：
 #     curl -fsSL https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.sh | bash
 #
+#   Windows：用 PowerShell 版 install.ps1（见 README）。
+#
 #   macOS App（菜单栏 + 原生窗口，Apple Silicon）：
 #     curl -fsSL https://github.com/MrChenJingWei/jingjing/releases/latest/download/install.sh | bash -s -- --app
 #
@@ -139,6 +141,9 @@ MACHINE="$(uname -m)"
 
 case "$OS" in
   Darwin|Linux) ;;
+  MINGW*|MSYS*|CYGWIN*)
+    fail "Windows 请在 PowerShell 里用 install.ps1 安装：irm $RELEASE_BASE/latest/download/install.ps1 -OutFile \"\$env:TEMP\\jingjing-install.ps1\"; powershell -NoProfile -ExecutionPolicy Bypass -File \"\$env:TEMP\\jingjing-install.ps1\""
+    ;;
   *) fail "暂时只支持 macOS 和 Linux（当前：${OS}）。" ;;
 esac
 

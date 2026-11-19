@@ -46,3 +46,54 @@ jobs:
           bash -n scripts/uninstall-service.sh
           bash -n scripts/package-update.sh
           bash -n packaging/macos/build.sh
+
+  # Windows：同一套测试，加上 PowerShell 脚本的语法检查、服务启动冒烟测试，以及 install.ps1 → 启动 → 常驻服务的端到端。
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 运行测试
+        run: npm test
+
+      - name: 检查插件与内置 Worker 清单
+        run: npm run plugin:check
+
+      - name: 检查官方插件的构建产物是最新的
+        run: npm run plugins:check-built
+
+      - name: 检查 PowerShell 脚本语法（Windows PowerShell 5.1）
+        shell: powershell
+        run: |
+          $failed = $false
+          foreach ($file in @(Get-ChildItem scripts, .github/scripts -Filter *.ps1)) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            foreach ($e in $errors) { Write-Host "$($file.Name):$($e.Extent.StartLineNumber): $($e.Message)"; $failed = $true }
+          }
+          if ($failed) { exit 1 }
+
+      - name: 服务启动冒烟测试
+        shell: powershell
+        run: |
+          $env:JINGJING_DATA_DIR = Join-Path $env:RUNNER_TEMP 'jj-smoke'
+          $env:JINGJING_HOST = '127.0.0.1'
+          $env:JINGJING_PORT = '17777'
+          $p = Start-Process node -ArgumentList 'server.js' -PassThru -NoNewWindow -RedirectStandardOutput smoke.log -RedirectStandardError smoke.err.log
+          $ok = $false
+          for ($i = 0; $i -lt 40 -and -not $ok; $i++) {
+            Start-Sleep -Seconds 1
+            try { $ok = [bool](Invoke-RestMethod http://127.0.0.1:17777/api/health -TimeoutSec 2).ok } catch { }
+          }
+          Stop-Process -Id $p.Id -Force
+          Get-Content smoke.log, smoke.err.log
+          if (-not $ok) { exit 1 }
+
+      - name: install.ps1 与常驻服务端到端
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github/scripts/windows-e2e.ps1

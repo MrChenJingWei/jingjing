@@ -37,14 +37,16 @@ import { acquireInstanceLock } from './src/instance-lock.js';
 let shuttingDown = false;
 
 // 被桌面 App 拉起时：App 没了（崩溃 / 被强制结束）就跟着退出，不留孤儿进程占着端口。
-const parentPid = Number(process.env.JINGJING_PARENT_PID || 0);
-if (parentPid > 1) {
+// 跑在热更新守护进程下面时也一样：守护进程被强制结束（Windows 上结束进程不会连带子进程），新版本跟着退出。
+for (const [variable, who] of [['JINGJING_PARENT_PID', '桌面 App'], ['JINGJING_GUARD_PID', '守护进程']]) {
+  const watched = Number(process.env[variable] || 0);
+  if (watched <= 1 || watched === process.pid) continue;
   setInterval(() => {
     try {
-      process.kill(parentPid, 0);
+      process.kill(watched, 0);
     } catch (err) {
       if (err.code === 'ESRCH') {
-        console.log('[server] 桌面 App 已退出，服务随之停止');
+        console.log(`[server] ${who}已退出，服务随之停止`);
         shutdown();
       }
     }
@@ -159,6 +161,42 @@ function mergeSettingsPatch(patch, current) {
     next.channels.telegram.token = current.channels?.telegram?.token || '';
   }
   return next;
+}
+
+/**
+ * 主机上弹出系统的文件夹选择框用的命令：macOS 用 AppleScript，Windows 用 PowerShell 调 WinForms。
+ * 选中时在 stdout 输出路径；取消时以非 0 退出。其他系统返回 null（界面上会退回手动填路径）。
+ */
+function folderPicker() {
+  const prompt = '选择静静的工作区文件夹';
+  if (process.platform === 'darwin') {
+    return { cmd: '/usr/bin/osascript', args: ['-e', `POSIX path of (choose folder with prompt "${prompt}")`] };
+  }
+  if (process.platform === 'win32') {
+    const script = [
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+      'Add-Type -AssemblyName System.Windows.Forms',
+      // 没有可见的父窗口时对话框可能被别的窗口挡住：给它一个置顶的（不显示的）父窗口。
+      '$owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false }',
+      '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
+      `$dialog.Description = '${prompt}'`,
+      '$dialog.ShowNewFolderButton = $true',
+      'if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.SelectedPath); exit 0 }',
+      'exit 1'
+    ].join('\n');
+    return {
+      cmd: path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      args: ['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]
+    };
+  }
+  return null;
+}
+
+/** 在系统的文件管理器里打开目录：macOS 是 Finder，Windows 是资源管理器。 */
+function revealCommand(dir) {
+  if (process.platform === 'darwin') return { cmd: '/usr/bin/open', args: [dir] };
+  if (process.platform === 'win32') return { cmd: 'explorer.exe', args: [dir] };
+  return null;
 }
 
 async function serveStatic(req, res, pathname) {
@@ -284,10 +322,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/system/pick-folder') {
-      if (process.platform !== 'darwin') return fail(res, 400, '原生文件夹选择器只支持 macOS 主机');
+      const picker = folderPicker();
+      if (!picker) return fail(res, 400, '这台主机不支持弹出文件夹选择器（只有 macOS 和 Windows 可以）');
       try {
         const rawPath = await new Promise((resolve, reject) => {
-          execFile('/usr/bin/osascript', ['-e', 'POSIX path of (choose folder with prompt "选择静静的工作区文件夹")'], {
+          // 不加 windowsHide：它会让 Windows 把子进程的第一个窗口（也就是这个对话框）隐藏起来。
+          // 子进程和服务共用控制台，本来也不会多弹出黑窗口。
+          execFile(picker.cmd, picker.args, {
             timeout: 120000,
             maxBuffer: 1024 * 1024
           }, (err, stdout) => {
@@ -295,8 +336,9 @@ const server = http.createServer(async (req, res) => {
             else resolve(String(stdout || '').trim());
           });
         });
-        const chosen = rawPath.replace(/\/+$/, '') || '/';
-        if (!chosen) return fail(res, 400, '没有选择文件夹');
+        if (!rawPath) return fail(res, 400, '没有选择文件夹');
+        // 去掉结尾的分隔符（/Users/me/ → /Users/me，D:\工作\ → D:\工作），根目录保持原样。
+        const chosen = path.resolve(rawPath);
         let stat;
         try { stat = fs.statSync(chosen); } catch { return fail(res, 400, '选择的目录不存在'); }
         if (!stat.isDirectory()) return fail(res, 400, '选择的不是目录');
@@ -955,14 +997,23 @@ const server = http.createServer(async (req, res) => {
         await discovery.startLifecycles();
         const errors = plugins.pluginErrors();
         bus.emit('plugins/updated', { plugins: list, errors });
-        return json(res, 200, { ...made, plugins: list, workers: availability(), errors, canReveal: process.platform === 'darwin' });
+        return json(res, 200, {
+          ...made,
+          plugins: list,
+          workers: availability(),
+          errors,
+          canReveal: Boolean(revealCommand(made.dir)),
+          revealLabel: process.platform === 'win32' ? '在资源管理器中打开' : '在 Finder 中打开'
+        });
       }
     }
     if (req.method === 'POST' && pathname === '/api/plugin-docs/reveal') {
       const body = await readBody(req);
       const dir = pluginDocs.userPluginDir(body.id);
-      if (process.platform !== 'darwin') return fail(res, 400, '只有 macOS 上能直接打开文件夹');
-      execFile('/usr/bin/open', [dir], () => {});
+      const reveal = revealCommand(dir);
+      if (!reveal) return fail(res, 400, '只有 macOS 和 Windows 上能直接打开文件夹');
+      // explorer.exe 打开成功也会返回 1，结果不看。
+      execFile(reveal.cmd, reveal.args, () => {});
       return json(res, 200, { ok: true, dir });
     }
 
@@ -1213,6 +1264,7 @@ async function shutdown(signal = 'exit') {
   process.exit(0);
 }
 
-for (const sig of ['SIGINT', 'SIGTERM']) {
+// Windows 没有 SIGTERM：Ctrl+C 是 SIGINT，Ctrl+Break 是 SIGBREAK，关掉控制台窗口是 SIGHUP（之后约 10 秒会被系统结束）。
+for (const sig of process.platform === 'win32' ? ['SIGINT', 'SIGBREAK', 'SIGHUP'] : ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => shutdown(sig));
 }

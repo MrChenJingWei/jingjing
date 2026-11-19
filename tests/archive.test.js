@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-archive-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -12,7 +13,7 @@ process.env.JINGJING_DATA_DIR = dataDir;
 const { db, saveSettings } = await import('../src/db.js');
 const archive = await import('../src/archive.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 const daysAgo = (n) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
 

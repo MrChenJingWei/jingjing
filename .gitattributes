@@ -1,0 +1,13 @@
+# 所有文本文件在任何系统上检出都用 LF：Windows 的 Git 默认会转成 CRLF，
+# 那样 .sh 跑不了、官方插件的源码指纹（plugins:check-built）也会对不上。
+* text=auto eol=lf
+
+# 批处理文件必须是 CRLF，否则 cmd.exe 解析标签和 goto 会出错。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+*.png binary
+*.ico binary
+*.icns binary
+*.pkg binary
+*.zip binary

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-track-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -18,7 +19,7 @@ const discovery = await import('../src/discovery.js');
 const sourceLinks = await import('../src/source-links.js');
 const archive = await import('../src/archive.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 // 一个状态模型很「不标准」的假来源：等待客户 / 已打回 / 上线中，映射全在插件里。
 const dir = path.join(plugins.USER_PLUGIN_DIR, 'fake-tracker');

@@ -179,7 +179,7 @@ export function parseWorkflow(raw, { file = '', mtimeMs = 0 } = {}) {
 function expandHome(dir) {
   const value = String(dir || '').trim();
   if (value === '~') return os.homedir();
-  if (value.startsWith('~/')) return path.join(os.homedir(), value.slice(2));
+  if (value.startsWith('~/') || value.startsWith('~\\')) return path.join(os.homedir(), value.slice(2));
   return value;
 }
 

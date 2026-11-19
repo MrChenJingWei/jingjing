@@ -6,12 +6,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const tapd = await import('../plugins/tapd/index.js');
 const { categorize, parseOverrides, stripPrefix } = await import('../plugins/tapd/status.js');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-tapd-'));
-test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+test.after(() => removeTemp(dir));
 
 const fixture = path.join(dir, 'fixture.json');
 const calls = path.join(dir, 'calls.log');

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-followup-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -14,7 +15,7 @@ const scheduler = await import('../src/scheduler.js');
 const { APPROVAL_GUIDE } = await import('../src/worker-runtime.js');
 const { execute: claudeExecute } = await import('../workers/claude/index.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 /** 手动放行的假 Worker：每次执行记下 task 和 ctx，等测试 release。 */
 function gatedWorker(id) {

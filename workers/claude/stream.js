@@ -29,7 +29,7 @@ const short = (value, n = 60) => {
   return text.length > n ? `${text.slice(0, n - 1)}…` : text;
 };
 
-const baseName = (file) => String(file || '').split('/').filter(Boolean).pop() || file;
+const baseName = (file) => String(file || '').split(/[\\/]/).filter(Boolean).pop() || file;
 
 /** 把一次工具调用写成一句人能看懂的进度。 */
 export function describeTool(name, input = {}) {

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-telegram-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -11,7 +12,7 @@ process.env.JINGJING_DATA_DIR = dataDir;
 const { saveSettings, getSettings } = await import('../src/db.js');
 const channels = await import('../src/channels.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 test('fromOwner：和配置的 Chat ID 一致才算；没配 Chat ID 时谁都不认', () => {
   const settings = (chatId) => ({ channels: { telegram: { chatId } } });

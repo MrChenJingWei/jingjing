@@ -1,6 +1,6 @@
 {
   "source": "plugin-src/wecom",
-  "sourceHash": "a3001578cceef85e5c87befa608b08508e280a1a330c8b9062b380cd5c5b4367",
+  "sourceHash": "444d4359d4683348731fd8b67f454af04f5e165d5f46d6581dd38647fb39927e",
   "builtWith": "esbuild@0.24.2",
   "note": "这个目录是构建产物，不要直接改；改 plugin-src/ 后重新运行 npm run plugins:build"
 }

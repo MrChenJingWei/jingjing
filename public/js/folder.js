@@ -1,8 +1,8 @@
 // 文件夹选择器：凡是要填路径的地方都不用手打。
-// - <input data-folder>：显示成「文件夹图标 + 路径 + 选择…」，点开用主机的 Finder 选；
+// - <input data-folder>：显示成「文件夹图标 + 路径 + 选择…」，点开用主机的 Finder / 资源管理器选；
 // - <textarea data-folder-list>：一行一个文件夹，显示成列表 + 「添加文件夹」，每行可以移除。
 // 原来的输入框留在原处（隐藏），值照旧读写、照旧派发 input / change，别的代码不用改。
-// 主机不是 macOS、或者在手机上用不了原生选择器时，可以点「手动填」退回输入框。
+// 主机不是 macOS / Windows、或者在手机上用不了原生选择器时，可以点「手动填」退回输入框。
 import { esc, toast, pickFolder } from './core.js';
 import { icon } from './ui.js';
 
@@ -10,7 +10,7 @@ const fields = new WeakMap();
 
 // 路径太长时保留结尾（最有用的是最后几级文件夹），开头用「…」代替。
 function shortPath(path, max = 46) {
-  const text = String(path || '').replace(/^\/Users\/[^/]+/, '~');
+  const text = String(path || '').replace(/^\/Users\/[^/]+/, '~').replace(/^[A-Za-z]:\\Users\\[^\\]+/, '~');
   return text.length > max ? `…${text.slice(-(max - 1))}` : text;
 }
 
@@ -27,7 +27,7 @@ async function choose(button) {
     return data?.path || null;
   } catch (err) {
     if (/取消/.test(err.message)) return null;
-    toast(/macOS/.test(err.message) ? '这台主机不能弹出文件夹选择器，点「手动填」直接输入路径。' : err.message, 3600);
+    toast(/不支持弹出|macOS/.test(err.message) ? '这台主机不能弹出文件夹选择器，点「手动填」直接输入路径。' : err.message, 3600);
     return null;
   } finally {
     button.disabled = false;

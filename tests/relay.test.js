@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-relay-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -17,7 +18,7 @@ const scheduler = await import('../src/scheduler.js');
 const discovery = await import('../src/discovery.js');
 const relay = await import('../src/relay.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
 async function waitFor(fn, label, ms = 5000) {

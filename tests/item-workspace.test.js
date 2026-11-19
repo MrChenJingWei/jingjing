@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-item-ws-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -18,9 +19,7 @@ const scheduler = await import('../src/scheduler.js');
 
 const wsA = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-ws-a-'));
 const wsB = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-ws-b-'));
-test.after(() => {
-  for (const dir of [dataDir, wsA, wsB]) fs.rmSync(dir, { recursive: true, force: true });
-});
+test.after(() => removeTemp(dataDir, wsA, wsB));
 
 const dir = path.join(plugins.USER_PLUGIN_DIR, 'ws-src');
 fs.mkdirSync(dir, { recursive: true });

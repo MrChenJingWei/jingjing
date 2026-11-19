@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-lifecycle-'));
 process.env.JINGJING_DATA_DIR = dataDir;
@@ -15,7 +17,7 @@ const workers = await import('../src/workers.js');
 const scheduler = await import('../src/scheduler.js');
 const workflows = await import('../src/workflows.js');
 
-test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+test.after(() => removeTemp(dataDir));
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 async function waitFor(fn, label, ms = 4000) {
@@ -303,7 +305,7 @@ function writePlugin(id, source) {
 async function registerThreaded(id, source) {
   const dir = writePlugin(id, source);
   const manifest = validateManifest({ id, kind: 'worker', name: id, entry: 'index.js', worker: { recovery: 'restart' } }, { dir, dirName: id });
-  const module = await import(path.join(dir, 'index.js'));
+  const module = await import(pathToFileURL(path.join(dir, 'index.js')).href);
   workers.registerWorkerPlugin({ manifest, module, dir });
 }
 

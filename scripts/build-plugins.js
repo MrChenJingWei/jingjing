@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validateManifest } from '../src/plugin-spec.js';
+import { findCommand, resolveSpawn } from '../src/worker-runtime.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = path.join(ROOT, 'plugin-src');
@@ -34,7 +35,8 @@ function sourceFiles(dir, base = dir) {
     if (['node_modules', '.DS_Store'].includes(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) out.push(...sourceFiles(full, base));
-    else out.push(path.relative(base, full));
+    // 统一用 / 分隔：Windows 上算出来的指纹要和 macOS / Linux 上的一样。
+    else out.push(path.relative(base, full).split(path.sep).join('/'));
   }
   return out.sort();
 }
@@ -50,7 +52,9 @@ function sourceHash(dir) {
 }
 
 function run(cmd, cmdArgs, cwd) {
-  execFileSync(cmd, cmdArgs, { cwd, stdio: 'inherit' });
+  // Windows 上 npm / npx 是 .cmd，resolveSpawn 会改成经过 cmd.exe 跑（参数按 cmd 的规则转义）。
+  const target = resolveSpawn(findCommand(cmd) || cmd, cmdArgs);
+  execFileSync(target.cmd, target.args, { cwd, stdio: 'inherit', ...target.options });
 }
 
 const names = fs.existsSync(SRC)

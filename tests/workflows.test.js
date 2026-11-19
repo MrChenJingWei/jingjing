@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTemp } from './temp.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-workflows-'));
 const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-user-flows-'));
@@ -19,10 +20,7 @@ const router = await import('../src/router.js');
 fs.mkdirSync(SANDBOX_DIR, { recursive: true });
 await workers.loadBuiltinWorkers();
 
-test.after(() => {
-  fs.rmSync(dataDir, { recursive: true, force: true });
-  fs.rmSync(userDir, { recursive: true, force: true });
-});
+test.after(() => removeTemp(dataDir, userDir));
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 async function waitFor(fn, label, ms = 4000) {

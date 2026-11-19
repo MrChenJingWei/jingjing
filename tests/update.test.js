@@ -5,40 +5,28 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { makeZip } from './zip-fixture.js';
+import { removeTemp } from './temp.js';
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'jingjing-update-'));
 process.env.JINGJING_DATA_DIR = DATA_DIR;
 process.env.JINGJING_UPDATE_REPO = 'acme/jingjing';
 
-function hasZip() {
-  try {
-    execFileSync('unzip', ['-v'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function makeAppZip(version) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jingjing-app-'));
-  const app = path.join(root, 'app');
-  fs.mkdirSync(path.join(app, 'src'), { recursive: true });
-  fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'jingjing', version, type: 'module' }));
-  fs.writeFileSync(path.join(app, 'server.js'), 'console.log("stub");\n');
-  fs.writeFileSync(path.join(app, 'src', 'config.js'), 'export const stub = true;\n');
-  const zipPath = path.join(root, 'app.zip');
-  execFileSync('zip', ['-qr', zipPath, 'app'], { cwd: root });
-  return fs.readFileSync(zipPath);
+  return makeZip([
+    { name: 'app/' },
+    { name: 'app/package.json', data: JSON.stringify({ name: 'jingjing', version, type: 'module' }) },
+    { name: 'app/server.js', data: 'console.log("stub");\n' },
+    { name: 'app/src/' },
+    { name: 'app/src/config.js', data: 'export const stub = true;\n' }
+  ]);
 }
 
 const { VERSION, compareVersions, normalizeVersion } = await import('../src/version.js');
 const overlay = await import('../src/overlay.js');
 const update = await import('../src/update.js');
 
-const zipAvailable = hasZip();
-
-test.after(() => fs.rmSync(DATA_DIR, { recursive: true, force: true }));
+test.after(() => removeTemp(DATA_DIR));
 
 test('版本号唯一来源是 package.json', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -109,7 +97,7 @@ test('配置公钥后，签名缺失或错误都会被拒绝', () => {
   assert.equal(update.verifyManifestSignature(manifest, undefined).required, false);
 });
 
-test('安装、切换、回退的完整流程', { skip: zipAvailable ? false : '缺少 unzip/zip' }, () => {
+test('安装、切换、回退的完整流程', () => {
   const buffer = makeAppZip('9.9.9');
   const record = update.installUpdate(buffer, { version: '9.9.9', sha256: update.sha256(buffer) });
 
@@ -127,7 +115,7 @@ test('安装、切换、回退的完整流程', { skip: zipAvailable ? false : '
   assert.equal(fs.existsSync(overlay.CURRENT_FILE), false);
 });
 
-test('校验失败和版本不一致都会拒绝安装', { skip: zipAvailable ? false : '缺少 unzip/zip' }, () => {
+test('校验失败和版本不一致都会拒绝安装', () => {
   const buffer = makeAppZip('1.2.3');
   assert.throws(
     () => update.installUpdate(buffer, { version: '1.2.3', sha256: 'c'.repeat(64) }),
@@ -136,7 +124,7 @@ test('校验失败和版本不一致都会拒绝安装', { skip: zipAvailable ? 
   assert.throws(() => update.installUpdate(buffer, { version: '9.8.7' }), /版本号不一致/);
 });
 
-test('从模拟 GitHub 源检查更新', { skip: zipAvailable ? false : '缺少 unzip/zip' }, async () => {
+test('从模拟 GitHub 源检查更新', async () => {
   const zip = makeAppZip('9.9.9');
   const sha = update.sha256(zip);
   let base = '';
