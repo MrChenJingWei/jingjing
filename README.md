@@ -51,20 +51,13 @@
 
 桌面是「左侧栏 + 内容区」：侧栏放导航和正在发生的事（等你拍板、进行中），任务页左边列表、右边详情，设置页左边分类、右边内容。窗口拉窄或在手机上打开，自动换成底部标签栏的单列布局。
 
-| 对话 | 任务（列表 + 详情） |
-| --- | --- |
-| ![对话](docs/screenshots/chat.png) | ![任务](docs/screenshots/tasks.png) |
-| ![在对话里拍板](docs/screenshots/approval.png) | ![从对话里看任务详情](docs/screenshots/drawer.png) |
-| ![记忆](docs/screenshots/memory.png) | ![任务来源](docs/screenshots/plugins.png) |
-| ![运行状态](docs/screenshots/admin.png) | ![手机](docs/screenshots/install.png) |
+<sub>快捷键：⌘1–4 切换对话 / 任务 / 记忆 / 设置，`/` 聚焦输入框或搜索框，设置页 ⌘S 保存，Esc 关闭详情。</sub>
 
-<sub>深色模式见 [docs/screenshots/chat-dark.png](docs/screenshots/chat-dark.png)。快捷键：⌘1–4 切换对话 / 任务 / 记忆 / 设置，`/` 聚焦输入框或搜索框，设置页 ⌘S 保存，Esc 关闭详情。</sub>
-
-系统架构图：[docs/diagrams/architecture.png](docs/diagrams/architecture.png)（可编辑源：[architecture.html](docs/diagrams/architecture.html)）
+系统架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：先讲分层和四条主线，每个核心模块（Router、发现核心、调度器、Worker、插件、通道、记忆、归类与知识……）在 [docs/architecture/](docs/architecture/) 下各有一篇展开说明。
 
 发版与升级流程见 [docs/RELEASING.md](docs/RELEASING.md)（`npm run release -- 0.7.1 --notes "..."`）。
 
-路由与派活顺序（点名 / 流程 / 规则 / 模型 / 能力 / 兜底）见 [docs/ROUTING.md](docs/ROUTING.md)。
+路由与派活顺序（点名 / 流程 / 规则 / 模型 / 能力 / 兜底）见 [docs/architecture/router.md](docs/architecture/router.md#选-worker)。
 
 ---
 
@@ -355,8 +348,6 @@ npm start
 - **助手人设**（设置 → 模型与人设）：一段注入 Router 和 Worker 系统提示词的文字，保存后立即生效；
 - **记忆维护**（记忆页）：按层筛选，编辑内容、层级和重要度。
 
-![运行状态](docs/screenshots/admin.png)
-
 ## 工作区：每个来源绑定一个落点
 
 任务来源决定「发现什么」，工作区决定「在哪个目录里干活」。设置 → 工作区里可以维护多个目录，点「选择」会打开 macOS 原生文件夹选择器；每个来源插件卡片上都有「任务工作区」下拉框，可以单独绑定，也可以直接选「自定义文件夹」。任务详情里同样可以改工作目录并应用。
@@ -437,8 +428,6 @@ workspace: 默认工作区      # 可选：工作区名称或 id
 
 只有表单类分类（模型与人设、调度器、通知通道）用顶部的「保存」（也可以按 ⌘S），改了没保存就切走会先问；Worker、来源、自动化这类开关和操作都是即时生效的。来源可以直接在列表里开关，缺必填配置时会直接带你进去填。
 
-![设置入口](docs/screenshots/settings.png)
-
 ## 接入真实模型
 
 打开「设置 → 模型与人设」：
@@ -495,7 +484,7 @@ workspace: 默认工作区      # 可选：工作区名称或 id
 - 动作一：**创建一个任务**——写一段给 Worker 的指令，可选工作流程 / Worker / 工作区。比如「每天 08:00 用 tapd-cli 汇总我名下未完成的需求和 bug」；
 - 动作二：**扫描一个来源**——选一个来源插件，可选「新条目按某个工作流程处理」和「强制 Worker」。执行时立刻扫一遍，新条目不再让模型判断，直接按流程建卡；`source_items` 按 `externalId` 去重，同一条不会重复建卡。
 
-典型用法是 TAPD 夜间修复：TAPD 来源插件 + 工作流程「TAPD bug 修复」（worker: dsh，workspace: 渔童）+ 每天 02:30 的扫描动作，早上在对话里看报告。细节和护栏见 [docs/AUTOMATION.md](docs/AUTOMATION.md)。
+典型用法是 TAPD 夜间修复：TAPD 来源插件 + 工作流程「TAPD bug 修复」（worker: dsh，workspace: 渔童）+ 每天 02:30 的扫描动作，早上在对话里看报告。细节和护栏见 [docs/architecture/router.md](docs/architecture/router.md#自动化)。
 
 ---
 

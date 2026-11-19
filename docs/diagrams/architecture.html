@@ -3,189 +3,240 @@
 <head>
 <meta charset="utf-8" />
 <title>静静 · 系统架构</title>
+<!--
+  渲染成 PNG（3200×2680，2 倍图）：
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --hide-scrollbars \
+    --force-device-scale-factor=2 --window-size=1600,1340 \
+    --screenshot=docs/diagrams/architecture.png docs/diagrams/architecture.html
+  内容以 docs/ARCHITECTURE.md 为准，改了架构记得两边一起改。
+-->
 <style>
   :root {
-    --paper: #f4f1ea;
-    --surface: #fffdf9;
-    --surface-2: #f8f4ec;
-    --ink: #1e1d19;
-    --ink-2: #4b4840;
-    --muted: #827c70;
-    --faint: #a9a294;
-    --line: #e4ded2;
-    --accent: #2f5f50;
-    --accent-soft: #e2ede6;
-    --accent-line: #c4dbcd;
-    --warm: #a9702c;
-    --warm-soft: #f6ead8;
-    --sans: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    --serif: "Songti SC", "Noto Serif CJK SC", "STSong", Georgia, serif;
+    --bg: #f4f3f8;
+    --surface: #ffffff;
+    --surface-2: #f8f7fb;
+    --surface-3: #eeecf4;
+    --ink: #16132b;
+    --ink-2: #3a3555;
+    --muted: #6b6785;
+    --faint: #9c99b3;
+    --line: #e7e5ee;
+    --line-strong: #d6d3e2;
+    --night: #0a0820;
+    --primary: #1e1a36;
+    --accent: #6a5acd;
+    --accent-soft: #efedfa;
+    --accent-line: #d9d4f3;
+    --cyan: #2f9dbb;
+    --cyan-soft: #e6f4f8;
+    --cyan-line: #bfe2ec;
+    --warm: #c97a1e;
+    --warm-soft: #fbf1e3;
+    --warm-line: #efd3ab;
+    --danger: #d0456f;
+    --danger-soft: #fbe8ee;
+    --ok: #2e9a7b;
+    --ok-soft: #e4f4ee;
+    --shadow: 0 8px 24px -10px rgba(22, 19, 43, .16), 0 1px 3px rgba(22, 19, 43, .05);
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
-    width: 1600px; height: 1300px; overflow: hidden;
+    width: 1600px; height: 1340px; overflow: hidden;
     background:
-      radial-gradient(900px 500px at 8% -6%, rgba(47,95,80,.10), transparent 62%),
-      radial-gradient(800px 460px at 102% 4%, rgba(169,112,44,.08), transparent 58%),
-      var(--paper);
+      radial-gradient(760px 420px at 6% -4%, rgba(138, 43, 255, .07), transparent 64%),
+      radial-gradient(700px 420px at 100% 2%, rgba(0, 229, 255, .06), transparent 60%),
+      radial-gradient(700px 480px at 90% 104%, rgba(255, 42, 109, .05), transparent 62%),
+      var(--bg);
     color: var(--ink); font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
   }
-  .page { padding: 44px 48px 0; }
+  .page { padding: 40px 48px 0; }
 
-  header { display: flex; align-items: flex-start; justify-content: space-between; height: 78px; }
+  header { display: flex; align-items: center; justify-content: space-between; height: 72px; }
   .brand { display: flex; align-items: center; gap: 16px; }
-  .mark {
-    width: 54px; height: 54px; border-radius: 17px; display: grid; place-items: center;
-    background: linear-gradient(150deg, #3f7563, #1c3a30);
-    color: #f6fbf8; font-family: var(--serif); font-size: 26px;
-    box-shadow: 0 10px 24px rgba(35,60,48,.22), inset 0 1px 0 rgba(255,255,255,.2);
-  }
-  h1 { margin: 0; font-family: var(--serif); font-size: 34px; font-weight: 600; letter-spacing: .04em; }
-  .sub { margin-top: 3px; font-size: 14px; color: var(--muted); letter-spacing: .03em; }
-  .meta { text-align: right; font-size: 12.5px; color: var(--faint); line-height: 1.9; }
-  .meta b { color: var(--ink-2); font-weight: 500; }
+  .brand img { width: 60px; height: 60px; display: block; }
+  h1 { margin: 0; font-size: 31px; font-weight: 650; letter-spacing: .02em; }
+  .sub { margin-top: 4px; font-size: 14px; color: var(--muted); letter-spacing: .02em; }
+  .meta { text-align: right; font-size: 12.5px; color: var(--faint); line-height: 1.85; }
+  .meta b { color: var(--ink-2); font-weight: 550; }
 
   .layout { display: grid; grid-template-columns: 1100px 356px; gap: 28px; margin-top: 22px; }
   .main { display: flex; flex-direction: column; }
-  .rail { display: flex; flex-direction: column; gap: 16px; }
+  .rail { display: flex; flex-direction: column; gap: 14px; }
 
   .section-label {
     display: flex; align-items: center; gap: 8px;
-    font-size: 12px; letter-spacing: .16em; color: var(--faint);
-    margin-bottom: 8px;
+    font-size: 11.5px; letter-spacing: .16em; color: var(--faint); margin-bottom: 8px;
   }
   .section-label::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
   .card {
     background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
-    box-shadow: 0 2px 6px rgba(40,32,20,.04), 0 10px 24px rgba(40,32,20,.04);
-    padding: 16px 18px;
+    box-shadow: var(--shadow); padding: 14px 16px;
   }
-  .card h3 { margin: 0; font-size: 20px; font-weight: 600; font-family: var(--serif); letter-spacing: .01em; }
-  .card .file { font-size: 11.5px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; margin-top: 2px; }
-  .card p { margin: 6px 0 0; font-size: 13.5px; color: var(--muted); line-height: 1.6; }
+  .card h3 { margin: 0; font-size: 18px; font-weight: 620; letter-spacing: .01em; }
+  .file { font-size: 11px; color: var(--faint); font-family: var(--mono); margin-top: 2px; }
+  .card p { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
   .tag {
-    display: inline-flex; align-items: center; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    display: inline-flex; align-items: center; font-size: 11px; padding: 2px 9px; border-radius: 999px;
     background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
   }
   .tag.accent { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
-  .tag.warm { background: var(--warm-soft); border-color: rgba(169,112,44,.25); color: var(--warm); }
+  .tag.cyan { background: var(--cyan-soft); border-color: var(--cyan-line); color: var(--cyan); }
+  .tag.warm { background: var(--warm-soft); border-color: var(--warm-line); color: var(--warm); }
 
   /* 入口 */
-  .entry-row { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 12px; }
-  .entry { display: flex; gap: 12px; align-items: flex-start; height: 112px; }
-  .entry .glyph, .worker .glyph {
-    width: 38px; height: 38px; border-radius: 12px; flex: none; display: grid; place-items: center;
+  .entry-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1.9fr; gap: 12px; height: 128px; }
+  .entry { display: flex; flex-direction: column; }
+  .entry .top { display: flex; align-items: center; gap: 10px; }
+  .glyph {
+    width: 32px; height: 32px; border-radius: 10px; flex: none; display: grid; place-items: center;
     background: var(--surface-2); border: 1px solid var(--line);
-    font-family: var(--serif); font-size: 17px; color: var(--ink-2);
+    font-size: 14px; font-weight: 600; color: var(--ink-2);
   }
-  .entry h3 { font-size: 17px; }
-  .entry p { font-size: 12.5px; }
+  .entry h3 { font-size: 15.5px; }
+  .entry p { font-size: 11.5px; }
 
-  /* 插件 */
   .plugins {
-    height: 140px; border: 1.5px dashed var(--accent-line); background: linear-gradient(180deg, rgba(226,237,230,.55), rgba(255,253,249,.9));
-    border-radius: 16px; padding: 12px 14px; position: relative;
+    border: 1.5px dashed var(--accent-line); border-radius: 16px; padding: 11px 12px;
+    background: linear-gradient(180deg, rgba(239, 237, 250, .7), rgba(255, 255, 255, .85));
+    display: flex; flex-direction: column;
   }
-  .plugins-head { display: flex; align-items: center; justify-content: space-between; }
-  .plugins-head b { font-size: 13px; letter-spacing: .06em; color: var(--accent); font-weight: 600; }
-  .plugins-head span { font-size: 11px; color: var(--muted); }
-  .plug-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 9px; }
-  .plug { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; height: 82px; }
-  .plug b { font-size: 14px; font-weight: 500; }
-  .plug small { display: block; font-size: 11px; color: var(--faint); margin-top: 2px; line-height: 1.45; }
-  .plug .mini { margin-top: 5px; display: flex; gap: 5px; }
-  .plug .mini i { font-style: normal; font-size: 10px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; }
+  .plugins-head { display: flex; align-items: baseline; justify-content: space-between; }
+  .plugins-head b { font-size: 13px; letter-spacing: .04em; color: var(--accent); font-weight: 620; }
+  .plugins-head span { font-size: 10.5px; color: var(--muted); }
+  .plug-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; flex: 1; }
+  .plug { background: var(--surface); border: 1px solid var(--line); border-radius: 11px; padding: 8px 10px; }
+  .plug b { font-size: 13px; font-weight: 600; }
+  .plug b em { font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--accent); font-weight: 500; margin-left: 4px; }
+  .plug small { display: block; font-size: 10.5px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
 
-  /* 中间判断 */
-  .judge-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; height: 190px; }
+  /* 箭头 */
+  .flow { height: 30px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--faint); font-size: 11px; }
+  .flow .line { width: 1px; height: 14px; background: linear-gradient(var(--line-strong), var(--faint)); }
+  .flow b { font-weight: 500; color: var(--muted); letter-spacing: .03em; font-family: var(--mono); font-size: 11px; }
+  .flow b.plain { font-family: var(--sans); }
+
+  /* 判断 */
+  .judge-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; height: 196px; }
   .judge { display: flex; flex-direction: column; }
-  .judge-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .list { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
-  .list li { font-size: 12.5px; color: var(--ink-2); display: flex; gap: 6px; line-height: 1.5; }
-  .list li::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--accent-line); margin-top: 7px; flex: none; }
-  .judge .bottom { margin-top: auto; font-size: 11px; color: var(--faint); border-top: 1px dashed var(--line); padding-top: 6px; }
+  .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .list { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+  .list li { font-size: 12px; color: var(--ink-2); display: flex; gap: 7px; line-height: 1.55; }
+  .list li::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); opacity: .55; margin-top: 7.5px; flex: none; }
+  .judge .bottom { margin-top: auto; font-size: 10.5px; color: var(--faint); border-top: 1px dashed var(--line); padding-top: 6px; }
 
-  /* 流程箭头 */
-  .flow { height: 34px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--faint); font-size: 11px; }
-  .flow .line { width: 1px; height: 16px; background: linear-gradient(var(--line), var(--faint)); }
-  .flow b { font-weight: 500; color: var(--muted); letter-spacing: .04em; }
+  .pick {
+    margin-top: 12px; display: flex; align-items: center; gap: 8px; height: 40px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 0 14px;
+    font-size: 11.5px; color: var(--muted); box-shadow: var(--shadow);
+  }
+  .pick > b { color: var(--ink-2); font-weight: 600; white-space: nowrap; }
+  .pick .seq { display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; }
+  .pick .seq i { font-style: normal; font-size: 11px; padding: 2px 8px; border-radius: 7px; background: var(--surface-2); border: 1px solid var(--line); color: var(--ink-2); white-space: nowrap; }
+  .pick .seq span { color: var(--faint); font-size: 10px; }
+  .pick .ext { margin-left: auto; white-space: nowrap; color: var(--warm); font-size: 11px; }
 
   /* 调度器 */
   .scheduler {
-    height: 220px; border-color: rgba(47,95,80,.35);
-    background: linear-gradient(180deg, var(--accent-soft), var(--surface) 72%);
-    position: relative;
+    height: 214px;
+    border-color: var(--accent-line);
+    background: linear-gradient(180deg, var(--accent-soft), var(--surface) 70%);
   }
-  .scheduler .head { display: flex; align-items: center; justify-content: space-between; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .chip {
-    font-size: 11.5px; color: var(--ink-2); background: var(--surface);
-    border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px;
+    font-size: 11px; color: var(--ink-2); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px;
   }
+  .chip code { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
   .callout {
-    margin-top: 10px; border-radius: 10px; background: rgba(255,253,249,.86);
-    border: 1px solid rgba(169,112,44,.25); padding: 8px 12px;
-    font-size: 12.5px; color: var(--ink-2);
+    margin-top: 10px; border-radius: 10px; background: rgba(255, 255, 255, .9);
+    border: 1px solid var(--warm-line); padding: 7px 12px; font-size: 12px; color: var(--ink-2);
   }
-  .callout b { color: var(--warm); font-weight: 600; }
-  .states { display: flex; align-items: center; gap: 7px; margin-top: 11px; flex-wrap: wrap; }
+  .callout b { color: var(--warm); font-weight: 620; }
+  .states { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
   .state {
-    font-size: 10.5px; padding: 3px 9px; border-radius: 999px;
+    font-size: 10.5px; padding: 3px 9px; border-radius: 999px; font-family: var(--mono);
     background: var(--surface); border: 1px solid var(--line); color: var(--muted);
   }
-  .state.waiting { background: var(--warm-soft); border-color: rgba(169,112,44,.3); color: var(--warm); }
-  .state.done { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
-  .state.dead { background: #f6e3df; border-color: rgba(165,69,58,.25); color: #a5453a; margin-left: auto; }
+  .state.run { background: var(--cyan-soft); border-color: var(--cyan-line); color: var(--cyan); }
+  .state.waiting { background: var(--warm-soft); border-color: var(--warm-line); color: var(--warm); }
+  .state.done { background: var(--ok-soft); border-color: rgba(46, 154, 123, .25); color: var(--ok); }
+  .state.dead { background: var(--danger-soft); border-color: rgba(208, 69, 111, .22); color: var(--danger); }
   .states .arrow { color: var(--faint); font-size: 10px; }
+  .states .back { margin-left: auto; font-size: 10.5px; color: var(--faint); }
 
   /* Worker */
-  .worker-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; height: 140px; }
-  .worker { display: flex; flex-direction: column; padding: 12px 12px; }
-  .worker .top { display: flex; align-items: center; gap: 8px; }
-  .worker .glyph { width: 30px; height: 30px; border-radius: 9px; font-size: 14px; }
-  .worker b { font-size: 13.5px; font-weight: 500; }
-  .worker small { font-size: 10.5px; color: var(--faint); margin-top: 1px; display: block; }
-  .worker p { font-size: 11px; line-height: 1.45; margin-top: 7px; }
-  .worker .foot { margin-top: auto; font-size: 9.5px; color: var(--faint); border-top: 1px dashed var(--line); padding-top: 5px; }
+  .worker-row { display: grid; grid-template-columns: repeat(6, 1fr) 1.25fr; gap: 9px; height: 118px; }
+  .worker { display: flex; flex-direction: column; padding: 10px 11px; border-radius: 14px; }
+  .worker .top { display: flex; align-items: center; gap: 7px; }
+  .worker .glyph { width: 26px; height: 26px; border-radius: 8px; font-size: 12px; }
+  .worker b { font-size: 13px; font-weight: 600; font-family: var(--mono); }
+  .worker small { font-size: 10px; color: var(--faint); display: block; }
+  .worker p { font-size: 10.5px; line-height: 1.45; margin-top: 6px; }
+  .worker.third { border-style: dashed; background: rgba(255, 255, 255, .6); }
+  .worker.third b { font-family: var(--sans); }
+
+  /* 扇出 */
+  .fanout {
+    height: 120px; padding: 12px 14px;
+    border-color: var(--cyan-line);
+    background: linear-gradient(180deg, var(--cyan-soft), var(--surface) 75%);
+  }
+  .fan-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 9px; }
+  .fan { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px; }
+  .fan b { font-size: 12px; font-weight: 600; display: block; }
+  .fan code { font-family: var(--mono); font-size: 9.5px; color: var(--faint); display: block; margin-top: 1px; }
+  .fan small { font-size: 10.5px; color: var(--muted); display: block; margin-top: 3px; line-height: 1.4; }
 
   /* 存储 */
   .storage {
-    height: 120px; background: #1f3b31; border: 0; color: #eef5ef;
-    box-shadow: 0 12px 30px rgba(24,45,37,.22);
+    height: 136px; border: 0; color: #eceaf6;
+    background:
+      radial-gradient(320px 160px at 12% 0%, rgba(138, 43, 255, .28), transparent 70%),
+      radial-gradient(300px 160px at 96% 100%, rgba(0, 229, 255, .16), transparent 70%),
+      var(--night);
+    box-shadow: 0 14px 34px -12px rgba(10, 8, 32, .5);
   }
-  .storage .head { display: flex; align-items: baseline; justify-content: space-between; }
-  .storage h3 { color: #f2f7f2; font-size: 19px; }
-  .storage .file { color: rgba(238,245,239,.55); }
-  .storage .chips { margin-top: 10px; gap: 6px; }
-  .storage .chip { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.14); color: #dbe9df; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; }
-  .storage .note { font-size: 10.5px; color: rgba(238,245,239,.55); }
+  .storage .head { align-items: baseline; }
+  .storage h3 { color: #f4f3fb; }
+  .storage .file { color: rgba(236, 234, 246, .5); }
+  .storage .groups { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 10px; }
+  .storage .group {
+    background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .12);
+    border-radius: 10px; padding: 6px 9px;
+    backdrop-filter: blur(8px);
+  }
+  .storage .group b { font-size: 11px; font-weight: 600; color: #fff; display: block; letter-spacing: .02em; }
+  .storage .group code { font-family: var(--mono); font-size: 9.5px; color: rgba(220, 216, 240, .72); line-height: 1.5; display: block; margin-top: 2px; }
 
   /* 右侧 */
-  .rail .card { padding: 14px 15px; }
-  .rail h3 { font-size: 17px; }
-  .layers { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-  .layer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); }
-  .layer b { font-size: 11.5px; font-weight: 500; color: var(--ink-2); }
-  .layer span { font-size: 10.5px; color: var(--faint); }
-  .ext { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
-  .ext div { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-2); }
-  .ext i { width: 6px; height: 6px; border-radius: 50%; background: var(--warm); flex: none; }
-  .ext small { color: var(--faint); font-size: 10px; margin-left: auto; }
-  .runtime { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; font-size: 11.5px; color: var(--ink-2); }
-  .runtime div { display: flex; justify-content: space-between; gap: 8px; padding-bottom: 5px; border-bottom: 1px dashed var(--line); }
-  .runtime div:last-child { border-bottom: 0; }
-  .runtime span { color: var(--faint); }
-  .legend { font-size: 11px; color: var(--muted); line-height: 1.7; margin-top: 8px; }
-  .legend b { color: var(--ink-2); font-weight: 500; }
-  .steps { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin-top: 8px; font-size: 10.5px; color: var(--muted); }
+  .rail .card { padding: 13px 15px; }
+  .rail h3 { font-size: 15.5px; }
+  .rows { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; }
+  .row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 9px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line);
+  }
+  .row b { font-size: 11.5px; font-weight: 550; color: var(--ink-2); }
+  .row span { font-size: 10.5px; color: var(--faint); text-align: right; }
+  .kv { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; font-size: 11.5px; color: var(--ink-2); }
+  .kv div { display: flex; justify-content: space-between; gap: 8px; padding-bottom: 5px; border-bottom: 1px dashed var(--line); }
+  .kv div:last-child { border-bottom: 0; padding-bottom: 0; }
+  .kv span { color: var(--faint); white-space: nowrap; }
+  .kv b { font-weight: 500; text-align: right; }
+  .note { font-size: 10.5px; color: var(--muted); line-height: 1.6; margin-top: 8px; }
+  .note b { color: var(--ink-2); font-weight: 600; }
+  .steps { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin-top: 9px; font-size: 11px; color: var(--muted); }
   .steps span { display: flex; gap: 5px; }
-  .steps em { font-style: normal; color: var(--accent); font-weight: 600; }
+  .steps em { font-style: normal; color: var(--accent); font-weight: 650; }
 
   .footer {
-    margin-top: 8px; display: flex; justify-content: space-between; align-items: center;
-    font-size: 10.5px; color: var(--faint); letter-spacing: .04em;
+    margin-top: 14px; display: flex; justify-content: space-between; align-items: center;
+    font-size: 10.5px; color: var(--faint); letter-spacing: .03em;
   }
 </style>
 </head>
@@ -193,15 +244,15 @@
 <div class="page">
   <header>
     <div class="brand">
-      <div class="mark">静</div>
+      <img src="../brand/logo.svg" alt="" />
       <div>
         <h1>静静 · 系统架构</h1>
-        <div class="sub">本地优先的个人 AI 工作站 · 发现 → 判断 → 调度 → 执行 → 记忆</div>
+        <div class="sub">本地优先的个人 AI 工作站 · 发现 → 判断 → 调度 → 执行 → 结束扇出 → 记忆与知识</div>
       </div>
     </div>
     <div class="meta">
-      <div><b>v0.2</b> · MVP</div>
-      <div>单机 SQLite · 无外部依赖</div>
+      <div><b>v0.8</b> · 对应 docs/ARCHITECTURE.md</div>
+      <div>单进程 Node · 单文件 SQLite · 零 npm 依赖</div>
       <div>2026-11</div>
     </div>
   </header>
@@ -211,200 +262,189 @@
       <div class="section-label">入口与来源</div>
       <div class="entry-row">
         <div class="card entry">
-          <div class="glyph">↗</div>
-          <div>
-            <h3>手机 / PWA</h3>
-            <p>对话 · 任务板 · 审批<br>SSE 实时更新，可加到主屏幕</p>
-          </div>
+          <div class="top"><div class="glyph">W</div><h3>Web / PWA</h3></div>
+          <p>对话 · 任务 · 记忆 · 设置<br>bootstrap 快照 + SSE 推送</p>
         </div>
         <div class="card entry">
-          <div class="glyph">T</div>
-          <div>
-            <h3>Telegram Bot</h3>
-            <p>随手发指令<br>点按钮拍板（可选）</p>
-          </div>
+          <div class="top"><div class="glyph">T</div><h3>Telegram</h3></div>
+          <p>只认配置的 Chat ID<br>发指令 · 按钮拍板</p>
         </div>
         <div class="card entry">
-          <div class="glyph">收</div>
-          <div>
-            <h3>每日简报</h3>
-            <p>本地文件与每日简报<br>内置规则，不走插件</p>
+          <div class="top"><div class="glyph">⏱</div><h3>自动化</h3></div>
+          <p>daily / interval<br>建任务 · 扫描来源</p>
+        </div>
+        <div class="plugins">
+          <div class="plugins-head">
+            <b>来源插件 · plugins/</b>
+            <span>只做 I/O，交回 items[]</span>
+          </div>
+          <div class="plug-row">
+            <div class="plug"><b>轮询<em>poll</em></b><small>邮箱 · 日历 · TAPD<br>每分钟 · 90 秒上限</small></div>
+            <div class="plug"><b>Webhook<em>webhook</em></b><small>/api/hooks/:token<br>先回应，后台判断</small></div>
+            <div class="plug"><b>长连接<em>start</em></b><small>企微机器人<br>ctx.ingest · 断线退避</small></div>
           </div>
         </div>
       </div>
 
-      <div class="flow" style="height:26px"><div class="line"></div><b>发现</b><div class="line"></div></div>
-
-      <div class="plugins">
-        <div class="plugins-head">
-          <b>来源插件 · plugins/</b>
-          <span>只负责 I/O，可单独开关 / 测试 / 扫描 · 开发看 plugins/README.md</span>
-        </div>
-        <div class="plug-row">
-          <div class="plug">
-            <b>邮箱（IMAP）</b>
-            <small>新未读邮件 → 条目<br>只读，默认不改邮箱状态</small>
-            <div class="mini"><i>测试连接</i><i>立即扫描</i></div>
-          </div>
-          <div class="plug">
-            <b>日历（ICS）</b>
-            <small>接下来 N 小时 → 日程<br>生成「准备日程」任务</small>
-            <div class="mini"><i>只读订阅</i><i>每天一次</i></div>
-          </div>
-          <div class="plug" style="border-style:dashed;background:rgba(255,253,249,.6)">
-            <b>更多来源</b>
-            <small>RSS · GitHub · 内部系统<br>按 poll() 协议扩展</small>
-            <div class="mini"><i>externalId 去重</i></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="flow"><div class="line"></div><b>poll 返回条目 / 对话与规则进入</b><div class="line"></div></div>
+      <div class="flow"><div class="line"></div><b>handleMessage()</b><span>·</span><b>ingestItems()</b><div class="line"></div></div>
 
       <div class="judge-row">
         <div class="card judge">
-          <div class="judge-head">
-            <div>
-              <h3>Router</h3>
-              <div class="file">src/router.js</div>
-            </div>
+          <div class="head">
+            <div><h3>Router</h3><div class="file">src/router.js</div></div>
             <span class="tag accent">只判断，不执行</span>
           </div>
           <ul class="list">
-            <li>意图识别：聊天 / 记忆 / 任务 / 查进度</li>
-            <li>选 Worker、工作目录、优先级</li>
-            <li>注入记忆与任务板上下文</li>
-            <li>每日简报的定时生成</li>
+            <li>先查工作流程，命中就跳过模型</li>
+            <li>工具调用一次完成「判断 + 回答」，不支持时两步判断</li>
+            <li>意图：任务 / 闲聊 / 记住 / 回想 / 进度 / 写插件</li>
+            <li>模型选的 Worker 要有原文依据（evidence）</li>
+            <li>自动化到点执行；听 task/finished 学习习惯</li>
           </ul>
-          <div class="bottom">不启动任何 Agent 进程</div>
+          <div class="bottom">不碰审批表，不启动 Worker</div>
         </div>
-
         <div class="card judge">
-          <div class="judge-head">
-            <div>
-              <h3>发现核心</h3>
-              <div class="file">src/discovery.js</div>
-            </div>
-            <span class="tag warm">去重 + 判断 + 建任务</span>
+          <div class="head">
+            <div><h3>发现核心</h3><div class="file">src/discovery.js</div></div>
+            <span class="tag warm">去重 · 判断 · 建任务</span>
           </div>
           <ul class="list">
-            <li>按 externalId 去重（source_items）</li>
-            <li>批量判断：要不要动手 / 优先级</li>
-            <li>模型不可用时退回关键词规则</li>
-            <li>建任务并在对话里汇总</li>
+            <li>先占位再判断：source_items 按 (source, externalId) 去重</li>
+            <li>批量问模型要不要动手，不可用时退回关键词</li>
+            <li>prompt 带上相关记忆 + 分类知识</li>
+            <li>同 groupKey 合并；外部点名别的 Worker → 先问主人</li>
+            <li>见过的条目顺手更新外部状态；每 30 秒 syncDue</li>
           </ul>
-          <div class="bottom">插件失败只影响自己，不拖垮主循环</div>
+          <div class="bottom">插件出错只影响自己，不拖垮主循环</div>
         </div>
+      </div>
+
+      <div class="pick">
+        <b>选 Worker</b>
+        <div class="seq">
+          <i>点名</i><span>›</span><i>工作流程</i><span>›</span><i>分配规则</i><span>›</span><i>模型</i><span>›</span><i>能力</i><span>›</span><i>兜底</i>
+        </div>
+        <span class="ext">外部来源只认流程和规则</span>
       </div>
 
       <div class="flow"><div class="line"></div><b>scheduler.createTask()</b><div class="line"></div></div>
 
       <div class="card scheduler">
         <div class="head">
-          <div>
-            <h3>调度器</h3>
-            <div class="file">src/scheduler.js</div>
-          </div>
+          <div><h3>调度器</h3><div class="file">src/scheduler.js · src/lifecycle.js</div></div>
           <span class="tag accent">工头</span>
         </div>
         <div class="chips">
-          <span class="chip">任务队列 · 并发</span>
-          <span class="chip">挂起零消耗 · approvals</span>
-          <span class="chip">事件溯源 · task_events</span>
-          <span class="chip">重试与熔断 · attempts / hops</span>
-          <span class="chip">进程重启恢复</span>
-          <span class="chip">用量统计</span>
+          <span class="chip">并发 2–4 · 每个 Worker 单独限额</span>
+          <span class="chip">原子占位 <code>WHERE status='queued'</code></span>
+          <span class="chip">task_runs · 心跳 · 断点</span>
+          <span class="chip">一次性回传令牌 <code>/api/runs/:id/report</code></span>
+          <span class="chip">超时 · 重试 · hops 上限</span>
+          <span class="chip">重启 recover()：续跑 / 重跑 / 问你</span>
+          <span class="chip">接着做 · 另起一张</span>
         </div>
         <div class="callout">
-          <b>需要你拍板时：</b>状态写库 → Worker 进程退出（不占 CPU、不烧 token）→ 你点一下 → 从挂起点恢复，接着原来的上下文继续
+          <b>需要你拍板时：</b>审批落库 → Worker 调用栈结束（不占 CPU、不烧 token）→ 你选一下 → 带着选择和会话 id 重新入队
         </div>
         <div class="states">
-          <span class="state">queued 排队</span><span class="arrow">→</span>
-          <span class="state">running 执行</span><span class="arrow">→</span>
-          <span class="state waiting">waiting_approval 等你拍板</span><span class="arrow">→</span>
-          <span class="state done">done 完成</span>
+          <span class="state">queued</span><span class="arrow">→</span>
+          <span class="state run">running</span><span class="arrow">→</span>
+          <span class="state waiting">waiting_approval</span><span class="arrow">→</span>
+          <span class="state done">done</span>
           <span class="state dead">failed / cancelled</span>
+          <span class="back">终态只有一个出口 finalize()</span>
         </div>
       </div>
 
-      <div class="flow"><div class="line"></div><b>启动 Worker / 回传结果与进度</b><div class="line"></div></div>
+      <div class="flow"><div class="line"></div><b>runWorker(task, ctx)</b><span>·</span><b class="plain">进度 / 断点 / needs_approval 回传</b><div class="line"></div></div>
 
       <div class="worker-row">
-        <div class="card worker">
-          <div class="top"><div class="glyph">答</div><div><b>llm</b><small>问答</small></div></div>
-          <p>写作、分析、汇总<br>调用 DeepSeek / Ollama</p>
-          <div class="foot">无状态 · 跑完退出</div>
+        <div class="card worker"><div class="top"><div class="glyph">答</div><div><b>llm</b><small>问答</small></div></div><p>写作、分析、汇总</p></div>
+        <div class="card worker"><div class="top"><div class="glyph">文</div><div><b>file</b><small>生成文件</small></div></div><p>写进工作区，越界失败</p></div>
+        <div class="card worker"><div class="top"><div class="glyph">壳</div><div><b>shell</b><small>文件操作</small></div></div><p>整理、移动、重命名</p></div>
+        <div class="card worker"><div class="top"><div class="glyph">码</div><div><b>claude</b><small>Claude Code</small></div></div><p>claude -p · 会话续跑</p></div>
+        <div class="card worker"><div class="top"><div class="glyph">码</div><div><b>codex</b><small>Codex</small></div></div><p>codex exec</p></div>
+        <div class="card worker"><div class="top"><div class="glyph">码</div><div><b>dsh</b><small>DeepSeek Harness</small></div></div><p>断点续跑 · 进度回传</p></div>
+        <div class="card worker third"><div class="top"><div class="glyph">+</div><div><b>第三方 Worker</b><small>&lt;data&gt;/plugins/</small></div></div><p>独立线程执行，取消 / 超时直接 terminate</p></div>
+      </div>
+
+      <div class="flow"><div class="line"></div><b>bus: task/finished</b><span>·</span><b class="plain">下游互不知道对方</b><div class="line"></div></div>
+
+      <div class="card fanout">
+        <div class="head">
+          <div><h3 style="font-size:16px">结束扇出</h3></div>
+          <span class="tag cyan">只听一个事件</span>
         </div>
-        <div class="card worker">
-          <div class="top"><div class="glyph">件</div><div><b>shell</b><small>文件操作</small></div></div>
-          <p>整理、归档、重命名<br>只允许沙箱目录</p>
-          <div class="foot">越界直接失败</div>
-        </div>
-        <div class="card worker">
-          <div class="top"><div class="glyph">码</div><div><b>claude</b><small>Claude Code</small></div></div>
-          <p>调本机 CLI<br>支持 session 续跑</p>
-          <div class="foot">未做 Worker 实测</div>
-        </div>
-        <div class="card worker">
-          <div class="top"><div class="glyph">码</div><div><b>codex</b><small>Codex</small></div></div>
-          <p>调本机 codex exec<br>适合编码任务</p>
-          <div class="foot">未实测</div>
+        <div class="fan-row">
+          <div class="fan"><b>发回原会话</b><code>relay.js</code><small>自动交付或推结束状态</small></div>
+          <div class="fan"><b>习惯学习</b><code>router.js</code><small>流程效果 · 提议成习惯</small></div>
+          <div class="fan"><b>分类知识</b><code>knowledge.js</code><small>关系 · 结论 · 用过标记</small></div>
+          <div class="fan"><b>归类</b><code>task-classification</code><small>更新父卡最近活动</small></div>
+          <div class="fan"><b>心情</b><code>mind.js</code><small>任务成败推动心情</small></div>
+          <div class="fan"><b>插件工坊</b><code>plugin-forge.js</code><small>检查草稿 · 下一轮</small></div>
         </div>
       </div>
 
-      <div class="flow"><div class="line"></div><b>状态 / 事件 / 记忆落库</b><div class="line"></div></div>
+      <div class="flow"><div class="line"></div><b class="plain">状态 · 事件 · 记忆 · 知识落库</b><div class="line"></div></div>
 
       <div class="card storage">
         <div class="head">
           <h3>本地存储 · SQLite</h3>
-          <div class="file">data/jingjing.db</div>
+          <div class="file">&lt;data&gt;/jingjing.db · WAL · 备份就是复制这个文件</div>
         </div>
-        <div class="chips">
-          <span class="chip">tasks</span>
-          <span class="chip">approvals</span>
-          <span class="chip">task_events</span>
-          <span class="chip">memories + FTS5</span>
-          <span class="chip">source_plugins</span>
-          <span class="chip">source_items</span>
-          <span class="chip">messages</span>
-          <span class="chip">settings / rules</span>
+        <div class="groups">
+          <div class="group"><b>任务</b><code>tasks · task_runs<br>task_events · approvals</code></div>
+          <div class="group"><b>对话与心智</b><code>sessions · messages<br>memories+FTS · people</code></div>
+          <div class="group"><b>来源</b><code>source_plugins · source_items<br>task_sources</code></div>
+          <div class="group"><b>归类与知识</b><code>external_nodes · task_categories<br>task_assignments · task_knowledge</code></div>
+          <div class="group"><b>配置</b><code>settings · rules<br>worker_rules · worker_configs</code></div>
         </div>
-        <div class="note" style="margin-top:8px">单文件 · WAL · 无账号、无云端同步；备份就是复制这个文件</div>
       </div>
     </div>
 
     <div class="rail">
       <div class="card">
-        <h3>长线记忆</h3>
-        <div class="file">src/memory.js</div>
-        <div class="layers">
-          <div class="layer"><b>画像 · profile</b><span>偏好 / 作息</span></div>
-          <div class="layer"><b>语义 · semantic</b><span>事实 / 项目</span></div>
-          <div class="layer"><b>情景 · episodic</b><span>决定 / 结果</span></div>
+        <h3>记忆与心智</h3>
+        <div class="file">memory · mind · affect · people · persona</div>
+        <div class="rows">
+          <div class="row"><b>业务 work</b><span>Router · Worker · 主人对话</span></div>
+          <div class="row"><b>人格 persona</b><span>她自己 · 外面的人</span></div>
+          <div class="row"><b>每分钟 mind.tick()</b><span>整理对话 · 到点反思</span></div>
         </div>
-        <p style="font-size:11px;margin-top:9px">Router 与 Worker 共同读写<br>中文检索：FTS5 trigram + LIKE 回退</p>
+        <div class="note">遗忘曲线 R = e<sup>−t/S</sup>，想起一次就更稳；外人只碰人格记忆，任务只碰业务记忆。</div>
       </div>
 
       <div class="card">
-        <h3>外部依赖</h3>
-        <p style="margin-bottom:2px">只有你配置后才启用</p>
-        <div class="ext">
-          <div><i></i>DeepSeek API <small>llm</small></div>
-          <div><i></i>邮箱 IMAP 服务器 <small>email</small></div>
-          <div><i></i>日历 ICS 地址 <small>calendar</small></div>
-          <div><i></i>Claude Code CLI <small>claude</small></div>
-          <div><i></i>Telegram Bot API <small>可选</small></div>
+        <h3>外部对象层</h3>
+        <div class="file">source-links · task-classification · knowledge</div>
+        <div class="rows">
+          <div class="row"><b>绑定 task_sources</b><span>这张卡对应谁、对方状态</span></div>
+          <div class="row"><b>归类</b><span>插件交树，核心切层成父卡</span></div>
+          <div class="row"><b>知识</b><span>属于分类域，只进 prompt</span></div>
+        </div>
+        <div class="note"><b>能力归核心，映射归插件。</b>父卡是视图，不执行、不进队列。</div>
+      </div>
+
+      <div class="card">
+        <h3>后台循环</h3>
+        <div class="kv">
+          <div><span>15 秒</span><b>执行心跳</b></div>
+          <div><span>30 秒</span><b>外部状态同步 syncDue</b></div>
+          <div><span>每分钟</span><b>来源轮询 · 自动化 · 心智</b></div>
+          <div><span>6 小时</span><b>检查归档（每天最多一次）</b></div>
+          <div><span>每天</span><b>归类重算 · 回收空分类</b></div>
         </div>
       </div>
 
       <div class="card">
         <h3>运行形态</h3>
-        <div class="runtime">
-          <div><span>主机外壳</span><b>macOS 菜单栏 App</b></div>
-          <div><span>主机界面</span><b>浏览器 Web</b></div>
-          <div><span>手机</span><b>PWA · Tailscale</b></div>
-          <div><span>鉴权</span><b style="color:#2f5f50">配对码 + Cookie/Bearer</b></div>
-          <div><span>监听</span><b>127.0.0.1 / 0.0.0.0</b></div>
+        <div class="kv">
+          <div><span>主机</span><b>macOS 菜单栏 App / 命令行</b></div>
+          <div><span>手机</span><b>PWA · 局域网 / Tailscale</b></div>
+          <div><span>鉴权</span><b>配对码 → Cookie / Bearer</b></div>
+          <div><span>监听</span><b>默认 127.0.0.1</b></div>
+          <div><span>升级</span><b>&lt;data&gt;/updates 热更新接管</b></div>
+          <div><span>单实例</span><b>instance-lock 文件锁</b></div>
         </div>
       </div>
 
@@ -412,23 +452,22 @@
         <h3>一条任务的路径</h3>
         <div class="steps">
           <span><em>①</em>入口 / 插件</span>
-          <span><em>②</em>判断与派发</span>
-          <span><em>③</em>排队 / 并发</span>
+          <span><em>②</em>判断与选 Worker</span>
+          <span><em>③</em>排队 / 并发占位</span>
           <span><em>④</em>Worker 执行</span>
           <span><em>⑤</em>拍板 / 恢复</span>
-          <span><em>⑥</em>结果落库</span>
+          <span><em>⑥</em>finalize 扇出</span>
         </div>
-        <div class="legend">
-          <b>边界：</b>Router 不碰审批表，调度器不碰对话；<br>
-          插件不建任务，只交条目。
+        <div class="note">
+          <b>边界：</b>Router 不碰审批表，调度器不碰对话；插件不建任务，只交条目；外部内容不能决定交给谁。
         </div>
       </div>
     </div>
   </div>
 
   <div class="footer">
-    <span>静静 · 个人 AI 工作站 · 架构随实现更新</span>
-    <span>实线：进程内调用　·　虚线：网络 / 外部依赖</span>
+    <span>静静 · 事办完，你静静 · 架构随实现更新</span>
+    <span>细节与每一步拆解见 docs/ARCHITECTURE.md</span>
   </div>
 </div>
 </body>
