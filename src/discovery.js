@@ -771,8 +771,9 @@ export async function testPlugin(id, overrideConfig = {}) {
 /**
  * 设置页「筛选条件」用：按表单里当前的配置（可以还没保存）问插件，这个实例有哪些字段可以筛、各有什么候选值。
  * 插件返回 { fields: [{ key, label, input?: 'enum' | 'user' | 'text', options?: [{ value, label }] }] }，这里白名单收口。
+ * item：筛选条件在分组里时（比如 TAPD 的某个项目），那一项当前的值，插件按它给字段（ctx.item）。
  */
-export async function pluginFilterFields(id, overrideConfig = {}) {
+export async function pluginFilterFields(id, overrideConfig = {}, item = null) {
   const plugin = plugins.getPlugin(id);
   if (!plugin) throw Object.assign(new Error('插件不存在'), { statusCode: 404 });
   if (typeof plugin.module.filterFields !== 'function') throw Object.assign(new Error('这个来源没有提供可筛选的字段'), { statusCode: 400 });
@@ -785,7 +786,8 @@ export async function pluginFilterFields(id, overrideConfig = {}) {
     log: (msg) => console.log(`[plugin:${id}:fields] ${msg}`),
     instanceId: id,
     pluginId: plugin.pluginId,
-    state: stateFor(id)
+    state: stateFor(id),
+    item: item && typeof item === 'object' && !Array.isArray(item) ? item : null
   }), limits.testMs, `读取字段 ${seconds(limits.testMs)}还没有结果`);
   const cut = (value, n) => String(value ?? '').trim().slice(0, n);
   const fields = (Array.isArray(result?.fields) ? result.fields : [])

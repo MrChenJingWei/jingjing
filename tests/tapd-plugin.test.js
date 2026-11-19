@@ -32,9 +32,10 @@ else if (entity === 'comment' && verb === 'list') {
   out(rows.map((c) => ({ Comment: c })));
 }
 else if (verb === 'fields') out((db.fields || {})[entity] || { status: { options: db.labels[entity] } });
-else if (verb === 'count') out({ count: db[entity].filter((r) => !kv.status || kv.status.split('|').includes(r.status)).length });
+else if (verb === 'count') out({ count: db[entity].filter((r) => (!r.ws || r.ws === kv.workspaceid) && (!kv.status || kv.status.split('|').includes(r.status))).length });
 else if (verb === 'list') {
-  let rows = db[entity];
+  // 夹具里带 ws 的行只属于那个项目；不带的哪个项目都算（老测试）。
+  let rows = db[entity].filter((r) => !r.ws || r.ws === kv.workspaceid);
   if (kv.id) rows = rows.filter((r) => kv.id.split(',').includes(r.id));
   // 筛选条件：值用 | 表示「或」（和 TAPD 一样）；处理人类字段按包含匹配（TAPD 存的是「张三;李四;」）。
   for (const [key, value] of Object.entries(kv)) {
@@ -86,7 +87,7 @@ test('test()：报告命令路径、处理人和数量；令牌从配置传给�
   setRemote(bugs(3));
   const result = await tapd.test(base, memory());
   assert.equal(result.ok, true);
-  assert.match(result.detail, /项目 123，处理人「小明」：缺陷 3 条/);
+  assert.match(result.detail, /处理人「小明」。项目 123（分给我的）：缺陷 3 条/);
   assert.ok(fs.readFileSync(calls, 'utf8').trim().split('\n').every((line) => JSON.parse(line).token === 'tok'));
 });
 
@@ -272,12 +273,110 @@ test('评论提醒：一次超过 10 条时排队，几轮交完；关掉之后�
 
 /* ------------------------------ 单项目 + 筛选条件 ------------------------------ */
 
-test('一条配置只对应一个项目：填了多个给出拆开的提示', async () => {
-  setRemote(bugs(1));
-  const result = await tapd.test({ ...base, workspaceIds: '123, 456' }, memory());
-  assert.equal(result.ok, false);
-  assert.match(result.detail, /一条配置只对应一个项目/);
-  await assert.rejects(tapd.poll({ ...base, workspaceIds: '123,456' }, memory()), /其他项目.*各加一条/);
+/* ------------------------------ 一个来源配多个项目 ------------------------------ */
+
+test('老配置迁移：一串项目 ID + 共用设置 → 每个项目一套设置；已经是新结构的不动', () => {
+  const migrated = tapd.migrateConfig({ workspaceIds: '123, 456', entities: 'both', statusMap: '已验证 = done', token: 't' });
+  assert.equal(migrated.token, 't');
+  assert.deepEqual(migrated.projects, [
+    { workspaceId: '123', name: '', entities: 'both', scope: 'mine', filters: [], statusMap: '已验证 = done' },
+    { workspaceId: '456', name: '', entities: 'both', scope: 'mine', filters: [], statusMap: '已验证 = done' }
+  ]);
+  const single = tapd.migrateConfig({ workspaceIds: '123', scope: 'any', filters: [{ field: 'bug.status', values: ['new'] }] });
+  assert.equal(single.projects[0].scope, 'any', '只有一个项目时，老的范围和条件跟过去');
+  assert.deepEqual(single.projects[0].filters, [{ field: 'bug.status', values: ['new'] }]);
+  const current = { projects: [{ workspaceId: '9' }], workspaceIds: '1,2' };
+  assert.equal(tapd.migrateConfig(current), current);
+});
+
+test('多个项目各用各的设置：类型、范围、条件、状态分类互不影响；同一项目配两次、项目 ID 不对给出提示', async () => {
+  setRemote(
+    [
+      { id: '1001', ws: '123', title: 'A 的缺陷', status: 'new', current_owner: '小明;', modified: '2026-11-17 10:00:00' },
+      { id: '2001', ws: '456', title: 'B 的缺陷（不跟踪）', status: 'new', current_owner: '小明;', modified: '2026-11-17 10:00:00' }
+    ],
+    [
+      { id: '1101', ws: '123', name: 'A 的需求（不跟踪）', status: 'developing', owner: '小明;', modified: '2026-11-17 10:00:00' },
+      { id: '2101', ws: '456', name: 'B 我开发的', status: 'developing', developer: '小明;', owner: '小红;', modified: '2026-11-17 10:00:00' },
+      { id: '2102', ws: '456', name: 'B 别人开发的', status: 'developing', developer: '小红;', owner: '小红;', modified: '2026-11-17 10:00:00' }
+    ]
+  );
+  const config = {
+    bin, token: 'tok', startFresh: false, comments: false,
+    projects: [
+      { workspaceId: '123', name: '项目A', entities: 'bug', scope: 'mine', filters: [], statusMap: '' },
+      { workspaceId: '456', name: '项目B', entities: 'story', scope: 'any', filters: [{ field: 'story.developer', values: ['我'] }], statusMap: 'C2-实现中 = review' }
+    ]
+  };
+  const { items } = await tapd.poll(config, memory());
+  const byId = Object.fromEntries(items.map((item) => [item.externalId, item]));
+  assert.deepEqual(Object.keys(byId).sort(), ['1001', '2101']);
+  assert.equal(byId['2101'].status.category, 'review', '项目 B 用自己的状态分类');
+  assert.match(byId['2101'].content, /项目：项目B/);
+  assert.deepEqual(byId['1001'].meta, { workspaceId: '123', entity: 'bug' });
+
+  const tested = await tapd.test(config, memory());
+  assert.match(tested.detail, /项目A（分给我的）：缺陷 1 条.*项目B（按筛选条件）：需求/);
+
+  const dup = await tapd.test({ ...config, projects: [config.projects[0], { ...config.projects[1], workspaceId: '123' }] }, memory());
+  assert.match(dup.detail, /项目 123 配了两次/);
+  assert.match((await tapd.test({ ...config, projects: [{ workspaceId: 'abc' }] }, memory())).detail, /第 1 个项目的项目 ID 只能是数字/);
+  assert.match((await tapd.test({ ...config, projects: [] }, memory())).detail, /先在插件设置里加一个项目/);
+});
+
+test('多个项目：一个项目出错不影响别的；基线按项目各记各的，新加的项目只记自己', async () => {
+  setRemote([
+    { id: '1001', ws: '123', title: 'A1', status: 'new', current_owner: '小明;', modified: '2026-11-17 10:00:00' },
+    { id: '2001', ws: '456', title: 'B1', status: 'new', current_owner: '小明;', modified: '2026-11-17 10:00:00' }
+  ]);
+  const ctx = memory();
+  const projectA = { workspaceId: '123', entities: 'bug', scope: 'mine', filters: [] };
+  const projectB = { workspaceId: '456', entities: 'bug', scope: 'mine', filters: [] };
+  const config = { bin, token: 'tok', startFresh: true, comments: false, projects: [projectA] };
+  assert.deepEqual((await tapd.poll(config, ctx)).items, [], '项目 A 第一次只记基线');
+
+  // 加上项目 B：B 只记自己的基线；A 这时新来的照常交。
+  const remote = JSON.parse(fs.readFileSync(fixture, 'utf8'));
+  remote.bug.push({ id: '1002', ws: '123', title: 'A2 新来的', status: 'new', current_owner: '小明;', modified: '2026-11-17 11:00:00' });
+  fs.writeFileSync(fixture, JSON.stringify(remote));
+  const both = { ...config, projects: [projectA, projectB] };
+  assert.deepEqual((await tapd.poll(both, ctx)).items.map((i) => i.externalId), ['1002']);
+
+  // 项目 B 的条件不合法（不限又没条件）：A 照常拉，B 记一笔失败。
+  const broken = { ...both, projects: [projectA, { ...projectB, scope: 'any' }] };
+  const logs = [];
+  await tapd.poll(broken, { ...ctx, log: (m) => logs.push(m) });
+  assert.ok(logs.some((m) => /拉取失败.*至少要加一个筛选条件/.test(m)));
+  // 全部项目都失败才算这次拉取失败。
+  await assert.rejects(tapd.poll({ ...broken, projects: [{ ...projectB, scope: 'any' }] }, memory()), /至少要加一个筛选条件/);
+});
+
+test('升级：老版本的整体基线（多个项目记在一起）按项目沿用，不重记、不漏单', async () => {
+  setRemote([
+    { id: '1001', ws: '123', title: 'A 老的', status: 'new', current_owner: '小明;', modified: '2026-11-17 10:00:00' },
+    { id: '1002', ws: '123', title: 'A 升级前后新来的', status: 'new', current_owner: '小明;', modified: '2026-11-17 11:00:00' }
+  ]);
+  const ctx = memory();
+  ctx.state.set('baseline', { scope: '123,456|bug|小明', at: '2026-11-17T00:00:00Z', ids: ['1001'] });
+  const { items } = await tapd.poll({ bin, token: 'tok', comments: false, workspaceIds: '123,456', entities: 'bug' }, ctx);
+  assert.deepEqual(items.map((i) => i.externalId), ['1002'], '沿用老基线：老单子不交，新来的照交');
+  assert.ok(ctx.state.get('baseline:123'), '之后按项目记');
+});
+
+test('filterFields：按所在项目（ctx.item）读字段，没有时取第一个项目', async () => {
+  setRemote([], []);
+  const remote = JSON.parse(fs.readFileSync(fixture, 'utf8'));
+  remote.fields = { story: { status: { label: '状态', html_type: 'select', options: { developing: '实现中' } } }, bug: { status: { label: '状态', html_type: 'select', options: { new: '未解决' } } } };
+  fs.writeFileSync(fixture, JSON.stringify(remote));
+  fs.writeFileSync(calls, '');
+  const config = { bin, token: 'tok', projects: [{ workspaceId: '123', entities: 'bug' }, { workspaceId: '456', entities: 'story' }] };
+  const second = await tapd.filterFields(config, { ...memory(), item: { workspaceId: '456', entities: 'story' } });
+  assert.deepEqual(second.fields.map((f) => f.key), ['story.status']);
+  const first = await tapd.filterFields(config, memory());
+  assert.deepEqual(first.fields.map((f) => f.key), ['bug.status']);
+  const lists = fs.readFileSync(calls, 'utf8').trim().split('\n').map((l) => JSON.parse(l).args);
+  assert.deepEqual(lists.map((a) => a.find((x) => x.startsWith('workspaceid='))), ['workspaceid=456', 'workspaceid=123']);
+  await assert.rejects(tapd.filterFields(config, { ...memory(), item: { workspaceId: '' } }), /还没填项目 ID/);
 });
 
 test('查询条件：默认只看分给我的；筛选条件按类型取、多个值用 |、「我」换成昵称、非法字段名忽略', () => {

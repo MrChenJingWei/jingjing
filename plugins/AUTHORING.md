@@ -37,7 +37,22 @@
 
 `type`：`poll`（定时调用 `poll`）、`webhook`（外部 POST 进来，调用 `webhook`）、`stream`（长连接，调用 `start`）、`manual`（只在用户点「立即扫描」时调用 `poll`）。
 
-`config[].type` 可选：`text` / `url` / `password` / `number` / `checkbox` / `textarea` / `select` / `folder` / `filters`（`select` 要带 `options: [{ value, label }]`；`folder` 是本机文件夹路径，界面上是文件夹选择器；`filters` 是一组筛选条件，见下面「按实例的筛选字段」）。字段还可以写 `label`、`default`、`placeholder`、`help`、`required`、`min`、`max`。
+`config[].type` 可选：`text` / `url` / `password` / `number` / `checkbox` / `textarea` / `select` / `folder` / `filters` / `group`（`select` 要带 `options: [{ value, label }]`；`folder` 是本机文件夹路径，界面上是文件夹选择器；`filters` 是一组筛选条件，见下面「按实例的筛选字段」；`group` 是可以重复添加的一组子字段，见下面「分组」）。字段还可以写 `label`、`default`、`placeholder`、`help`、`required`、`min`、`max`。
+
+**分组**：一个来源里要配好几份同样结构的设置（比如 TAPD 的多个项目，每个项目自己的类型、范围、筛选条件），用 `type: "group"`：
+
+```json
+{ "key": "projects", "label": "项目", "type": "group", "itemLabel": "项目", "maxItems": 20, "required": true,
+  "fields": [
+    { "key": "workspaceId", "label": "项目 ID", "type": "text", "required": true },
+    { "key": "name", "label": "名称（可选）", "type": "text" },
+    { "key": "filters", "label": "筛选条件", "type": "filters" }
+  ] }
+```
+
+值是对象数组：`config.projects = [{ workspaceId, name, filters }, …]`，每一项按子字段校验、补默认值。设置页每项一张卡片，可以加、删；卡片标题取 `name`（或 `label`）和第一个必填的文本字段。子字段不能再放 `group`（不嵌套），也不能放 `password`（凭据放在分组外面共用）。`required: true` 表示至少要有一项。
+
+**改配置结构**：插件升级时把老配置转成新结构，导出 `migrateConfig(config)`（同步、纯函数，返回新的配置对象）。静静每次读配置都会先交给它，设置页看到的就是迁移后的样子，主人下次保存就落成新格式；老字段在保存时会被去掉。
 
 **按实例的筛选字段**：同一个插件的不同实例可能有完全不同的字段（比如每个 TAPD 项目的状态、迭代、自定义字段都不一样），`select` 写死的选项不够用。这时给配置加一个 `type: "filters"` 的字段，并导出 `filterFields(config, ctx)`：
 
@@ -53,7 +68,7 @@ export async function filterFields(config, ctx) {
 }
 ```
 
-`input` 是 `enum`（从候选值里点选）、`user`（填人名）或 `text`（自由填写）。用户配好的条件存成 `config.<key> = [{ field: 'bug.status', values: ['new', 'reopened'] }]`，怎么翻译成来源自己的查询由插件决定；核心只做归一化（最多 12 个条件、每个最多 50 个值）。
+`input` 是 `enum`（从候选值里点选）、`user`（填人名）或 `text`（自由填写）。筛选条件放在分组里时（比如每个项目一套），`ctx.item` 是它所在那一项当前（可能还没保存）的值，按它给字段。用户配好的条件存成 `config.<key> = [{ field: 'bug.status', values: ['new', 'reopened'] }]`，怎么翻译成来源自己的查询由插件决定；核心只做归一化（最多 12 个条件、每个最多 50 个值）。
 
 入口导出：
 

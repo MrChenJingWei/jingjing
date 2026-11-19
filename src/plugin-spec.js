@@ -5,8 +5,11 @@ export const PLUGIN_API_VERSION = 1;
 // folder：本机文件夹路径，界面上是文件夹选择器（值就是路径字符串）。
 // filters：一组「字段 + 取值」条件（值是 [{ field, values: [] }]）。可选的字段和候选值由插件的 filterFields() 按当前配置给出，
 // 所以每个实例（比如每个 TAPD 项目）可以有自己的一套字段。
-export const FIELD_TYPES = ['text', 'url', 'password', 'number', 'checkbox', 'textarea', 'select', 'folder', 'filters'];
+// group：可以重复添加的一组子字段（fields），值是对象数组，比如一个 TAPD 来源里配多个项目、每个项目一套设置。
+// 子字段支持除 group / password 以外的所有类型；不能嵌套。
+export const FIELD_TYPES = ['text', 'url', 'password', 'number', 'checkbox', 'textarea', 'select', 'folder', 'filters', 'group'];
 export const FILTER_LIMITS = Object.freeze({ rows: 12, values: 50, field: 64, value: 120 });
+export const GROUP_LIMITS = Object.freeze({ fields: 12, items: 50 });
 export const PLUGIN_TYPES = ['poll', 'webhook', 'stream', 'manual', 'watch'];
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,31}$/;
 const KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
@@ -29,7 +32,7 @@ function asString(value, fallback = '') {
   return typeof value === 'string' ? value : fallback;
 }
 
-const FIELD_KEYS = new Set(['key', 'label', 'type', 'default', 'placeholder', 'help', 'required', 'wide', 'min', 'max', 'options']);
+const FIELD_KEYS = new Set(['key', 'label', 'type', 'default', 'placeholder', 'help', 'required', 'wide', 'min', 'max', 'options', 'fields', 'itemLabel', 'maxItems']);
 const MANIFEST_KEYS = new Set(['$schema', 'id', 'apiVersion', 'kind', 'name', 'version', 'description', 'icon', 'entry', 'type', 'intervalMinutes', 'webhook', 'lifecycle', 'multiInstance', 'capabilities', 'config', 'worker', 'classification']);
 
 /**
@@ -142,9 +145,12 @@ export function validateWorkerLimits(raw = {}) {
   return out;
 }
 
-function validateField(field, index) {
+function validateField(field, index, { group = null } = {}) {
   if (!field || typeof field !== 'object' || Array.isArray(field)) {
     bad(`config[${index}] 必须是对象`);
+  }
+  if (group && (field.type === 'group' || field.type === 'password')) {
+    bad(`config.${group}.fields 里不能再放 ${field.type}（分组不能嵌套，密码放在分组外面共用）`);
   }
   for (const key of Object.keys(field)) {
     if (!FIELD_KEYS.has(key)) bad(`config[${index}] 有未知字段：${key}`);
@@ -189,6 +195,17 @@ function validateField(field, index) {
     out.default = field.default === undefined ? false : Boolean(field.default);
   } else if (type === 'filters') {
     out.default = field.default === undefined ? [] : normalizeFilters(field.default, key);
+  } else if (type === 'group') {
+    if (!Array.isArray(field.fields) || !field.fields.length) bad(`config.${key} 是 group，必须提供非空 fields`);
+    if (field.fields.length > GROUP_LIMITS.fields) bad(`config.${key}.fields 最多 ${GROUP_LIMITS.fields} 个`);
+    out.fields = field.fields.map((sub, i) => validateField(sub, `${key}.${i}`, { group: key }));
+    const subKeys = out.fields.map((sub) => sub.key);
+    if (new Set(subKeys).size !== subKeys.length) bad(`config.${key}.fields 的 key 重复`);
+    out.itemLabel = asString(field.itemLabel, '一项').trim().slice(0, 12) || '一项';
+    const maxItems = field.maxItems === undefined ? 20 : Number(field.maxItems);
+    if (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > GROUP_LIMITS.items) bad(`config.${key}.maxItems 必须是 1–${GROUP_LIMITS.items} 的整数`);
+    out.maxItems = maxItems;
+    out.default = [];
   } else if (type === 'select') {
     if (!Array.isArray(field.options) || field.options.length === 0) {
       bad(`config.${key} 是 select，必须提供非空 options`);
@@ -422,19 +439,46 @@ function coerceValue(field, value) {
 export function validateConfig(manifest, raw = {}, { requireAll = false } = {}) {
   if (raw === null || raw === undefined) raw = {};
   if (typeof raw !== 'object' || Array.isArray(raw)) bad('config 必须是对象');
+  return validateFields(manifest.config || [], raw, { requireAll });
+}
+
+/** 按字段定义校验一组值（整份配置，或分组里的一项）。where：报错时说明是哪一项（比如「第 2 个项目的」）。 */
+function validateFields(fields, raw, { requireAll = false, where = '' } = {}) {
   const out = {};
-  for (const field of manifest.config || []) {
+  for (const field of fields) {
     const supplied = Object.prototype.hasOwnProperty.call(raw, field.key);
     const value = supplied ? raw[field.key] : undefined;
-    const empty = value === undefined || value === null || value === '' || (field.type === 'filters' && Array.isArray(value) && !value.length);
+    const empty = value === undefined || value === null || value === ''
+      || ((field.type === 'filters' || field.type === 'group') && Array.isArray(value) && !value.length);
     if (empty) {
-      if (requireAll && field.required) bad(`缺少必填配置：${field.label || field.key}`);
-      out[field.key] = field.default;
+      if (requireAll && field.required) {
+        bad(field.type === 'group' ? `至少要加一个${field.itemLabel}` : `${where}缺少必填配置：${field.label || field.key}`);
+      }
+      out[field.key] = Array.isArray(field.default) ? [...field.default] : field.default;
       continue;
     }
-    out[field.key] = coerceValue(field, value);
+    try {
+      out[field.key] = field.type === 'group' ? coerceGroup(field, value, { requireAll }) : coerceValue(field, value);
+    } catch (err) {
+      if (where && err instanceof PluginSpecError) bad(`${where}${err.message}`);
+      throw err;
+    }
   }
   return out;
+}
+
+/** 分组的值：对象数组，每一项按子字段校验。 */
+function coerceGroup(field, value, { requireAll = false } = {}) {
+  let list = value;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch { bad(`config.${field.key} 不是合法的列表`); }
+  }
+  if (!Array.isArray(list)) bad(`config.${field.key} 必须是列表`);
+  if (list.length > field.maxItems) bad(`${field.label}最多 ${field.maxItems} 个`);
+  return list.map((item, i) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) bad(`第 ${i + 1} 个${field.itemLabel}的格式不对`);
+    return validateFields(field.fields, item, { requireAll, where: `第 ${i + 1} 个${field.itemLabel}：` });
+  });
 }
 
 export function requiredFields(manifest) {

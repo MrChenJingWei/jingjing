@@ -257,7 +257,8 @@
             "textarea",
             "select",
             "folder",
-            "filters"
+            "filters",
+            "group"
           ]
         },
         "default": {},
@@ -301,6 +302,26 @@
               }
             }
           }
+        },
+        "fields": {
+          "description": "type 为 group 时：每一项的子字段（不能再放 group 和 password）",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "itemLabel": {
+          "description": "type 为 group 时：一项叫什么，比如「项目」（按钮是「加一个项目」）",
+          "type": "string",
+          "maxLength": 12
+        },
+        "maxItems": {
+          "description": "type 为 group 时：最多几项（1–50，默认 20）",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
         }
       },
       "allOf": [

@@ -84,22 +84,72 @@ export function runCli(config, args, { signal } = {}) {
 
 /* --------------------------------- 配置 --------------------------------- */
 
-/**
- * 一条配置只对应一个项目：各项目的字段、状态、自定义字段都不一样，筛选条件只对这一个项目有意义。
- * 返回数组只是为了下面的循环写法不变。
+/*
+ * 一个 TAPD 来源里可以配多个项目（config.projects），每个项目一套设置：跟踪哪些、范围、筛选条件、状态分类——
+ * 各项目的字段、状态、自定义字段都不一样。令牌、处理人、评论提醒这些是共用的。
  */
-function workspaceIds(config) {
-  const ids = String(config.workspaceIds || '').split(/[\s,，;；]+/).map((s) => s.trim()).filter(Boolean);
-  const bad = ids.find((id) => !/^\d+$/.test(id));
-  if (bad) throw new Error(`项目 ID 只能是数字：${bad}`);
-  if (!ids.length) throw new Error('先在插件设置里填项目 ID');
-  if (ids.length > 1) throw new Error(`一条配置只对应一个项目（现在填了 ${ids.length} 个）。各项目的字段和状态不一样：这里留一个，其他项目在「任务来源 → TAPD」里各加一条`);
-  return ids;
+
+function kindsOf(entities) {
+  if (entities === 'both') return ['bug', 'story'];
+  return [entities === 'story' ? 'story' : 'bug'];
 }
 
-function entityKinds(config) {
-  if (config.entities === 'both') return ['bug', 'story'];
-  return [config.entities === 'story' ? 'story' : 'bug'];
+/** 老配置（一串项目 ID + 共用的跟踪类型 / 状态分类）转成「每个项目一套设置」。设置页读配置时由静静调用。 */
+export function migrateConfig(config) {
+  if (Array.isArray(config.projects) && config.projects.length) return config;
+  const ids = String(config.workspaceIds || '').split(/[\s,，;；]+/).map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) return config;
+  return {
+    ...config,
+    projects: ids.map((workspaceId) => ({
+      workspaceId,
+      name: '',
+      entities: ['bug', 'story', 'both'].includes(config.entities) ? config.entities : 'bug',
+      scope: config.scope === 'any' && ids.length === 1 ? 'any' : 'mine',
+      // 老版本只有一个项目时才可能配过筛选条件。
+      filters: ids.length === 1 && Array.isArray(config.filters) ? config.filters : [],
+      statusMap: String(config.statusMap || '')
+    }))
+  };
+}
+
+/** 归一化一个项目的设置。index 只用来在报错里说「第几个项目」。 */
+function projectOf(raw, index = 0) {
+  const ws = String(raw?.workspaceId ?? '').trim();
+  const where = `第 ${index + 1} 个项目`;
+  if (!ws) throw new Error(`${where}还没填项目 ID`);
+  if (!/^\d+$/.test(ws)) throw new Error(`${where}的项目 ID 只能是数字：${ws}`);
+  const name = String(raw?.name || '').trim().slice(0, 40);
+  return {
+    ws,
+    name,
+    label: name || `项目 ${ws}`,
+    kinds: kindsOf(raw?.entities),
+    scope: raw?.scope === 'any' ? 'any' : 'mine',
+    filters: Array.isArray(raw?.filters) ? raw.filters : [],
+    overrides: parseOverrides(raw?.statusMap)
+  };
+}
+
+function projectsOf(config) {
+  const list = migrateConfig(config).projects;
+  if (!Array.isArray(list) || !list.length) throw new Error('先在插件设置里加一个项目');
+  const projects = list.map(projectOf);
+  const seen = new Set();
+  for (const project of projects) {
+    if (seen.has(project.ws)) throw new Error(`项目 ${project.ws} 配了两次：同一个项目只留一条，条件写在一起`);
+    seen.add(project.ws);
+  }
+  return projects;
+}
+
+/** 某个项目的状态分类覆盖；项目已经从配置里删掉时用默认推断。 */
+function overridesFor(config, ws) {
+  try {
+    return projectsOf(config).find((project) => project.ws === String(ws))?.overrides || parseOverrides('');
+  } catch {
+    return parseOverrides('');
+  }
 }
 
 function webBase(config) {
@@ -251,8 +301,9 @@ function storyRef(config, ws, id, info) {
 /**
  * 给一批条目补上外部对象树（node / parent / links）。rows：externalId → { ws, kind, row }。
  * 查不到（预算用完、接口失败）就不写 parent，表示「这次没说」，静静保留已知的父。
+ * 父需求的状态按它所在项目的状态分类来算（各项目的状态不一样）。
  */
-async function attachTrees(config, ctx, entries, overrides) {
+async function attachTrees(config, ctx, entries) {
   if (!classifying(ctx) || !entries.length) return;
   const budget = { calls: MAX_RELATION_CALLS };
   // 先确定每个条目直接的父需求 id（缺陷要查关联，需求看 parent_id），再按项目批量拿父需求的标题。
@@ -273,7 +324,7 @@ async function attachTrees(config, ctx, entries, overrides) {
     }
   }
   const infos = new Map();
-  for (const [ws, ids] of wanted) infos.set(ws, await storyInfo(config, ctx, ws, [...ids], overrides));
+  for (const [ws, ids] of wanted) infos.set(ws, await storyInfo(config, ctx, ws, [...ids], overridesFor(config, ws)));
   for (const { entry, parents } of plans) {
     const { ws, kind, row, target } = entry;
     const entity = ENTITIES[kind];
@@ -298,11 +349,13 @@ async function attachTrees(config, ctx, entries, overrides) {
   }
 }
 
-function toItem(config, kind, ws, row, status) {
+function toItem(config, kind, project, row, status) {
+  const { ws } = project;
   const entity = ENTITIES[kind];
   const title = String(row[entity.title] || `${entity.label} ${row.id}`).trim();
   const facts = [
-    `TAPD ${entity.label}（符合这个来源的筛选条件），请查看并处理。`,
+    `TAPD ${entity.label}（${project.scope === 'any' ? '符合这个项目的筛选条件' : '分给你的'}），请查看并处理。`,
+    project.name ? `项目：${project.name}` : '',
     `状态：${status.label}`,
     row.priority_label ? `优先级：${row.priority_label}` : '',
     row.severity ? `严重程度：${row.severity}` : '',
@@ -328,15 +381,16 @@ const FIELD_KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const ME = new Set(['我', '@me', '$me']);
 
 /**
- * 这一类单子（缺陷 / 需求）的查询条件：范围（分给我的）+ 用户配的筛选条件，转成 TAPD list 的参数。
+ * 一个项目里这一类单子（缺陷 / 需求）的查询条件：范围（分给我的）+ 这个项目配的筛选条件，转成 TAPD list 的参数。
  * 筛选条件的字段写成「类型.字段」（bug.status、story.developer），只取这一类的；同一字段多个值用 | 表示「或」；
  * 值写「我」换成处理人昵称。返回 { params, statusFiltered }：选了状态就完全按用户的来，不再自动去掉已结束的。
+ * project 是一个项目的设置（{ scope, filters, label }）。
  */
-export function queryFor(config, kind, owner) {
+export function queryFor(project, kind, owner) {
   const entity = ENTITIES[kind];
   const params = new Map();
-  if ((config.scope || 'mine') !== 'any') params.set(entity.owner, owner);
-  for (const row of Array.isArray(config.filters) ? config.filters : []) {
+  if ((project.scope || 'mine') !== 'any') params.set(entity.owner, owner);
+  for (const row of Array.isArray(project.filters) ? project.filters : []) {
     const [type, key] = String(row?.field || '').split('.');
     if (type !== kind || !FIELD_KEY_RE.test(key || '')) continue;
     const values = (Array.isArray(row.values) ? row.values : [])
@@ -345,7 +399,7 @@ export function queryFor(config, kind, owner) {
     if (values.length) params.set(key, [...new Set(values)].join('|'));
   }
   if (!params.size) {
-    throw new Error(`范围选了「不限」，${entity.label}至少要加一个筛选条件，不然会把整个项目的${entity.label}都拉进来`);
+    throw new Error(`${project.label ? `「${project.label}」` : ''}范围选了「不限」，${entity.label}至少要加一个筛选条件，不然会把整个项目的${entity.label}都拉进来`);
   }
   return {
     params: [...params].map(([key, value]) => `${key}=${value}`),
@@ -353,10 +407,11 @@ export function queryFor(config, kind, owner) {
   };
 }
 
-async function listOpen(config, ctx, ws, kind, owner, overrides) {
+async function listOpen(config, ctx, project, kind, owner) {
+  const { ws, overrides } = project;
   const entity = ENTITIES[kind];
   const fields = ['id', entity.title, 'status', 'modified', 'resolution', 'priority_label', 'iteration_id', 'description', ...(kind === 'bug' ? ['severity'] : ['parent_id'])];
-  const query = queryFor(config, kind, owner);
+  const query = queryFor(project, kind, owner);
   const [labels, rows] = await Promise.all([
     statusLabels(config, ctx, ws, kind),
     runCli(config, [entity.cmd, 'list', `workspaceid=${ws}`, ...query.params, `limit=${LIST_LIMIT}`, 'order=modified desc', `fields=${fields.join(',')}`], ctx)
@@ -367,7 +422,7 @@ async function listOpen(config, ctx, ws, kind, owner, overrides) {
     .map((row) => ({ row, status: statusOf(row, labels, overrides) }))
     .filter(({ status }) => query.statusFiltered || !isFinished(status.category))
     .map(({ row, status }) => {
-      const item = toItem(config, kind, ws, row, status);
+      const item = toItem(config, kind, project, row, status);
       // 原始行只留在内存里，补归类关系时用；不交给静静。
       Object.defineProperty(item, '_tapd', { value: { ws, kind, row }, enumerable: false });
       return item;
@@ -543,13 +598,15 @@ function fieldOptions(options) {
 }
 
 /**
- * 设置页「筛选条件」可选的字段：这个项目实际的字段（含自定义字段）和候选值，按缺陷 / 需求分组。
+ * 设置页「筛选条件」可选的字段：某个项目实际的字段（含自定义字段）和候选值，按缺陷 / 需求分组。
+ * 筛选条件在哪个项目卡片里，ctx.item 就是那个项目当前（可能还没保存）的设置；没有时取第一个项目。
  * 只给能直接拿来过滤的：下拉 / 多选（带候选值）和选人字段（填昵称，「我」表示自己）。
  */
 export async function filterFields(config, ctx = {}) {
-  const [ws] = workspaceIds(config);
+  const project = ctx.item ? projectOf(ctx.item) : projectsOf(config)[0];
+  const { ws } = project;
   const out = [];
-  for (const kind of entityKinds(config)) {
+  for (const kind of project.kinds) {
     const entity = ENTITIES[kind];
     const data = await runCli(config, [entity.cmd, 'fields', `workspaceid=${ws}`], ctx);
     const fields = data && typeof data === 'object' ? data : {};
@@ -580,63 +637,95 @@ export async function test(config, ctx = {}) {
   try {
     const bin = findBin(config);
     const info = await runCli(config, ['user', 'info'], ctx);
-    const ids = workspaceIds(config);
+    const projects = projectsOf(config);
     const owner = String(config.owner || '').trim() || info?.nick;
-    const counts = [];
-    for (const ws of ids) {
-      for (const kind of entityKinds(config)) {
+    const lines = [];
+    for (const project of projects) {
+      const counts = [];
+      for (const kind of project.kinds) {
         const entity = ENTITIES[kind];
-        const query = queryFor(config, kind, owner);
-        const data = await runCli(config, [entity.cmd, 'count', `workspaceid=${ws}`, ...query.params], ctx);
+        const query = queryFor(project, kind, owner);
+        const data = await runCli(config, [entity.cmd, 'count', `workspaceid=${project.ws}`, ...query.params], ctx);
         counts.push(`${entity.label} ${data?.count ?? '?'} 条${query.statusFiltered ? '' : '（含已结束的）'}`);
       }
+      lines.push(`${project.label}（${project.scope === 'any' ? '按筛选条件' : '分给我的'}）：${counts.join('，')}`);
     }
-    const who = (config.scope || 'mine') === 'any' ? '按筛选条件' : `处理人「${owner}」`;
-    return { ok: true, detail: `已连上 TAPD（${bin}），项目 ${ids[0]}，${who}：${counts.join('，')}` };
+    return { ok: true, detail: `已连上 TAPD（${bin}），处理人「${owner}」。${lines.join('；')}` };
   } catch (err) {
     return { ok: false, detail: err.message };
   }
 }
 
-export async function poll(config, ctx = {}) {
-  const overrides = parseOverrides(config.statusMap);
-  const owner = await ownerNick(config, ctx);
-  const items = [];
-  for (const ws of workspaceIds(config)) {
-    for (const kind of entityKinds(config)) {
-      items.push(...await listOpen(config, ctx, ws, kind, owner, overrides));
-    }
-  }
-  const state = ctx.state;
-  // 范围或筛选条件变了就重新记一次基线：新条件下已经存在的单子不会一下子全涌进来。
-  // 默认（分给我的、没有条件）保持旧格式，升级后不会无故重记基线、漏掉两次拉取之间新分来的单子。
-  const narrowed = (config.scope || 'mine') !== 'mine' || (Array.isArray(config.filters) && config.filters.length);
-  const scope = `${workspaceIds(config).join(',')}|${entityKinds(config).join(',')}|${owner}${narrowed ? `|${config.scope || 'mine'}|${JSON.stringify(config.filters || [])}` : ''}`;
+/** 一个项目这次的基线范围：类型、处理人、范围、条件变了就要重新记基线。 */
+function baselineScope(project, owner) {
+  return JSON.stringify([project.kinds.join(','), owner, project.scope, project.filters]);
+}
 
-  // 评论和 @ 提醒：拉不到只记日志，不影响单子本身。
-  if (config.comments !== false) {
-    for (const ws of workspaceIds(config)) {
-      const mine = new Map(items.filter((item) => item._tapd.ws === ws).map((item) => [item.externalId, item.title]));
+/**
+ * 老版本把所有项目记在一个基线里（scope 形如「项目1,项目2|类型|处理人[|范围|条件]」）。
+ * 这个项目还没有自己的基线、而老基线覆盖了它且条件没变时，沿用老基线：升级后不会无故重记、漏掉中间新分来的单子。
+ */
+function legacyBaseline(state, project, owner) {
+  const legacy = state?.get('baseline');
+  if (!legacy?.scope) return null;
+  const [ids, kinds, who, ...rest] = String(legacy.scope).split('|');
+  if (!ids.split(',').includes(project.ws) || kinds !== project.kinds.join(',') || who !== owner) return null;
+  const narrowed = project.scope !== 'mine' || project.filters.length;
+  const same = rest.length ? rest.join('|') === `${project.scope}|${JSON.stringify(project.filters)}` : !narrowed;
+  return same ? legacy.ids || [] : null;
+}
+
+export async function poll(config, ctx = {}) {
+  const projects = projectsOf(config);
+  const owner = await ownerNick(config, ctx);
+  const state = ctx.state;
+  const items = [];
+  const failures = [];
+  for (const project of projects) {
+    // 一个项目出错（条件不对、没权限）只影响它自己，别的项目照常拉。
+    let found = [];
+    try {
+      for (const kind of project.kinds) found.push(...await listOpen(config, ctx, project, kind, owner));
+    } catch (err) {
+      failures.push(`${project.label}：${err.message}`);
+      ctx.log?.(`拉取失败（${project.label}）：${err.message}`);
+      continue;
+    }
+
+    // 评论和 @ 提醒：拉不到只记日志，不影响单子本身。
+    if (config.comments !== false) {
+      const mine = new Map(found.map((item) => [item.externalId, item.title]));
       try {
-        const added = await collectComments(config, ctx, ws, owner, mine);
-        if (added) ctx.log?.(`项目 ${ws} 有 ${added} 条和你有关的新评论`);
+        const added = await collectComments(config, ctx, project.ws, owner, mine);
+        if (added) ctx.log?.(`${project.label} 有 ${added} 条和你有关的新评论`);
       } catch (err) {
-        ctx.log?.(`拉评论失败（${ws}）：${err.message}`);
+        ctx.log?.(`拉评论失败（${project.label}）：${err.message}`);
       }
     }
-  }
 
-  // 第一次启用：记下现在手上已有的单子，之后只为新分来的建卡，免得一启用就建一大堆。
-  if (config.startFresh !== false) {
-    const baseline = state?.get('baseline');
-    if (!baseline || baseline.scope !== scope) {
-      state?.set('baseline', { scope, at: new Date().toISOString(), ids: items.map((item) => item.externalId).slice(0, REMEMBER) });
-      ctx.log?.(`第一次运行：记下手上已有的 ${items.length} 条，之后只为新分来的建卡`);
-      return { items: [] };
+    // 只为新出现的单子建卡：每个项目自己的基线。第一次（或改了类型 / 范围 / 条件）先记下已有的，这一轮不交。
+    if (config.startFresh !== false) {
+      const key = `baseline:${project.ws}`;
+      const scope = baselineScope(project, owner);
+      let baseline = state?.get(key);
+      if (!baseline) {
+        const adopted = legacyBaseline(state, project, owner);
+        if (adopted) {
+          baseline = { scope, at: new Date().toISOString(), ids: adopted };
+          state?.set(key, baseline);
+        }
+      }
+      if (!baseline || baseline.scope !== scope) {
+        state?.set(key, { scope, at: new Date().toISOString(), ids: found.map((item) => item.externalId).slice(0, REMEMBER) });
+        ctx.log?.(`${project.label}：第一次运行（或条件变了），记下已有的 ${found.length} 条，之后只为新出现的建卡`);
+        continue;
+      }
+      const known = new Set(baseline.ids || []);
+      found = found.filter((item) => !known.has(item.externalId));
     }
-    const known = new Set(baseline.ids || []);
-    items.splice(0, items.length, ...items.filter((item) => !known.has(item.externalId)));
+    items.push(...found);
   }
+  if (failures.length === projects.length) throw new Error(failures.join('；'));
 
   // 静静一次最多处理 10 条：评论先交（有时效），剩下的名额给单子；没交完的评论留在队列里下次再交。
   const queue = state?.get('commentQueue') || [];
@@ -647,14 +736,13 @@ export async function poll(config, ctx = {}) {
   const ordered = [...items.filter((item) => !handed.has(item.externalId)), ...items.filter((item) => handed.has(item.externalId))].slice(0, MAX_ITEMS - comments.length);
   for (const item of ordered) handed.add(item.externalId);
   state?.set('handed', [...handed].slice(-REMEMBER));
-  await attachTrees(config, ctx, ordered.map((item) => ({ ...item._tapd, target: item })), overrides);
-  ctx.log?.(`没结束的 ${items.length} 条，这次交 ${ordered.length} 条${comments.length ? `，评论 ${comments.length} 条` : ''}`);
+  await attachTrees(config, ctx, ordered.map((item) => ({ ...item._tapd, target: item })));
+  ctx.log?.(`${projects.length} 个项目，符合条件的 ${items.length} 条，这次交 ${ordered.length} 条${comments.length ? `，评论 ${comments.length} 条` : ''}${failures.length ? `；${failures.length} 个项目拉取失败` : ''}`);
   return { items: [...comments, ...ordered] };
 }
 
-/** 刷新已经绑在任务卡上的单子的状态：按项目和类型分组，一次查一批 id。 */
+/** 刷新已经绑在任务卡上的单子的状态：按项目和类型分组，一次查一批 id；状态按各自项目的状态分类来算。 */
 export async function syncStatus(config, links, ctx = {}) {
-  const overrides = parseOverrides(config.statusMap);
   const groups = new Map();
   for (const link of links) {
     const ws = link.meta?.workspaceId;
@@ -668,6 +756,7 @@ export async function syncStatus(config, links, ctx = {}) {
   const trees = [];
   for (const { ws, kind, ids } of groups.values()) {
     const entity = ENTITIES[kind];
+    const overrides = overridesFor(config, ws);
     const labels = await statusLabels(config, ctx, ws, kind);
     for (let i = 0; i < ids.length; i += SYNC_CHUNK) {
       const part = ids.slice(i, i + SYNC_CHUNK);
@@ -685,6 +774,6 @@ export async function syncStatus(config, links, ctx = {}) {
     }
   }
   // 同步时顺带交父节点：壳节点回填标题、父指针变了静静会重算归属。
-  await attachTrees(config, ctx, trees, overrides);
+  await attachTrees(config, ctx, trees);
   return out;
 }

@@ -5,7 +5,7 @@
   "name": "TAPD",
   "version": "0.4.0",
   "icon": "T",
-  "description": "通过本机的 tapd-cli 发现一个 TAPD 项目里的缺陷 / 需求并建任务：默认是分给你的，也可以按这个项目自己的字段和状态筛选；任务卡上跟踪它在 TAPD 里的状态，和你有关的新评论也会告诉你。每个项目建一条。只读，不会改 TAPD。",
+  "description": "通过本机的 tapd-cli 发现 TAPD 里的缺陷 / 需求并建任务。可以配多个项目，每个项目按自己的字段和状态决定哪些单子交给静静（默认是分给你的）；任务卡上跟踪它在 TAPD 里的状态，和你有关的新评论也会告诉你。只读，不会改 TAPD。",
   "entry": "index.js",
   "type": "poll",
   "intervalMinutes": 15,
@@ -16,46 +16,72 @@
   },
   "config": [
     {
-      "key": "workspaceIds",
-      "label": "项目 ID",
-      "type": "text",
+      "key": "projects",
+      "label": "项目",
+      "type": "group",
+      "itemLabel": "项目",
+      "maxItems": 20,
       "required": true,
-      "placeholder": "33349361",
-      "help": "TAPD 项目链接里 tapd.cn/ 后面那串数字。一条配置只对应一个项目：各项目的字段和状态不一样，其他项目再加一条"
-    },
-    {
-      "key": "entities",
-      "label": "跟踪哪些",
-      "type": "select",
-      "options": [
-        { "value": "bug", "label": "缺陷" },
-        { "value": "story", "label": "需求" },
-        { "value": "both", "label": "缺陷和需求" }
-      ],
-      "default": "bug"
-    },
-    {
-      "key": "scope",
-      "label": "范围",
-      "type": "select",
-      "options": [
-        { "value": "mine", "label": "分给我的（处理人是我）" },
-        { "value": "any", "label": "不限，只按下面的筛选条件" }
-      ],
-      "default": "mine"
-    },
-    {
-      "key": "filters",
-      "label": "筛选条件",
-      "type": "filters",
-      "help": "从这个项目实际的字段里选，比如状态、优先级、迭代、开发人员、自定义字段；同一字段选多个值是「或」，不同字段之间是「且」。没选状态时，已经结束的单子不会进来"
+      "help": "每个项目一套设置：各项目的字段、状态、自定义字段都不一样",
+      "fields": [
+        {
+          "key": "workspaceId",
+          "label": "项目 ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "33349361",
+          "help": "TAPD 项目链接里 tapd.cn/ 后面那串数字"
+        },
+        {
+          "key": "name",
+          "label": "名称（可选）",
+          "type": "text",
+          "placeholder": "比如：蓝马",
+          "help": "只用来显示，任务卡和测试结果里会用它"
+        },
+        {
+          "key": "entities",
+          "label": "跟踪哪些",
+          "type": "select",
+          "options": [
+            { "value": "bug", "label": "缺陷" },
+            { "value": "story", "label": "需求" },
+            { "value": "both", "label": "缺陷和需求" }
+          ],
+          "default": "bug"
+        },
+        {
+          "key": "scope",
+          "label": "范围",
+          "type": "select",
+          "options": [
+            { "value": "mine", "label": "分给我的（处理人是我）" },
+            { "value": "any", "label": "不限，只按下面的筛选条件" }
+          ],
+          "default": "mine"
+        },
+        {
+          "key": "filters",
+          "label": "筛选条件",
+          "type": "filters",
+          "help": "从这个项目实际的字段里选，比如状态、优先级、迭代、开发人员、自定义字段；同一字段选多个值是「或」，不同字段之间是「且」。没选状态时，已经结束的单子不会进来"
+        },
+        {
+          "key": "statusMap",
+          "label": "状态分类（可选）",
+          "type": "textarea",
+          "wide": true,
+          "placeholder": "已解决未上线 = review\nstatus_8 = blocked",
+          "help": "这个项目的状态自动推断不准时手动指定，每行「状态名或 key = 分类」。分类：open / in_progress / blocked / review / done / cancelled"
+        }
+      ]
     },
     {
       "key": "startFresh",
       "label": "只为启用之后新出现的单子建卡",
       "type": "checkbox",
       "default": true,
-      "help": "不勾的话，启用时已经符合条件的单子都会交给静静判断、建卡（每次最多 10 条）。改了范围或筛选条件也会重新记一次"
+      "help": "不勾的话，启用时已经符合条件的单子都会交给静静判断、建卡（每次最多 10 条）。每个项目各记各的：新加的项目、改了条件的项目会重新记一次"
     },
     {
       "key": "comments",
@@ -68,7 +94,8 @@
       "key": "owner",
       "label": "处理人昵称",
       "type": "text",
-      "placeholder": "留空自动用令牌对应的用户"
+      "placeholder": "留空自动用令牌对应的用户",
+      "help": "所有项目共用；筛选条件里写「我」也换成它"
     },
     {
       "key": "token",
@@ -88,14 +115,6 @@
       "label": "tapd-cli 路径",
       "type": "text",
       "placeholder": "留空自动查找（~/.local/bin、/opt/homebrew/bin、/usr/local/bin）"
-    },
-    {
-      "key": "statusMap",
-      "label": "状态分类（可选）",
-      "type": "textarea",
-      "wide": true,
-      "placeholder": "已解决未上线 = review\nstatus_8 = blocked",
-      "help": "自动推断不准时手动指定，每行「状态名或 key = 分类」。分类：open / in_progress / blocked / review / done / cancelled"
     }
   ],
   "multiInstance": true,

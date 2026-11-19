@@ -195,3 +195,35 @@ test('筛选条件（filters）：归一化去空去重，接受 JSON 字符串�
   assert.throws(() => validateConfig(manifest, { filters: 'not json' }), /不是合法的条件列表/);
   assert.throws(() => validateConfig(manifest, { filters: Array.from({ length: 13 }, (_, i) => ({ field: `f${i}`, values: ['x'] })) }), /最多 12 个条件/);
 });
+
+test('分组（group）：每一项按子字段校验、补默认值，报错说清是第几项；不能嵌套、不能放密码', () => {
+  const projects = {
+    key: 'projects', label: '项目', type: 'group', itemLabel: '项目', required: true, maxItems: 2,
+    fields: [
+      { key: 'workspaceId', label: '项目 ID', type: 'text', required: true },
+      { key: 'scope', label: '范围', type: 'select', default: 'mine', options: [{ value: 'mine', label: '我' }, { value: 'any', label: '不限' }] },
+      { key: 'filters', label: '条件', type: 'filters' }
+    ]
+  };
+  const { dir, raw } = tempPlugin({ config: [projects, { key: 'token', label: '令牌', type: 'password' }] });
+  const manifest = validateManifest(raw, { dir, dirName: 'demo' });
+  assert.equal(manifest.config[0].itemLabel, '项目');
+  assert.deepEqual(manifest.config[0].default, []);
+
+  const config = validateConfig(manifest, { projects: [{ workspaceId: '1' }, { workspaceId: '2', scope: 'any', filters: [{ field: 'bug.status', values: ['new'] }] }] });
+  assert.deepEqual(config.projects, [
+    { workspaceId: '1', scope: 'mine', filters: [] },
+    { workspaceId: '2', scope: 'any', filters: [{ field: 'bug.status', values: ['new'] }] }
+  ]);
+  assert.deepEqual(validateConfig(manifest, {}).projects, [], '没填是空列表');
+
+  assert.throws(() => validateConfig(manifest, {}, { requireAll: true }), /至少要加一个项目/);
+  assert.throws(() => validateConfig(manifest, { projects: [{ workspaceId: '1' }, {}] }, { requireAll: true }), /第 2 个项目：缺少必填配置：项目 ID/);
+  assert.throws(() => validateConfig(manifest, { projects: [{ workspaceId: '1', scope: 'x' }] }), /第 1 个项目：.*不是可选值/);
+  assert.throws(() => validateConfig(manifest, { projects: [{ workspaceId: '1' }, { workspaceId: '2' }, { workspaceId: '3' }] }), /项目最多 2 个/);
+
+  for (const sub of [{ key: 'g', label: 'g', type: 'group', fields: [{ key: 'a', label: 'a', type: 'text' }] }, { key: 'p', label: 'p', type: 'password' }]) {
+    const bad = tempPlugin({ config: [{ ...projects, fields: [...projects.fields, sub] }] });
+    assert.throws(() => validateManifest(bad.raw, { dir: bad.dir, dirName: 'demo' }), /不能再放/);
+  }
+});

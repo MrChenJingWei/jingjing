@@ -33,7 +33,7 @@
 2. `plugin-spec.js` 校验 manifest（字段白名单、类型、`worker` 段范围、配置字段定义），不合格的记进 `pluginErrors()`，不影响其他插件；
 3. `plugin-loader.js` 加载入口：URL 带上**整个插件目录的版本号**，再用模块钩子传给入口相对引用的每个子文件——多文件插件重装后不用重启就能拿到新代码；
 4. `kind: worker` 的注册进 Worker 注册表（`registerWorkerPlugin`，默认在隔离线程执行）；
-5. 来源插件按 `source_plugins` 里的实例生成可用列表；支持 `multiInstance` 的插件可以建多个实例（比如两个邮箱、每个 TAPD 项目一条）。每个实例的配置独立，配了 `filters` 字段的插件还能导出 `filterFields()`，让每个实例从自己实际有的字段里选筛选条件（接口 `POST /api/plugins/:id/filter-fields`，用表单里当前的配置去问插件，30 秒内要返回）。
+5. 来源插件按 `source_plugins` 里的实例生成可用列表；支持 `multiInstance` 的插件可以建多个实例（比如两个邮箱、每个 TAPD 项目一条）。每个实例的配置独立；一个实例里要配好几份同样结构的设置时用 `group` 类型（比如 TAPD 的多个项目，每个项目一张卡片）。配了 `filters` 字段的插件还能导出 `filterFields()`，让每个实例（或分组里的每一项）从自己实际有的字段里选筛选条件（接口 `POST /api/plugins/:id/filter-fields`，用表单里当前的配置去问插件，30 秒内要返回）。
 
 重新加载时先 `discovery.stopLifecycles()`，加载完再 `startLifecycles()`，长连接跟着换新代码。
 
@@ -52,7 +52,8 @@ export async function start(config, ctx) { return stop; } // type: stream，收�
 export async function deliver(config, payload, ctx) {}    // 消息类来源往外说话（新）
 export async function reply(config, { to, text }, ctx) {} // 只发结果（旧）
 export async function syncStatus(config, links, ctx) {}   // 批量查外部状态；可顺带交 node / parent（归类）
-export async function filterFields(config, ctx) {}        // 按实例给「筛选条件」的可选字段（配合 config 类型 filters）
+export async function filterFields(config, ctx) {}        // 按实例给「筛选条件」的可选字段（配合 config 类型 filters；在分组里时 ctx.item 是那一项）
+export function migrateConfig(config) {}                  // 老配置转新结构（同步）；静静读配置时调用
 ```
 
 条目的可选字段：

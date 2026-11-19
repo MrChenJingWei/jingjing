@@ -96,10 +96,15 @@ function renderPluginList() {
 
 /* ------------------------------- 详情 -------------------------------- */
 
-function fieldInput(plugin, field) {
-  const value = plugin.config?.[field.key];
-  const attrs = `data-plugin-field="${esc(field.key)}"`;
+/**
+ * 一个配置字段的表单控件。scope 用在分组（group）里：值从这一项里取，属性写成 data-group-field，
+ * 这样顶层收集配置时不会把分组里的字段混进来。
+ */
+function fieldInput(plugin, field, scope = null) {
+  const value = scope ? scope.values?.[field.key] : plugin.config?.[field.key];
+  const attrs = `${scope ? 'data-group-field' : 'data-plugin-field'}="${esc(field.key)}"`;
   const help = field.help ? `<small class="field-help">${esc(field.help)}</small>` : '';
+  if (field.type === 'group') return groupField(plugin, field);
   if (field.type === 'checkbox') {
     return `<label class="switch-row"><span><b>${esc(field.label)}</b>${field.help ? `<small>${esc(field.help)}</small>` : ''}</span><input type="checkbox" class="switch" ${attrs} ${value ? 'checked' : ''}></label>`;
   }
@@ -111,7 +116,7 @@ function fieldInput(plugin, field) {
     return `<label class="field span-2"><span>${esc(field.label)}</span>
       <textarea rows="3" ${attrs} placeholder="${esc(field.placeholder || '')}">${esc(value ?? '')}</textarea>${help}</label>`;
   }
-  if (field.type === 'filters') return filtersField(plugin, field);
+  if (field.type === 'filters') return filtersField(plugin, field, scope);
   if (field.type === 'folder') {
     return `<div class="field ${field.wide ? 'span-2' : ''}"><span>${esc(field.label)}</span>
       <input type="text" ${attrs} data-folder value="${esc(value ?? '')}" placeholder="${esc(field.placeholder || '')}" />${help}</div>`;
@@ -127,15 +132,112 @@ function fieldInput(plugin, field) {
 // 配置类型 filters：值是 [{ field, values }]。可选字段由插件的 filterFields() 按表单里当前的配置给出
 // （比如 TAPD 每个项目各自的状态、迭代、自定义字段），所以同一个插件的不同实例看到的字段可以不一样。
 
-const filterFieldCache = new Map(); // 插件实例 id → { sig, fields }
+const filterFieldCache = new Map(); // 签名（实例 + 共用配置 + 所在项目）→ fields
 const CHIP_SEARCH_FROM = 16;
 const MAX_FILTER_ROWS = 12;
 
-function filtersField(plugin, field) {
-  const value = Array.isArray(plugin.config?.[field.key]) ? plugin.config[field.key] : [];
+/* ------------------------------ 分组（group） ------------------------------ */
+// 可以重复添加的一组子字段，比如一个 TAPD 来源里的多个项目，每个项目一张卡片、一套设置。
+
+function groupDefaults(field) {
+  const out = {};
+  for (const sub of field.fields || []) out[sub.key] = Array.isArray(sub.default) ? [...sub.default] : sub.default ?? '';
+  return out;
+}
+
+function groupItemTitle(field, values, index) {
+  const name = String(values?.name || values?.label || '').trim();
+  const firstText = (field.fields || []).find((sub) => sub.type === 'text' && sub.required);
+  const id = firstText ? String(values?.[firstText.key] || '').trim() : '';
+  if (name && id) return `${name} · ${id}`;
+  return name || (id ? `${field.itemLabel} ${id}` : `${field.itemLabel} ${index + 1}`);
+}
+
+function groupItemHtml(plugin, field, values, index) {
+  return `<section class="pg-item" data-group-item>
+    <div class="pg-item-head">
+      <b data-pg-title>${esc(groupItemTitle(field, values, index))}</b>
+      <button type="button" class="icon-btn" data-pg-remove title="删掉这个${esc(field.itemLabel)}" aria-label="删掉这个${esc(field.itemLabel)}">${icon('trash', 'sm')}</button>
+    </div>
+    <div class="plugin-fields">${(field.fields || []).map((sub) => fieldInput(plugin, sub, { values })).join('')}</div>
+  </section>`;
+}
+
+function groupField(plugin, field) {
+  const items = Array.isArray(plugin.config?.[field.key]) ? plugin.config[field.key] : [];
+  return `<div class="span-2 pgroup" data-plugin-group="${esc(field.key)}">
+    <div class="pgroup-head"><b>${esc(field.label)}</b>${field.help ? `<small class="field-help">${esc(field.help)}</small>` : ''}</div>
+    <div class="pg-items">${items.map((values, i) => groupItemHtml(plugin, field, values, i)).join('')}</div>
+    <p class="note pg-empty" ${items.length ? 'hidden' : ''}>还没有${esc(field.itemLabel)}，先加一个。</p>
+    <button type="button" class="btn sm" data-pg-add>${icon('plus', 'sm')}加一个${esc(field.itemLabel)}</button>
+  </div>`;
+}
+
+function initGroupEditors(plugin) {
+  const card = $(`[data-plugin-card="${CSS.escape(plugin.id)}"]`);
+  if (!card) return;
+  for (const box of card.querySelectorAll('[data-plugin-group]')) {
+    const field = (plugin.configSchema || []).find((f) => f.key === box.dataset.pluginGroup);
+    if (!field) continue;
+    const list = box.querySelector('.pg-items');
+    const refresh = () => {
+      const items = [...list.querySelectorAll(':scope > [data-group-item]')];
+      box.querySelector('.pg-empty').hidden = items.length > 0;
+      items.forEach((item, i) => {
+        const title = item.querySelector('[data-pg-title]');
+        if (title) title.textContent = groupItemTitle(field, collectFields(item, 'data-group-field'), i);
+      });
+    };
+    box.addEventListener('click', async (event) => {
+      if (event.target.closest('[data-pg-add]')) {
+        if (list.querySelectorAll(':scope > [data-group-item]').length >= field.maxItems) {
+          toast(`最多 ${field.maxItems} 个${field.itemLabel}`);
+          return;
+        }
+        list.insertAdjacentHTML('beforeend', groupItemHtml(plugin, field, groupDefaults(field), list.children.length));
+        const added = list.lastElementChild;
+        for (const filters of added.querySelectorAll('[data-filters]')) mountFilterEditor(plugin, filters);
+        refresh();
+        added.querySelector('input, select')?.focus();
+        return;
+      }
+      const remove = event.target.closest('[data-pg-remove]');
+      if (remove) {
+        const item = remove.closest('[data-group-item]');
+        const title = item.querySelector('[data-pg-title]')?.textContent || field.itemLabel;
+        if (!await ask({ title: `删掉「${title}」？`, message: `点「保存配置」后生效。这个${field.itemLabel}已经建的任务卡不受影响。`, okText: '删掉', danger: true })) return;
+        item.remove();
+        refresh();
+      }
+    });
+    box.addEventListener('input', (event) => {
+      if (event.target.closest('[data-group-field]')) refresh();
+    });
+  }
+}
+
+function readFieldInput(input) {
+  if (input.type === 'checkbox') return input.checked;
+  if (input.type === 'number') return Number(input.value);
+  if ('json' in input.dataset) {
+    try { return JSON.parse(input.value || 'null'); } catch { return null; }
+  }
+  return input.value;
+}
+
+/** 收集一个容器里的字段（attr = data-plugin-field 或 data-group-field）。 */
+function collectFields(root, attr) {
+  const out = {};
+  for (const input of root.querySelectorAll(`[${attr}]`)) out[input.getAttribute(attr)] = readFieldInput(input);
+  return out;
+}
+
+function filtersField(plugin, field, scope = null) {
+  const raw = scope ? scope.values?.[field.key] : plugin.config?.[field.key];
+  const value = Array.isArray(raw) ? raw : [];
   return `<div class="field span-2 pfilters" data-filters="${esc(field.key)}">
     <span>${esc(field.label)}</span>
-    <input type="hidden" data-plugin-field="${esc(field.key)}" data-json value="${esc(JSON.stringify(value))}" />
+    <input type="hidden" ${scope ? 'data-group-field' : 'data-plugin-field'}="${esc(field.key)}" data-json value="${esc(JSON.stringify(value))}" />
     <div class="pf-rows"></div>
     <div class="pf-foot">
       <button type="button" class="btn xs" data-pf-add>${icon('plus', 'sm')}加一个条件</button>
@@ -146,10 +248,20 @@ function filtersField(plugin, field) {
   </div>`;
 }
 
-function filterSignature(config, key) {
-  const rest = { ...config };
-  delete rest[key];
-  return JSON.stringify(rest);
+/**
+ * 读字段要用的上下文：共用配置（不含分组和筛选条件本身），以及筛选条件所在的那一项（分组里时）。
+ * 签名只看这些，点选条件不会触发重新请求；改了项目 ID、跟踪类型这类才会。
+ */
+function filterContext(plugin, box, key) {
+  const config = collectPluginConfig(plugin.id);
+  const shared = {};
+  for (const [name, value] of Object.entries(config)) {
+    if (name !== key && !Array.isArray(value)) shared[name] = value;
+  }
+  const itemEl = box.closest('[data-group-item]');
+  const item = itemEl ? collectFields(itemEl, 'data-group-field') : null;
+  const itemSig = item ? Object.fromEntries(Object.entries(item).filter(([name]) => name !== key)) : null;
+  return { config, item, sig: JSON.stringify([plugin.id, shared, itemSig]) };
 }
 
 function initFilterEditors(plugin) {
@@ -160,13 +272,13 @@ function initFilterEditors(plugin) {
 
 function mountFilterEditor(plugin, box) {
   const key = box.dataset.filters;
-  const hidden = box.querySelector('[data-plugin-field]');
+  const hidden = box.querySelector('[data-plugin-field], [data-group-field]');
   const status = box.querySelector('[data-pf-status]');
   let rows = [];
   try { rows = JSON.parse(hidden.value || '[]'); } catch { rows = []; }
   if (!Array.isArray(rows)) rows = [];
   rows = rows.map((row) => ({ field: String(row.field || ''), values: Array.isArray(row.values) ? row.values.map(String) : [] }));
-  let fields = filterFieldCache.get(plugin.id)?.fields || [];
+  let fields = filterFieldCache.get(filterContext(plugin, box, key).sig) || [];
   const fieldOf = (name) => fields.find((f) => f.key === name);
   const sync = () => { hidden.value = JSON.stringify(rows.filter((row) => row.field && row.values.length)); };
 
@@ -209,20 +321,18 @@ function mountFilterEditor(plugin, box) {
 
   const load = async (force = false) => {
     if (!plugin.filterFields) return;
-    const config = collectPluginConfig(plugin.id);
-    const sig = filterSignature(config, key);
-    const cached = filterFieldCache.get(plugin.id);
-    if (!force && cached?.sig === sig) {
-      fields = cached.fields;
+    const { config, item, sig } = filterContext(plugin, box, key);
+    if (!force && filterFieldCache.has(sig)) {
+      fields = filterFieldCache.get(sig);
       render();
       return;
     }
     status.textContent = '读取可选字段…';
     status.classList.remove('is-error');
     try {
-      const data = await api(`/api/plugins/${plugin.id}/filter-fields`, { method: 'POST', body: { config } });
+      const data = await api(`/api/plugins/${plugin.id}/filter-fields`, { method: 'POST', body: { config, item } });
       fields = data.fields || [];
-      filterFieldCache.set(plugin.id, { sig, fields });
+      filterFieldCache.set(sig, fields);
       status.textContent = fields.length ? `${fields.length} 个字段可选` : '没有可选的字段';
     } catch (err) {
       status.textContent = err.message;
@@ -283,7 +393,7 @@ function mountFilterEditor(plugin, box) {
 
   render();
   // 已经有条件、或者之前读过字段时，进来就读一次（配置没变就用缓存，不再请求）。
-  if (plugin.filterFields && (rows.length || filterFieldCache.has(plugin.id))) load();
+  if (plugin.filterFields && (rows.length || fields.length)) load();
 }
 
 function renderPluginDetail(id) {
@@ -378,6 +488,7 @@ function renderPluginDetail(id) {
         <p class="note">加载中…</p>
       </section>
     </div>`;
+  initGroupEditors(plugin);
   initFilterEditors(plugin);
   loadPluginRecent(plugin.id);
   loadPluginRuns(plugin.id);
@@ -447,15 +558,12 @@ function replacePlugin(plugin) {
 
 function collectPluginConfig(id) {
   const card = $(`[data-plugin-card="${CSS.escape(id)}"]`);
-  const config = {};
-  if (!card) return config;
-  for (const input of card.querySelectorAll('[data-plugin-field]')) {
-    const key = input.dataset.pluginField;
-    if (input.type === 'checkbox') config[key] = input.checked;
-    else if (input.type === 'number') config[key] = Number(input.value);
-    else if ('json' in input.dataset) {
-      try { config[key] = JSON.parse(input.value || 'null'); } catch { config[key] = null; }
-    } else config[key] = input.value;
+  if (!card) return {};
+  // 顶层字段（分组里的子字段用 data-group-field，不会混进来），再把每个分组收成一个数组。
+  const config = collectFields(card, 'data-plugin-field');
+  for (const box of card.querySelectorAll('[data-plugin-group]')) {
+    config[box.dataset.pluginGroup] = [...box.querySelectorAll('.pg-items > [data-group-item]')]
+      .map((item) => collectFields(item, 'data-group-field'));
   }
   return config;
 }

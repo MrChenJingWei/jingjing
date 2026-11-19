@@ -1019,7 +1019,7 @@ const server = http.createServer(async (req, res) => {
     const filterFieldsMatch = pathname.match(/^\/api\/plugins\/([^/]+)\/filter-fields$/);
     if (filterFieldsMatch && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
-      return json(res, 200, await discovery.pluginFilterFields(decodeURIComponent(filterFieldsMatch[1]), body.config || {}));
+      return json(res, 200, await discovery.pluginFilterFields(decodeURIComponent(filterFieldsMatch[1]), body.config || {}, body.item || null));
     }
 
     const pluginMatch = pathname.match(/^\/api\/plugins\/([^/]+)(?:\/(test|scan|fork|restore-official))?$/);

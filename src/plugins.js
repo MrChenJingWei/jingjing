@@ -372,10 +372,23 @@ export function recordRun(instanceId, { startedAt, finishedAt, status, scanned =
   `).run(instanceId, instanceId);
 }
 
-function readConfig(manifest, row) {
+/**
+ * 读一个实例的配置：默认值 + 存的值。插件导出了 migrateConfig(config) 时先交给它把老结构转成新的
+ * （比如 TAPD 从「一串项目 ID」改成「每个项目一套设置」）；设置页看到的就是迁移后的样子，下次保存就落成新格式。
+ * migrateConfig 必须是同步的纯函数；出错就当没迁移。
+ */
+function readConfig(manifest, row, module = null) {
   let stored = {};
   try { stored = JSON.parse(row.config || '{}'); } catch { /* ignore */ }
-  return { ...parseFieldDefaults(manifest.config), ...stored };
+  const config = { ...parseFieldDefaults(manifest.config), ...stored };
+  if (typeof module?.migrateConfig !== 'function') return config;
+  try {
+    const migrated = module.migrateConfig(structuredClone(config));
+    return migrated && typeof migrated === 'object' && !Array.isArray(migrated) ? migrated : config;
+  } catch (err) {
+    console.warn(`[plugin:${row.id}] 迁移配置失败：${err.message}`);
+    return config;
+  }
 }
 
 function maskConfig(manifest, config) {
@@ -420,7 +433,7 @@ export function listPlugins() {
     const item = registry.get(pluginId);
     if (!item) continue;
     const { manifest } = item;
-    const config = readConfig(manifest, row);
+    const config = readConfig(manifest, row, item.module);
     const token = manifest.type === 'webhook' ? ensureWebhookToken(row.id) : null;
     out.push({
       id: row.id,
@@ -492,7 +505,7 @@ export function getPlugin(instanceId) {
     instanceId: row.id,
     pluginId,
     label: row.label || item.manifest.name,
-    config: readConfig(item.manifest, row),
+    config: readConfig(item.manifest, row, item.module),
     enabled: Boolean(row.enabled),
     source: item.source || 'user',
     overridesOfficial: Boolean(item.shadows),
