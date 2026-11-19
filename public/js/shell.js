@@ -1,5 +1,5 @@
 // 外壳：导航、侧栏「正在发生」、深浅色、连接状态、安装、登录、快捷键。
-import { $, $$, state, on, esc, api, toast, isTyping, approvalFor, timeAgo } from './core.js';
+import { $, $$, state, on, esc, api, toast, isTyping, approvalFor, timeAgo, taskSeen, markTaskSeen } from './core.js';
 import { icon, anyDialogOpen, catMark, openMenu } from './ui.js';
 import { renderChat } from './chat.js';
 import { enterTasks, openTask, closeDrawer, toggleQueue } from './tasks.js';
@@ -112,23 +112,54 @@ export function renderActivity() {
       </div>`);
   }
   const hidden = waiting.length + running.length + queued.length - Math.min(waiting.length, ACTIVITY_LIMIT) - Math.min(running.length + queued.length, ACTIVITY_LIMIT);
+  const handled = handledHtml();
   box.innerHTML = groups.length
-    ? groups.join('') + (hidden > 0 ? `<button type="button" class="act-more" data-act-all>还有 ${hidden} 件，查看全部</button>` : '')
-    : idleHtml();
+    ? groups.join('') + (hidden > 0 ? `<button type="button" class="act-more" data-act-all>还有 ${hidden} 件，查看全部</button>` : '') + handled
+    : idleHtml({ compact: Boolean(handled) }) + handled;
   renderQueueChip();
 }
 
-/** 没有在跑的事：品牌那句「事办完，你静静」，下面带上一件做完的事（点了能打开）。 */
-function idleHtml() {
-  const last = state.tasks.find((t) => t.status === 'done');
+/* 静静自己处理的：来源插件发现的、自动化跑的。主人自己派的（对话、手动、写插件）和主人另起的后续卡不算。 */
+function autoHandled(task) {
+  const origin = String(task.origin || '');
+  return (origin === 'proactive' || origin.startsWith('plugin:')) && !task.parent_id;
+}
+
+const finishedAt = (task) => Date.parse(task.finished_at || task.updated_at || task.created_at) || 0;
+
+/** 静静替主人办完（或没办成）、主人还没打开看过的任务，最近结束的在前。 */
+function unseenHandled() {
+  return state.tasks
+    .filter((t) => (t.status === 'done' || t.status === 'failed') && autoHandled(t) && !taskSeen(t.id, finishedAt(t)))
+    .sort((a, b) => finishedAt(b) - finishedAt(a));
+}
+
+function originText(task) {
+  if (task.origin === 'proactive') return '自动化';
+  const id = String(task.origin).slice('plugin:'.length);
+  const plugin = (state.plugins || []).find((p) => p.id === id);
+  return plugin?.label || plugin?.name || '任务来源';
+}
+
+function handledHtml() {
+  const list = unseenHandled();
+  if (!list.length) return '';
+  const more = list.length - ACTIVITY_LIMIT;
   return `
-    <div class="act-idle">
+    <div class="act-group">
+      <div class="act-head"><b>静静替你办完的 · ${list.length}</b><button type="button" class="act-seen" data-act-seen title="把这些都标成看过">都看过了</button></div>
+      ${list.slice(0, ACTIVITY_LIMIT).map((t) => activityItem(t, `${timeAgo(finishedAt(t))}${t.status === 'failed' ? '没办成' : '完成'} · ${originText(t)}`)).join('')}
+      ${more > 0 ? `<button type="button" class="act-more" data-act-all>还有 ${more} 件，去任务页看</button>` : ''}
+    </div>`;
+}
+
+/** 没有在跑的事：品牌那句「事办完，你静静」。静静替你办完、你还没看的，由 handledHtml() 接在下面。 */
+function idleHtml({ compact = false } = {}) {
+  return `
+    <div class="act-idle ${compact ? 'is-compact' : ''}">
       ${catMark()}
       <b>事都办完了</b>
       <small>没有在跑的事，你静静。</small>
-      ${last ? `<button type="button" class="act-last" data-act-task="${esc(last.id)}" title="${esc(last.title)}">
-        <span class="sdot" data-s="done"></span><span class="act-main"><b>${esc(last.title)}</b><small>${esc(timeAgo(last.finished_at || last.updated_at || last.created_at))}完成</small></span>
-      </button>` : ''}
     </div>`;
 }
 
@@ -160,6 +191,7 @@ $('#activity')?.addEventListener('click', (event) => {
   const item = event.target.closest('[data-act-task]');
   if (item) { openTask(item.dataset.actTask, { reveal: true }); return; }
   if (event.target.closest('[data-act-all]')) switchView('tasks');
+  if (event.target.closest('[data-act-seen]') && markTaskSeen(...unseenHandled().map((t) => t.id))) renderActivity();
 });
 $('#live-status')?.addEventListener('click', (event) => {
   const paused = Boolean(state.stats?.paused ?? state.settings?.queuePaused);

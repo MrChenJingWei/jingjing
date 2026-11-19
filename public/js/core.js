@@ -215,7 +215,7 @@ export function timeAgo(iso) {
   const d = new Date(iso);
   const diff = (Date.now() - d.getTime()) / 1000;
   if (diff < 45) return '刚刚';
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 3600) return `${Math.max(1, Math.floor(diff / 60))} 分钟前`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
   if (diff < 172800) return `昨天 ${d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
   return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -399,6 +399,45 @@ export function taskById(id) {
 export function approvalFor(task) {
   if (!task) return null;
   return state.approvals.find((a) => a.task_id === task.id && a.status === 'pending') || null;
+}
+
+// 主人看过哪些已结束的任务（只记在这台设备上）：侧栏「静静替你办完的」只留没看过的。
+// since 之前结束的一律算看过：第一次启用时只从 24 小时前算起，免得历史任务一下子全冒出来。
+const SEEN_KEY = 'jingjing-seen-tasks';
+const SEEN_MAX = 200;
+let seen = null;
+
+function seenStore() {
+  if (!seen) {
+    let raw = null;
+    try { raw = JSON.parse(localStorage.getItem(SEEN_KEY)); } catch { raw = null; }
+    seen = raw && Array.isArray(raw.ids)
+      ? { since: Number(raw.since) || 0, ids: new Set(raw.ids) }
+      : { since: Date.now() - 24 * 3600 * 1000, ids: new Set() };
+    if (!raw) saveSeen();
+  }
+  return seen;
+}
+
+function saveSeen() {
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify({ since: seen.since, ids: [...seen.ids].slice(-SEEN_MAX) }));
+  } catch { /* 存不了就只对本次生效 */ }
+}
+
+/** finishedAt：任务结束的时间戳（毫秒）；早于 since 的算看过。 */
+export function taskSeen(id, finishedAt = Infinity) {
+  const store = seenStore();
+  return finishedAt < store.since || store.ids.has(id);
+}
+
+export function markTaskSeen(...ids) {
+  const store = seenStore();
+  const fresh = ids.filter((id) => id && !store.ids.has(id));
+  if (!fresh.length) return false;
+  for (const id of fresh) store.ids.add(id);
+  saveSeen();
+  return true;
 }
 
 export function workflowById(id) {

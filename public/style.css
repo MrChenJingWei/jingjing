@@ -375,6 +375,8 @@ html[data-theme="dark"] .switch::after { background: #eae6dc; }
 }
 .act-head b { font-weight: 600; color: var(--muted); }
 .act-head.is-warm b { color: var(--warm); }
+.act-seen { border: 0; background: transparent; padding: 2px 6px; margin-right: -6px; border-radius: var(--r-xs); font: inherit; font-size: 12px; letter-spacing: 0; color: var(--muted); cursor: pointer; }
+.act-seen:hover { color: var(--accent); background: var(--hover); }
 .act-item {
   display: flex; align-items: flex-start; gap: 8px; width: 100%;
   padding: 6px 8px; border: 0; border-radius: var(--r-sm);
@@ -1952,6 +1954,7 @@ html[data-theme="dark"] .btn.primary { box-shadow: 0 6px 18px -10px rgba(0, 0, 0
 
 /* 空闲：「事都办完了，你静静」 */
 .act-idle { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 18px 8px 8px; text-align: center; min-height: 160px; }
+.act-idle.is-compact { flex: none; min-height: 0; padding: 6px 8px 14px; }
 .act-idle-mark { position: relative; width: 44px; height: 34px; margin-bottom: 8px; color: var(--accent); font-weight: 800; font-family: var(--serif); }
 .act-idle-mark i { position: absolute; font-style: normal; line-height: 1; opacity: 0; animation: snooze 3.6s ease-in-out infinite; }
 .act-idle-mark i:first-child { left: 10px; bottom: 2px; font-size: 20px; }
@@ -1963,15 +1966,6 @@ html[data-theme="dark"] .btn.primary { box-shadow: 0 6px 18px -10px rgba(0, 0, 0
 }
 .act-idle > b { font-size: 14.5px; font-weight: 700; color: var(--ink); }
 .act-idle > small { font-size: 13px; color: var(--muted); }
-.act-last {
-  display: flex; align-items: flex-start; gap: 8px; width: 100%; margin-top: 16px; padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, .6); border-radius: var(--r); background: rgba(255, 255, 255, .45);
-  text-align: left; color: inherit; font: inherit; cursor: pointer; transition: background .15s, transform .2s var(--ease-spring);
-}
-.act-last:hover { background: rgba(255, 255, 255, .75); transform: translateY(-1px); }
-.act-last .sdot { margin-top: 6px; }
-html[data-theme="dark"] .act-last { background: rgba(255, 255, 255, .04); border-color: rgba(255, 255, 255, .07); }
-html[data-theme="dark"] .act-last:hover { background: rgba(255, 255, 255, .08); }
 
 /* ==========================================================================
    对话：一轮一轮分得开——静静的话放进玻璃气泡，换人说话时拉开距离，隔久了插时间分隔

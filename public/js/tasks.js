@@ -2,7 +2,7 @@
 import {
   $, $$, state, on, changed, esc, md, timeAgo, clock, durationText, tokensText, toast, api,
   workerLabel, workerGlyph, workerIds, taskById, approvalFor, workflowById, upsertTask,
-  ensureWorkspaceForPath, pickFolder, isWide, onWideChange, copyText,
+  ensureWorkspaceForPath, pickFolder, isWide, onWideChange, copyText, markTaskSeen,
   STATUS_LABEL, EVENT_LABEL, RUN_STATUS_LABEL, ORIGIN_LABEL, ACTIVE_STATUSES
 } from './core.js';
 import { icon, openDialog, ask, openPopover, openMenu, closePopover, catMark } from './ui.js';
@@ -630,7 +630,13 @@ function renderPaneEmpty() {
   if (pane) pane.innerHTML = `<div class="empty pane-empty"><div class="empty-mark">${catMark()}</div><p>选一张卡，在这里看它做了什么。</p></div>`;
 }
 
+/** 打开了一张已结束的卡：记成看过，侧栏「静静替你办完的」就不再列它。还在跑的不记，免得结果出来时被跳过。 */
+function noteSeen(id) {
+  return ['done', 'failed', 'cancelled'].includes(taskById(id)?.status) && markTaskSeen(id);
+}
+
 function selectTask(id) {
+  noteSeen(id);
   classify.forgetCategory();
   $$('#task-list .cgroup').forEach((g) => g.classList.remove('is-selected'));
   state.selectedTaskId = id;
@@ -669,6 +675,7 @@ export async function openTask(id, { reveal = false } = {}) {
 }
 
 function openDrawer(id) {
+  if (noteSeen(id)) renderActivity();
   classify.forgetCategory();
   state.drawerTaskId = id;
   $('#drawer-backdrop').hidden = false;
