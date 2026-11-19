@@ -153,6 +153,7 @@ function renderMindPanel() {
   if (panel.hidden) return;
   const mood = mind.mood || {};
   const peopleList = mind.people || [];
+  const suggestions = mind.peopleSuggestions || [];
   const diary = mind.lastReflection?.diary;
   panel.innerHTML = `
     <section class="card mood-card">
@@ -172,22 +173,33 @@ function renderMindPanel() {
       ${diary ? `<p class="diary">「${esc(diary)}」</p>` : ''}
     </section>
     <section class="card people-card">
-      <div class="card-head"><h3>认识的人</h3><p>来往越多越熟，久不联系会慢慢变淡；印象每天反思时更新。外人看不到你的任何事。</p></div>
+      <div class="card-head"><h3>认识的人</h3><p>来往越多越熟，久不联系会慢慢变淡；印象每天反思时更新，来源有通讯录的每天查一次姓名和部门。外人看不到你的任何事。</p></div>
+      ${suggestions.map((s) => `
+        <div class="person-merge-hint">
+          <span>「${esc(s.keep.name)}」（${esc(s.keep.source || '外部')}）和「${esc(s.other.name)}」（${esc(s.other.source || '外部')}）可能是同一个人</span>
+          <span class="actions">
+            <button type="button" class="btn xs" data-person-merge-pair="${esc(s.keep.id)}" data-from="${esc(s.other.id)}">合并</button>
+            <button type="button" class="btn xs ghost" data-person-distinct="${esc(s.keep.id)}" data-other="${esc(s.other.id)}">不是</button>
+          </span>
+        </div>`).join('')}
       <div class="people-list">
         ${peopleList.length ? peopleList.map((p) => `
           <div class="person">
             <span class="glyph">${esc((p.name || '?').slice(0, 1))}</span>
             <div class="person-main">
               <b>${esc(p.name)}${p.id === 'owner' ? '<span class="badge on">主人</span>' : ''}</b>
+              ${p.profile && (p.profile.department || p.profile.title) ? `<small>${esc([p.profile.department, p.profile.title].filter(Boolean).join(' · '))}</small>` : ''}
+              ${p.requested || p.aliases?.length ? `<small>${[p.requested ? `派过 ${p.requested} 个活` : '', p.aliases?.length ? `合并了 ${p.aliases.length + 1} 个身份` : ''].filter(Boolean).join(' · ')}</small>` : ''}
               <small>${esc(p.source || (p.id === 'owner' ? '对话' : ''))}${p.source || p.id === 'owner' ? ' · ' : ''}来往 ${p.interactions} 次 · ${timeAgo(p.last_seen)} · ${familiarityText(p.familiarity)} · ${affinityText(p.affinity)}</small>
               <div class="fam"><i style="width:${Math.round(p.familiarity * 100)}%"></i></div>
               ${p.impression ? `<p class="impression">${esc(p.impression)}</p>` : ''}
             </div>
             <div class="row-actions">
               <button type="button" class="icon-btn sm" data-person-edit="${esc(p.id)}" title="改称呼或印象">${icon('edit', 'sm')}</button>
+              ${p.id !== 'owner' && peopleList.length > 2 ? `<button type="button" class="icon-btn sm" data-person-merge="${esc(p.id)}" title="和另一个人合并（同一个人在不同来源）">${icon('merge', 'sm')}</button>` : ''}
               ${p.id !== 'owner' ? `<button type="button" class="icon-btn sm danger" data-person-forget="${esc(p.id)}" title="忘掉这个人">${icon('trash', 'sm')}</button>` : ''}
             </div>
-          </div>`).join('') : '<p class="note">还不认识谁。外面有人私聊或 @ 她、她回了话以后，这里会记下这个人。</p>'}
+          </div>`).join('') : '<p class="note">还不认识谁。外面有人私聊、@ 她或者通过来源找她办事，这里会记下这个人。</p>'}
       </div>
     </section>`;
 }
@@ -230,7 +242,7 @@ function editPerson(id) {
 
 async function forgetPerson(id) {
   const person = (state.mind?.people || []).find((p) => p.id === id);
-  const ok = await ask({ title: `忘掉「${person?.name || id}」？`, message: '熟悉度、好感和印象会清掉；和 ta 聊过的记忆还在人格记忆里，需要的话单独删。', okText: '忘掉', danger: true });
+  const ok = await ask({ title: `忘掉「${person?.name || id}」？`, message: '熟悉度、好感、印象、和 ta 的聊天、关于 ta 的记忆都会删掉，合并过的身份也一起忘掉。ta 派过的任务还在，只是不再记是谁派的。以后 ta 再来就是新认识的人。', okText: '忘掉', danger: true });
   if (!ok) return;
   try {
     state.mind = await api(`/api/people/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -238,6 +250,32 @@ async function forgetPerson(id) {
   } catch (err) {
     toast(err.message);
   }
+}
+
+function mergePerson(id) {
+  const all = state.mind?.people || [];
+  const person = all.find((p) => p.id === id);
+  const others = all.filter((p) => p.id !== id && p.id !== 'owner');
+  if (!person || !others.length) return;
+  openDialog({
+    title: `把谁并进「${person.name}」？`,
+    desc: '同一个人在不同来源（企微、TAPD、邮件……）会被当成几个人。合并后来往、聊天、记忆、派过的活都算到一起，以后从那个来源来的也认成 ta。',
+    body: `
+      <label class="field"><span>并进来的人</span>
+        <select name="from">${others.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}（${esc(p.source || '外部')}）</option>`).join('')}</select>
+      </label>`,
+    okText: '合并',
+    onSubmit: async (values) => {
+      await doMerge(id, values.from);
+    }
+  });
+}
+
+async function doMerge(id, from) {
+  const data = await api(`/api/people/${encodeURIComponent(id)}/merge`, { method: 'POST', body: { from } });
+  state.mind = data.mind;
+  changed('mind');
+  toast(`合并好了：现在都是「${data.person.name}」。`);
 }
 
 /* ------------------------------- 编辑 -------------------------------- */
@@ -384,7 +422,21 @@ $('#mind-panel')?.addEventListener('click', async (event) => {
   const edit = event.target.closest('[data-person-edit]');
   if (edit) { editPerson(edit.dataset.personEdit); return; }
   const forget = event.target.closest('[data-person-forget]');
-  if (forget) forgetPerson(forget.dataset.personForget);
+  if (forget) { forgetPerson(forget.dataset.personForget); return; }
+  const merge = event.target.closest('[data-person-merge]');
+  if (merge) { mergePerson(merge.dataset.personMerge); return; }
+  const pair = event.target.closest('[data-person-merge-pair]');
+  if (pair) {
+    pair.disabled = true;
+    doMerge(pair.dataset.personMergePair, pair.dataset.from).catch((err) => { toast(err.message); pair.disabled = false; });
+    return;
+  }
+  const distinct = event.target.closest('[data-person-distinct]');
+  if (distinct) {
+    api('/api/people/distinct', { method: 'POST', body: { a: distinct.dataset.personDistinct, b: distinct.dataset.other } })
+      .then((mind) => { state.mind = mind; changed('mind'); })
+      .catch((err) => toast(err.message));
+  }
 });
 
 let memTimer = null;

@@ -457,7 +457,32 @@ db.exec(`
   );
 `);
 
-export const now = () => new Date().toISOString();
+// 认人：名字从哪来（id / source 插件给的 / chat 聊天里说的 / directory 通讯录 / manual 主人改的，后者优先），
+// 来自哪个来源实例、在那边的 id，通讯录查到的部门职位（JSON），上次查通讯录的时间。
+ensureColumn('people', 'name_from', 'TEXT');
+ensureColumn('people', 'source_id', 'TEXT');
+ensureColumn('people', 'external_id', 'TEXT');
+ensureColumn('people', 'profile', 'TEXT');
+ensureColumn('people', 'looked_up_at', 'TEXT');
+// 合并过的人：别的来源里的身份（alias_id）都指向同一个人（person_id）。主人确认「不是同一个人」的一对记在 people_distinct。
+// 派活的人：tasks.requester 指向 people.id（合并后会改指向）。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS people_aliases (
+    alias_id   TEXT PRIMARY KEY,
+    person_id  TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_people_aliases_person ON people_aliases(person_id);
+  CREATE TABLE IF NOT EXISTS people_distinct (
+    a          TEXT NOT NULL,
+    b          TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (a, b)
+  );
+`);
+ensureColumn('tasks', 'requester', 'TEXT');
+
+export const now =() => new Date().toISOString();
 export const uid = (prefix = '') => prefix + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
 let txDepth = 0;

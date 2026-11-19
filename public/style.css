@@ -1033,6 +1033,27 @@ html[data-theme="dark"] .switch::after { background: #eae6dc; }
 .plugin-fields .span-2 { grid-column: 1 / -1; }
 .plugin-fields .switch-row { grid-column: 1 / -1; padding: 4px 0; border: 0; }
 .plugin-fields:empty { display: none; }
+
+/* 筛选条件编辑器（配置类型 filters） */
+.pf-rows { display: flex; flex-direction: column; gap: 8px; }
+.pf-row { padding: 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); }
+.pf-row-head { display: flex; align-items: center; gap: 6px; }
+.pf-row-head > :first-child { flex: 1; min-width: 0; }
+.pf-values { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.pf-search, .pf-text { width: 100%; }
+.pf-opts { display: flex; flex-wrap: wrap; gap: 6px; max-height: 148px; overflow-y: auto; padding: 1px; }
+.pf-opt {
+  height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface); color: var(--ink-2); font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.pf-opt:hover { border-color: var(--accent-line); color: var(--accent); }
+.pf-opt.is-on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); font-weight: 600; }
+.pf-opt[hidden] { display: none; }
+.pf-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.pf-status { font-size: 12.5px; color: var(--muted); }
+.pf-status.is-error { color: var(--danger); }
+.pf-empty { margin: 0; }
 .plugin-status { margin-top: 12px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .plugin-status.is-error { color: var(--danger); }
 .plugin-preview { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); flex-basis: 100%; }
@@ -1243,6 +1264,8 @@ html[data-theme="dark"] .toast { background: var(--surface-3); color: var(--ink)
 .fam { height: 3px; margin-top: 5px; border-radius: 999px; background: var(--surface-3); overflow: hidden; max-width: 220px; }
 .fam i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 .impression { margin-top: 4px; font-size: 13.5px; color: var(--ink-2); }
+.person-merge-hint { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--accent-soft); font-size: 13px; color: var(--ink-2); }
+.person-merge-hint .actions { display: flex; gap: 6px; flex: none; }
 
 .mem-strength { display: inline-flex; align-items: center; gap: 5px; }
 .ret { display: inline-block; width: 34px; height: 4px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }

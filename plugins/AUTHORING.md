@@ -37,7 +37,23 @@
 
 `type`：`poll`（定时调用 `poll`）、`webhook`（外部 POST 进来，调用 `webhook`）、`stream`（长连接，调用 `start`）、`manual`（只在用户点「立即扫描」时调用 `poll`）。
 
-`config[].type` 可选：`text` / `url` / `password` / `number` / `checkbox` / `textarea` / `select` / `folder`（`select` 要带 `options: [{ value, label }]`；`folder` 是本机文件夹路径，界面上是文件夹选择器）。字段还可以写 `label`、`default`、`placeholder`、`help`、`required`、`min`、`max`。
+`config[].type` 可选：`text` / `url` / `password` / `number` / `checkbox` / `textarea` / `select` / `folder` / `filters`（`select` 要带 `options: [{ value, label }]`；`folder` 是本机文件夹路径，界面上是文件夹选择器；`filters` 是一组筛选条件，见下面「按实例的筛选字段」）。字段还可以写 `label`、`default`、`placeholder`、`help`、`required`、`min`、`max`。
+
+**按实例的筛选字段**：同一个插件的不同实例可能有完全不同的字段（比如每个 TAPD 项目的状态、迭代、自定义字段都不一样），`select` 写死的选项不够用。这时给配置加一个 `type: "filters"` 的字段，并导出 `filterFields(config, ctx)`：
+
+```js
+// 可选：设置页「筛选条件」从这里拿可选字段。config 是表单里当前的配置（可能还没保存）。
+export async function filterFields(config, ctx) {
+  return {
+    fields: [
+      { key: 'bug.status', label: '状态', group: '缺陷', input: 'enum', options: [{ value: 'new', label: '未解决' }] },
+      { key: 'bug.current_owner', label: '处理人', group: '缺陷', input: 'user', help: '写「我」表示自己' }
+    ]
+  };
+}
+```
+
+`input` 是 `enum`（从候选值里点选）、`user`（填人名）或 `text`（自由填写）。用户配好的条件存成 `config.<key> = [{ field: 'bug.status', values: ['new', 'reopened'] }]`，怎么翻译成来源自己的查询由插件决定；核心只做归一化（最多 12 个条件、每个最多 50 个值）。
 
 入口导出：
 
@@ -83,9 +99,12 @@ export async function start(config, ctx) {
   kind: 'email' | 'agenda' | 'note',      // 可选
   meta: { },                               // 可选，只参与判断
   replyTo: { },                            // 可选，「发回哪里」，配合 reply()
-  direct: true                             // 可选，对方直接找过来（私聊、@ 机器人）：闲聊由静静按人格决定回不回
+  direct: true,                            // 可选，对方直接找过来（私聊、@ 机器人）：闲聊由静静按人格决定回不回
+  actor: { id: 'zhangsan', name: '张三' }  // 可选，这条是谁说的 / 谁做的：静静靠它认人。id 在这个来源里稳定唯一，name 可以不给
 }
 ```
+
+认人（可选）：条目带 `actor`，派活的、直接找静静的人会记进「认识的人」。来源有通讯录时再导出 `lookupPeople(config, ids, ctx)`：`ids` 是 `actor.id` 的数组，返回 `{ people: [{ id, name, title?, department?, alias? }] }`，查不到的不返回、没配凭证返回空。新认识的人马上查一次，之后每天刷新，一批最多 50 个、30 秒超时；抛错下一小时重试。
 
 消息类来源想让静静把任务结果发回原会话：条目带 `replyTo`（比如 `{ chatId }`），并导出 `reply(config, { to, text, task }, ctx)` 去发，`to` 就是那个 `replyTo`，发不出去就抛错。什么时候发由静静和用户决定，插件不要自己发。想让回执、状态播报、拍板卡片也回到渠道里，改为导出 `deliver(config, payload, ctx)`，渠道里的按钮和回复用 `ctx.interact()` 转给静静，见 README.md「消息类来源」。
 

@@ -87,6 +87,17 @@
 
 人设的每一版都存进 `persona_versions`（最初、主人改的、她反思后改的、回退的），可以回退。
 
+## 认人
+
+外面的人从来源插件进来，身份是 `<来源实例 id>:<条目的 actor.id>`（企微 userid、邮箱、TAPD 昵称、GitHub login）。
+
+- **什么时候记**：直接找静静的消息（`direct`，不管回不回）和建成任务 / 合并进任务的事项，都会 `people.touch()`。只是路过、判断为不用管的通知不记。闲聊由 `persona.chatReply()` 记（连同这次的情绪），其他由 `discovery.noteSpeaker()` 记（只动好感，不动心情）。
+- **查通讯录**：来源插件导出了 `lookupPeople()` 时，新认识的人当场在后台查一次；之后每小时扫一遍，超过一天没查过的按来源成批再查。查到的部门、职位存在 `people.profile`，写进「正在和你说话的人」那一句。
+- **名字优先级**（`people.name_from`）：主人改的 `manual` > 通讯录 `directory` > 聊天里对方说的 `chat` > 插件给的 `source` > `id`。低的盖不过高的。
+- **合并同一个人**：同一个人在不同来源是不同的身份（企微 userid 和 TAPD 昵称）。不同来源里称呼或通讯录英文名一样时，人物页提示「可能是同一个人」，只提示不自动合并；主人点「合并」或「不是」（记在 `people_distinct`）。合并后旧身份记进 `people_aliases`，`people.get()` 先解析别名，以后从那个来源来的也算到主身份上；来往次数相加、熟悉度取高、好感按来往次数加权，聊天、记忆、派过的活都改到主身份名下。
+- **派活的人**：来源建任务时 `tasks.requester` 记下说这件事的人，另起的后续卡沿用。主人的话里提到某个认识的人（称呼或英文名）时，`persona.mentionedPeople()` 把 ta 是谁、最近派过的活放进主人对话的提示词；外人那边看不到任务。
+- **忘掉一个人**：人、和 ta 的聊天（原话和摘要）、关于 ta 的记忆、合并过的身份一起删掉；ta 派过的任务保留，只清掉 `requester`。
+
 ## 和分类知识的分工
 
 [分类知识](external.md)（`task_knowledge`）属于某个分类域，只在派这个域的活时进 prompt；记忆是全局的。详见 [外部对象 · 和记忆的分工](external.md#和记忆的分工)。
@@ -98,4 +109,5 @@
 | `GET/POST /api/memories` · `PATCH/DELETE /api/memories/:id` | 记忆增删改查 |
 | `GET /api/mind` · `POST /api/mind/reflect` · `POST /api/mind/mood/reset` | 心智概况、立即反思、心情复位 |
 | `PATCH/DELETE /api/people/:id` | 改 / 删认识的人 |
+| `POST /api/people/:id/merge` · `POST /api/people/distinct` | 合并同一个人（`{ from }` 并进 `:id`）、标记两个人不是同一个人 |
 | `POST /api/persona/rollback` · `POST /api/persona/proposal` | 人设回退、处理提议 |

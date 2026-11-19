@@ -256,7 +256,8 @@
             "checkbox",
             "textarea",
             "select",
-            "folder"
+            "folder",
+            "filters"
           ]
         },
         "default": {},

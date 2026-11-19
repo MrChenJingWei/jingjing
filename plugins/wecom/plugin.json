@@ -2,7 +2,7 @@
   "id": "wecom",
   "apiVersion": 1,
   "name": "企业微信智能机器人",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "icon": "企",
   "description": "通过 WebSocket 长连接接收企业微信智能机器人的单聊/群聊 @ 消息，交给静静判断并建任务；回执、进度、拍板卡片和结果都回到企微里。",
   "entry": "index.js",
@@ -28,6 +28,33 @@
       "type": "password",
       "help": "长连接凭证，不是企业应用 Secret",
       "required": true
+    },
+    {
+      "key": "cliPath",
+      "label": "wecom-cli 路径（选填）",
+      "type": "text",
+      "placeholder": "自动查找",
+      "help": "认人用：静静用企业微信官方命令行（npm i -g @wecom/cli，再 wecom-cli auth init 授权）查发消息的人叫什么、在哪个部门。找不到时填完整路径，终端里 which wecom-cli 可以查到"
+    },
+    {
+      "key": "cliConfigDir",
+      "label": "wecom-cli 配置目录（选填）",
+      "type": "text",
+      "placeholder": "~/.config/wecom",
+      "help": "接了多个企业的机器人时，每个实例用各自授权过的目录（授权时 WECOM_CLI_CONFIG_DIR=<目录> wecom-cli auth init）"
+    },
+    {
+      "key": "corpId",
+      "label": "自建应用 CorpID（选填，备用）",
+      "type": "text",
+      "placeholder": "管理后台 → 我的企业 → 企业 ID",
+      "help": "wecom-cli 搜不到的人用自建应用补查；和下面的 Secret 一起填"
+    },
+    {
+      "key": "contactSecret",
+      "label": "自建应用 Secret（选填，备用）",
+      "type": "password",
+      "help": "应用可见范围要包含这些成员；主机出口 IP 要加进应用的「企业可信 IP」"
     }
   ],
   "multiInstance": true

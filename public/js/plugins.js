@@ -111,6 +111,7 @@ function fieldInput(plugin, field) {
     return `<label class="field span-2"><span>${esc(field.label)}</span>
       <textarea rows="3" ${attrs} placeholder="${esc(field.placeholder || '')}">${esc(value ?? '')}</textarea>${help}</label>`;
   }
+  if (field.type === 'filters') return filtersField(plugin, field);
   if (field.type === 'folder') {
     return `<div class="field ${field.wide ? 'span-2' : ''}"><span>${esc(field.label)}</span>
       <input type="text" ${attrs} data-folder value="${esc(value ?? '')}" placeholder="${esc(field.placeholder || '')}" />${help}</div>`;
@@ -120,6 +121,169 @@ function fieldInput(plugin, field) {
     <input type="${type}" ${attrs} value="${esc(value ?? '')}"
       ${field.min !== undefined ? `min="${esc(field.min)}"` : ''} ${field.max !== undefined ? `max="${esc(field.max)}"` : ''}
       placeholder="${esc(field.placeholder || '')}" autocomplete="off" />${help}</label>`;
+}
+
+/* ---------------------------- 筛选条件编辑器 ---------------------------- */
+// 配置类型 filters：值是 [{ field, values }]。可选字段由插件的 filterFields() 按表单里当前的配置给出
+// （比如 TAPD 每个项目各自的状态、迭代、自定义字段），所以同一个插件的不同实例看到的字段可以不一样。
+
+const filterFieldCache = new Map(); // 插件实例 id → { sig, fields }
+const CHIP_SEARCH_FROM = 16;
+const MAX_FILTER_ROWS = 12;
+
+function filtersField(plugin, field) {
+  const value = Array.isArray(plugin.config?.[field.key]) ? plugin.config[field.key] : [];
+  return `<div class="field span-2 pfilters" data-filters="${esc(field.key)}">
+    <span>${esc(field.label)}</span>
+    <input type="hidden" data-plugin-field="${esc(field.key)}" data-json value="${esc(JSON.stringify(value))}" />
+    <div class="pf-rows"></div>
+    <div class="pf-foot">
+      <button type="button" class="btn xs" data-pf-add>${icon('plus', 'sm')}加一个条件</button>
+      ${plugin.filterFields ? `<button type="button" class="btn xs" data-pf-reload title="改了项目或类型后，重新读一遍可选的字段">${icon('refresh', 'sm')}重新读取字段</button>` : ''}
+      <small class="pf-status" data-pf-status></small>
+    </div>
+    ${field.help ? `<small class="field-help">${esc(field.help)}</small>` : ''}
+  </div>`;
+}
+
+function filterSignature(config, key) {
+  const rest = { ...config };
+  delete rest[key];
+  return JSON.stringify(rest);
+}
+
+function initFilterEditors(plugin) {
+  const card = $(`[data-plugin-card="${CSS.escape(plugin.id)}"]`);
+  if (!card) return;
+  for (const box of card.querySelectorAll('[data-filters]')) mountFilterEditor(plugin, box);
+}
+
+function mountFilterEditor(plugin, box) {
+  const key = box.dataset.filters;
+  const hidden = box.querySelector('[data-plugin-field]');
+  const status = box.querySelector('[data-pf-status]');
+  let rows = [];
+  try { rows = JSON.parse(hidden.value || '[]'); } catch { rows = []; }
+  if (!Array.isArray(rows)) rows = [];
+  rows = rows.map((row) => ({ field: String(row.field || ''), values: Array.isArray(row.values) ? row.values.map(String) : [] }));
+  let fields = filterFieldCache.get(plugin.id)?.fields || [];
+  const fieldOf = (name) => fields.find((f) => f.key === name);
+  const sync = () => { hidden.value = JSON.stringify(rows.filter((row) => row.field && row.values.length)); };
+
+  const valuesHtml = (row, i) => {
+    const def = fieldOf(row.field);
+    if (def?.input === 'enum') {
+      const picked = new Set(row.values);
+      // 已选的排前面；候选值很多时（比如几百个客户）上面带一个搜索框。
+      const options = [...def.options].sort((a, b) => Number(picked.has(b.value)) - Number(picked.has(a.value)));
+      const search = def.options.length >= CHIP_SEARCH_FROM
+        ? `<input class="pf-search" data-pf-search="${i}" placeholder="搜索${esc(def.label)}…" autocomplete="off" />`
+        : '';
+      const chips = options.map((o) => `<button type="button" class="pf-opt ${picked.has(o.value) ? 'is-on' : ''}" data-pf-toggle="${i}" data-value="${esc(o.value)}" title="${esc(o.value)}">${esc(o.label)}</button>`).join('');
+      return `${search}<div class="pf-opts">${chips}</div>`;
+    }
+    const placeholder = def?.input === 'user' ? '昵称，多个用逗号分开；写「我」表示你自己' : '取值，多个用逗号分开';
+    return `<input class="pf-text" data-pf-text="${i}" value="${esc(row.values.join(', '))}" placeholder="${esc(placeholder)}" autocomplete="off" />
+      ${def?.help ? `<small class="field-help">${esc(def.help)}</small>` : ''}`;
+  };
+
+  const render = () => {
+    const list = box.querySelector('.pf-rows');
+    list.innerHTML = rows.length ? rows.map((row, i) => {
+      const known = fieldOf(row.field);
+      const options = [
+        '<option value="">选一个字段…</option>',
+        ...(!known && row.field ? [`<option value="${esc(row.field)}" selected>${esc(row.field)}</option>`] : []),
+        ...fields.map((f) => `<option value="${esc(f.key)}" ${f.key === row.field ? 'selected' : ''}>${esc(f.group ? `${f.group} · ${f.label}` : f.label)}</option>`)
+      ].join('');
+      return `<div class="pf-row">
+        <div class="pf-row-head">
+          <select data-pf-field="${i}" aria-label="筛选字段">${options}</select>
+          <button type="button" class="icon-btn" data-pf-remove="${i}" title="删掉这个条件" aria-label="删掉这个条件">${icon('x', 'sm')}</button>
+        </div>
+        ${row.field ? `<div class="pf-values">${valuesHtml(row, i)}</div>` : ''}
+      </div>`;
+    }).join('') : '<p class="note pf-empty">还没有条件。</p>';
+    sync();
+  };
+
+  const load = async (force = false) => {
+    if (!plugin.filterFields) return;
+    const config = collectPluginConfig(plugin.id);
+    const sig = filterSignature(config, key);
+    const cached = filterFieldCache.get(plugin.id);
+    if (!force && cached?.sig === sig) {
+      fields = cached.fields;
+      render();
+      return;
+    }
+    status.textContent = '读取可选字段…';
+    status.classList.remove('is-error');
+    try {
+      const data = await api(`/api/plugins/${plugin.id}/filter-fields`, { method: 'POST', body: { config } });
+      fields = data.fields || [];
+      filterFieldCache.set(plugin.id, { sig, fields });
+      status.textContent = fields.length ? `${fields.length} 个字段可选` : '没有可选的字段';
+    } catch (err) {
+      status.textContent = err.message;
+      status.classList.add('is-error');
+    }
+    render();
+  };
+
+  box.addEventListener('click', (event) => {
+    const toggle = event.target.closest('[data-pf-toggle]');
+    if (toggle) {
+      const row = rows[Number(toggle.dataset.pfToggle)];
+      const value = toggle.dataset.value;
+      row.values = row.values.includes(value) ? row.values.filter((v) => v !== value) : [...row.values, value];
+      toggle.classList.toggle('is-on', row.values.includes(value));
+      sync();
+      return;
+    }
+    const remove = event.target.closest('[data-pf-remove]');
+    if (remove) {
+      rows = rows.filter((_, i) => i !== Number(remove.dataset.pfRemove));
+      render();
+      return;
+    }
+    if (event.target.closest('[data-pf-add]')) {
+      if (rows.length >= MAX_FILTER_ROWS) {
+        toast(`最多 ${MAX_FILTER_ROWS} 个条件`);
+        return;
+      }
+      rows.push({ field: '', values: [] });
+      render();
+      if (!fields.length) load();
+      return;
+    }
+    if (event.target.closest('[data-pf-reload]')) load(true);
+  });
+  box.addEventListener('change', (event) => {
+    const select = event.target.closest('[data-pf-field]');
+    if (!select) return;
+    rows[Number(select.dataset.pfField)] = { field: select.value, values: [] };
+    render();
+  });
+  box.addEventListener('input', (event) => {
+    const text = event.target.closest('[data-pf-text]');
+    if (text) {
+      rows[Number(text.dataset.pfText)].values = text.value.split(/[,，、]/).map((v) => v.trim()).filter(Boolean);
+      sync();
+      return;
+    }
+    const search = event.target.closest('[data-pf-search]');
+    if (search) {
+      const needle = search.value.trim().toLowerCase();
+      for (const opt of search.parentElement.querySelectorAll('.pf-opt')) {
+        opt.hidden = Boolean(needle) && !opt.classList.contains('is-on') && !opt.textContent.toLowerCase().includes(needle);
+      }
+    }
+  });
+
+  render();
+  // 已经有条件、或者之前读过字段时，进来就读一次（配置没变就用缓存，不再请求）。
+  if (plugin.filterFields && (rows.length || filterFieldCache.has(plugin.id))) load();
 }
 
 function renderPluginDetail(id) {
@@ -214,6 +378,7 @@ function renderPluginDetail(id) {
         <p class="note">加载中…</p>
       </section>
     </div>`;
+  initFilterEditors(plugin);
   loadPluginRecent(plugin.id);
   loadPluginRuns(plugin.id);
 }
@@ -288,7 +453,9 @@ function collectPluginConfig(id) {
     const key = input.dataset.pluginField;
     if (input.type === 'checkbox') config[key] = input.checked;
     else if (input.type === 'number') config[key] = Number(input.value);
-    else config[key] = input.value;
+    else if ('json' in input.dataset) {
+      try { config[key] = JSON.parse(input.value || 'null'); } catch { config[key] = null; }
+    } else config[key] = input.value;
   }
   return config;
 }

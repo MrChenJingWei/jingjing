@@ -225,7 +225,7 @@ export async function encodeSession(sessionId) {
     });
     written += 1;
   }
-  if (external && result.name) people.rename(session.person_id, result.name);
+  if (external && result.name) people.rename(session.person_id, result.name, { from: 'chat' });
   const last = messages[messages.length - 1];
   conversation.setSummary(sessionId, result.summary || previous, last.created_at);
   if (written) bus.emit('memory/updated', { reason: 'encode', sessionId });
@@ -444,6 +444,8 @@ export function overview() {
   return {
     mood: affect.currentMood(),
     people: people.list({ limit: 50 }),
+    // 不同来源里同名的人：提示主人要不要合并成一个。
+    peopleSuggestions: people.suggestions(),
     proposal: pendingProposal(),
     lastReflectionAt: s.lastReflectionAt,
     lastReflection: s.lastReflection,

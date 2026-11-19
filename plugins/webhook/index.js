@@ -102,6 +102,10 @@ export async function webhook(payload, ctx = {}) {
   ) || hash(JSON.stringify(payload));
 
   const groupKey = repo && issue?.number ? `${repo}#${issue.number}` : '';
+  // 谁触发的：GitHub / GitLab 的 sender、user，或通用的 actor 字段。
+  const who = payload.sender || payload.user || payload.actor || null;
+  const actorId = typeof who === 'string' ? who : firstText(who?.login, who?.username, who?.id);
+  const actor = actorId ? { id: String(actorId), name: typeof who === 'object' ? firstText(who?.name, who?.login, who?.username) : String(actorId) } : null;
   return {
     items: [
       {
@@ -113,6 +117,7 @@ export async function webhook(payload, ctx = {}) {
         content,
         url,
         occurredAt,
+        ...(actor ? { actor } : {}),
         meta: { event, action, repo }
       }
     ]

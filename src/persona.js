@@ -52,8 +52,29 @@ export function ownerSelf(query, settings = getSettings()) {
     '',
     '长期记忆（主人的偏好、项目、做事经验和你们聊过的事）：',
     memory.serializeForPrompt(work) || '（暂无）',
-    ...section('关于你自己（人格记忆）：', memory.serializeForPrompt(persona))
+    ...section('关于你自己（人格记忆）：', memory.serializeForPrompt(persona)),
+    ...section('这句话里提到的、你认识的人：', mentionedPeople(query))
   ];
+}
+
+const TASK_STATUS_TEXT = { queued: '排队中', running: '进行中', waiting_approval: '等主人决定', done: '做完了', failed: '失败了', cancelled: '取消了' };
+
+/**
+ * 主人提到某个认识的人（「张三最近找过我几次」）：带上 ta 是谁、你们的关系、ta 最近派过的活。
+ * 只进主人的对话，外人那边看不到任务。按称呼和通讯录里的英文名 / 别名在原话里找，最多 3 个人。
+ */
+export function mentionedPeople(query, { limit = 3 } = {}) {
+  const text = String(query || '').toLowerCase();
+  if (!text) return '';
+  const hits = people.list({ limit: 300 }).filter((p) => {
+    if (p.id === people.OWNER || p.name_from === 'id') return false;
+    return [p.name, p.profile?.alias].some((n) => String(n || '').trim().length >= 2 && text.includes(String(n).trim().toLowerCase()));
+  }).slice(0, limit);
+  return hits.map((p) => {
+    const tasks = people.requestedTasks(p.id, 5)
+      .map((t) => `  · ${t.created_at.slice(0, 10)}「${t.title}」${TASK_STATUS_TEXT[t.status] || t.status}`);
+    return [`- ${people.describe(p)}（来自 ${p.source || '外部'}）`, ...(tasks.length ? ['  ta 最近派过的活：', ...tasks] : [])].join('\n');
+  }).join('\n');
 }
 
 function parseReply(text) {
@@ -75,14 +96,15 @@ function parseReply(text) {
  */
 export async function chatReply({ text, where = '', person = null, settings = getSettings(), signal } = {}) {
   const content = String(text || '').slice(0, 1200);
-  const who = person?.id ? people.ensure(person.id, { name: person.name, source: person.source || where }) : null;
+  const known = person?.id ? { name: person.name, source: person.source || where, sourceId: person.sourceId || null, externalId: person.externalId || null } : null;
+  const who = known ? people.ensure(person.id, known) : null;
   const sessionId = who ? conversation.externalSessionId(who.id) : null;
   const history = sessionId ? conversation.recentMessages(sessionId, HISTORY_TURNS) : [];
   const heard = affect.hear(content, { who: who?.name || '外面的人', weight: 0.5 });
   if (who) {
     conversation.ensureSession(sessionId, { personId: who.id, title: `和${who.name}的聊天` });
     conversation.appendMessage({ sessionId, role: 'user', text: content });
-    people.touch(who.id, { name: person.name, source: person.source || where, valence: heard.appraisal.valence });
+    people.touch(who.id, { ...known, valence: heard.appraisal.valence });
   }
   if (llmMode(settings) === 'demo') return { reply: '' };
 

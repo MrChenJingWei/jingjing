@@ -1,5 +1,6 @@
 // TAPD 来源插件：用一个假的 tapd-cli（node 脚本，读 JSON 夹具）验证状态分类、首次只记基线、
-// 每次最多交 10 条且轮换、syncStatus 按 id 批量查 / 找不到标 missing、找不到命令和没令牌时的提示。不联网。
+// 每次最多交 10 条且轮换、syncStatus 按 id 批量查 / 找不到标 missing、找不到命令和没令牌时的提示、
+// 评论和 @ 提醒（增量游标、只交和我有关的、评论优先交、超出的排队）。不联网。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -20,27 +21,39 @@ const fs = require('fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, token: process.env.TAPD_TOKEN }) + '\\n');
 const db = JSON.parse(fs.readFileSync(${JSON.stringify(fixture)}, 'utf8'));
-const kv = Object.fromEntries(args.slice(2).map((a) => [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)]));
+const kv = Object.fromEntries(args.slice(2).filter((a) => a.includes('=')).map((a) => [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)]));
 const out = (data) => console.log(JSON.stringify({ status: 1, data, info: 'success' }));
 const [entity, verb] = args;
 if (entity === 'user') out({ nick: '小明' });
 else if (entity === 'bug' && verb === 'related-stories') out((db.relations || {})[kv['bug-id']] ? db.relations[kv['bug-id']].map((id) => ({ workspace_id: kv.workspaceid, bug_id: kv['bug-id'], story_id: id })) : []);
-else if (verb === 'fields') out({ status: { options: db.labels[entity] } });
-else if (verb === 'count') out({ count: db[entity].length });
+else if (entity === 'comment' && verb === 'list') {
+  let rows = db.comments || [];
+  if (kv.created && kv.created.startsWith('>')) rows = rows.filter((c) => c.created > kv.created.slice(1));
+  out(rows.map((c) => ({ Comment: c })));
+}
+else if (verb === 'fields') out((db.fields || {})[entity] || { status: { options: db.labels[entity] } });
+else if (verb === 'count') out({ count: db[entity].filter((r) => !kv.status || kv.status.split('|').includes(r.status)).length });
 else if (verb === 'list') {
   let rows = db[entity];
   if (kv.id) rows = rows.filter((r) => kv.id.split(',').includes(r.id));
+  // 筛选条件：值用 | 表示「或」（和 TAPD 一样）；处理人类字段按包含匹配（TAPD 存的是「张三;李四;」）。
+  for (const [key, value] of Object.entries(kv)) {
+    if (['workspaceid', 'id', 'limit', 'order', 'fields'].includes(key)) continue;
+    const wanted = value.split('|');
+    rows = rows.filter((r) => r[key] === undefined || wanted.some((w) => String(r[key]).split(';').includes(w)));
+  }
   const wrap = entity === 'bug' ? 'Bug' : 'Story';
   out(rows.map((r) => ({ [wrap]: r })));
 } else { console.log(JSON.stringify({ status: 0, info: 'unknown' })); }
 `, { mode: 0o755 });
 
 const bugs = (n, status = 'new') => Array.from({ length: n }, (_, i) => ({ id: `11${1000 + i}`, title: `缺陷 ${i}`, status, modified: '2026-11-17 10:00:00', description: '<p>步骤：<br/>点登录</p>' }));
-function setRemote(bug, story = [], relations = {}) {
+function setRemote(bug, story = [], relations = {}, comments = []) {
   fs.writeFileSync(fixture, JSON.stringify({
     bug,
     story,
     relations,
+    comments,
     labels: {
       bug: { new: '未解决', status_4: '已解决未上线', postponed: 'E3-已关闭', status_5: '已上线' },
       story: { developing: 'C2-实现中', status_9: 'F3-已发布线上' }
@@ -73,7 +86,7 @@ test('test()：报告命令路径、处理人和数量；令牌从配置传给�
   setRemote(bugs(3));
   const result = await tapd.test(base, memory());
   assert.equal(result.ok, true);
-  assert.match(result.detail, /小明.*123 的缺陷 3 条/);
+  assert.match(result.detail, /项目 123，处理人「小明」：缺陷 3 条/);
   assert.ok(fs.readFileSync(calls, 'utf8').trim().split('\n').every((line) => JSON.parse(line).token === 'tok'));
 });
 
@@ -184,4 +197,153 @@ test('归类：syncStatus 顺带交父节点（壳节点回填 / 父指针变化
   const missing = await tapd.syncStatus({ ...base }, [{ externalId: '404', meta: { workspaceId: '123', entity: 'bug' } }], { ...memory(), classify: 'on' });
   assert.equal(missing[0].missing, true);
   assert.equal(missing[0].node, undefined, '找不到的不交 node');
+});
+
+/* ------------------------------ 评论和 @ 提醒 ------------------------------ */
+
+const comment = (id, author, entryType, entryId, created, description, title = '') => ({ id, author, entry_type: entryType, entry_id: entryId, created, description, title, root_id: '0', reply_id: '0' });
+
+test('@ 识别：TAPD 界面的 at-who 标记和纯文本「@昵称」都算，名字是别人名字的前缀时不算', () => {
+  assert.equal(tapd.mentions('<b class="at-who" data-userid="小明" data-type="user">@小明</b> 看下', '小明'), true);
+  assert.equal(tapd.mentions('<p>请 @小明 确认</p>', '小明'), true);
+  assert.equal(tapd.mentions('<p>请 @小明明 确认</p>', '小明'), false);
+  assert.equal(tapd.mentions('<p>小明你好</p>', '小明'), false);
+});
+
+test('评论提醒：第一次只记游标、认出参与过的单子，不回补；之后只交和我有关、不是我写的新评论，评论先交', async () => {
+  const mine = [{ id: '7001', title: '分给我的缺陷', status: 'new', modified: '2026-11-17 10:00:00' }];
+  const story = [{ id: '8001', name: '我参与讨论的需求', status: 'developing' }, { id: '8002', name: '别人的需求', status: 'developing' }];
+  const history = [comment('c1', '小明', 'stories', '8001', '2026-11-10 10:00:00', '<p>我先看看</p>')];
+  setRemote(mine, story, {}, history);
+  const ctx = memory();
+  const config = { ...base, startFresh: false };
+  const first = await tapd.poll(config, ctx);
+  assert.ok(first.items.every((item) => item.externalType !== '评论'), '第一次不回补历史评论');
+  assert.ok(ctx.state.get('comments:cursor:123'), '记下游标');
+
+  const at = (min) => new Date(Date.now() + (8 * 60 + min) * 60000).toISOString().slice(0, 19).replace('T', ' ');
+  setRemote(mine, story, {}, [
+    ...history,
+    comment('c2', '测试甲', 'bug_remark', '7001', at(1), '<p>复测不通过</p>', '流转状态从 [已解决] 到 [重新打开] 添加'),
+    comment('c3', '测试乙', 'stories', '8001', at(2), '<p>补充了截图</p>'),
+    comment('c4', '产品丙', 'stories', '8002', at(3), '<p><b class="at-who" data-userid="小明">@小明</b> 这个排期？</p>'),
+    comment('c5', '产品丙', 'stories', '8002', at(4), '<p>和小明无关的讨论</p>'),
+    comment('c6', '小明', 'bug', '7001', at(5), '<p>我自己写的</p>')
+  ]);
+  const { items } = await tapd.poll(config, ctx);
+  const notes = items.filter((item) => item.externalType === '评论');
+  assert.deepEqual(notes.map((item) => item.externalId), ['comment:c2', 'comment:c3', 'comment:c4']);
+  assert.equal(items[0].externalType, '评论', '评论排在单子前面');
+  const [reopen, talked, mention] = notes;
+  assert.equal(reopen.eventType, 'tapd.comment');
+  assert.match(reopen.title, /测试甲 评论了：分给我的缺陷/);
+  assert.match(reopen.content, /场景：流转状态从 \[已解决\] 到 \[重新打开\] 添加/);
+  assert.equal(reopen.groupKey, 'tapd:123:bug:7001');
+  assert.equal(reopen.track, false, '评论不绑状态跟踪');
+  assert.deepEqual(reopen.node, { workspace: '123', type: 'bug', id: '7001' });
+  assert.equal(reopen.url, 'https://www.tapd.cn/123/bugtrace/bugs/view?bug_id=7001');
+  assert.match(talked.title, /我参与讨论的需求/, '不是分给我的单子，标题另查');
+  assert.equal(mention.eventType, 'tapd.comment.mention');
+  assert.match(mention.title, /产品丙 @ 了你：别人的需求/);
+
+  const again = await tapd.poll(config, ctx);
+  assert.ok(again.items.every((item) => item.externalType !== '评论'), '同一条评论不会再交');
+});
+
+test('评论提醒：一次超过 10 条时排队，几轮交完；关掉之后不再拉评论', async () => {
+  const mine = [{ id: '7001', title: '分给我的缺陷', status: 'new', modified: '2026-11-17 10:00:00' }];
+  setRemote(mine, [], {}, []);
+  const ctx = memory();
+  const config = { ...base, startFresh: false };
+  await tapd.poll(config, ctx);
+  const at = (sec) => new Date(Date.now() + 8 * 3600000 + 60000 + sec * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  setRemote(mine, [], {}, Array.from({ length: 14 }, (_, i) => comment(`n${i}`, '测试甲', 'bug', '7001', at(i), `<p>第 ${i} 条</p>`)));
+  const one = await tapd.poll(config, ctx);
+  assert.equal(one.items.length, 10);
+  assert.ok(one.items.every((item) => item.externalType === '评论'));
+  const two = await tapd.poll(config, ctx);
+  assert.equal(two.items.filter((item) => item.externalType === '评论').length, 4);
+  assert.ok(two.items.some((item) => item.externalId === '7001'), '剩下的名额给单子');
+
+  fs.writeFileSync(calls, '');
+  await tapd.poll({ ...config, comments: false }, memory());
+  assert.ok(!fs.readFileSync(calls, 'utf8').includes('"comment"'), '关掉后不调 comment list');
+});
+
+/* ------------------------------ 单项目 + 筛选条件 ------------------------------ */
+
+test('一条配置只对应一个项目：填了多个给出拆开的提示', async () => {
+  setRemote(bugs(1));
+  const result = await tapd.test({ ...base, workspaceIds: '123, 456' }, memory());
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /一条配置只对应一个项目/);
+  await assert.rejects(tapd.poll({ ...base, workspaceIds: '123,456' }, memory()), /其他项目.*各加一条/);
+});
+
+test('查询条件：默认只看分给我的；筛选条件按类型取、多个值用 |、「我」换成昵称、非法字段名忽略', () => {
+  const plain = tapd.queryFor({}, 'bug', '小明');
+  assert.deepEqual(plain.params, ['current_owner=小明']);
+  assert.equal(plain.statusFiltered, false);
+
+  const q = tapd.queryFor({
+    scope: 'any',
+    filters: [
+      { field: 'story.developer', values: ['我', '小红'] },
+      { field: 'story.status', values: ['developing', 'status_15'] },
+      { field: 'bug.status', values: ['new'] },
+      { field: 'story.bad key', values: ['x'] },
+      { field: 'story.label', values: ['a|b'] }
+    ]
+  }, 'story', '小明');
+  assert.deepEqual(q.params, ['developer=小明|小红', 'status=developing|status_15']);
+  assert.equal(q.statusFiltered, true, '选了状态就完全按用户的来');
+  assert.throws(() => tapd.queryFor({ scope: 'any', filters: [{ field: 'story.status', values: ['x'] }] }, 'bug', '小明'), /至少要加一个筛选条件/);
+});
+
+test('按筛选条件拉：选了状态时已结束的也会进来；改了条件重新记基线，不会一下子全涌进来', async () => {
+  const list = [
+    { id: '301', title: '分给小红的', status: 'new', current_owner: '小红;', modified: '2026-11-17 10:00:00' },
+    { id: '302', title: '已上线但要看', status: 'status_5', current_owner: '小红;', modified: '2026-11-17 10:00:00' },
+    { id: '303', title: '分给我的', status: 'new', current_owner: '小明;', modified: '2026-11-17 10:00:00' }
+  ];
+  setRemote(list);
+  const ctx = memory();
+  const mine = { ...base, startFresh: false, comments: false };
+  assert.deepEqual((await tapd.poll(mine, ctx)).items.map((i) => i.externalId), ['303']);
+
+  const others = { ...mine, scope: 'any', filters: [{ field: 'bug.current_owner', values: ['小红'] }, { field: 'bug.status', values: ['new', 'status_5'] }] };
+  assert.deepEqual((await tapd.poll(others, memory())).items.map((i) => i.externalId).sort(), ['301', '302']);
+
+  const fresh = { ...others, startFresh: true };
+  const ctx2 = memory();
+  assert.deepEqual((await tapd.poll(fresh, ctx2)).items, [], '第一次只记基线');
+  const changed = { ...fresh, filters: [{ field: 'bug.current_owner', values: ['小红'] }] };
+  assert.deepEqual((await tapd.poll(changed, ctx2)).items, [], '改了条件重新记一次基线');
+  list.push({ id: '304', title: '新分给小红的', status: 'new', current_owner: '小红;', modified: '2026-11-17 11:00:00' });
+  setRemote(list);
+  assert.deepEqual((await tapd.poll(changed, ctx2)).items.map((i) => i.externalId), ['304']);
+});
+
+test('filterFields：按类型分组，只给下拉 / 多选（带候选值）和选人字段，常用字段排前面', async () => {
+  setRemote(bugs(1), [], {}, []);
+  const fixtureData = JSON.parse(fs.readFileSync(fixture, 'utf8'));
+  fixtureData.fields = {
+    bug: {
+      custom_field_10: { label: '问题分类', html_type: 'select', options: { 功能问题: '功能问题', 性能问题: '性能问题' } },
+      title: { label: '标题', html_type: 'input' },
+      status: { label: '状态', html_type: 'select', options: { new: '未解决', resolved: '已解决' } },
+      priority: { label: '优先级', html_type: 'select', options: { high: '高' } },
+      priority_label: { label: '优先级', html_type: 'select', options: { high: '高' } },
+      current_owner: { label: '处理人', html_type: 'user_chooser', options: [] },
+      project_id: { label: '所属项目', html_type: 'select', options: { 123: '演示' } },
+      module: { label: '模块', html_type: 'select', options: [] }
+    },
+    story: { developer: { label: '开发人员', html_type: 'user_chooser' } }
+  };
+  fs.writeFileSync(fixture, JSON.stringify(fixtureData));
+  const { fields } = await tapd.filterFields({ ...base, entities: 'both' }, memory());
+  assert.deepEqual(fields.map((f) => f.key), ['bug.status', 'bug.priority_label', 'bug.current_owner', 'bug.custom_field_10', 'story.developer']);
+  assert.deepEqual(fields[0], { key: 'bug.status', label: '状态', group: '缺陷', input: 'enum', options: [{ value: 'new', label: '未解决' }, { value: 'resolved', label: '已解决' }] });
+  assert.equal(fields.find((f) => f.key === 'bug.current_owner').input, 'user');
+  assert.equal(fields.find((f) => f.key === 'story.developer').group, '需求');
 });

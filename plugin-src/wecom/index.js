@@ -1,15 +1,52 @@
 import AiBot, { generateReqId } from '@wecom/aibot-node-sdk';
 import { createRelay } from './relay.js';
+import { directoryConfigured, checkDirectory, lookupMembers } from './directory.js';
+import { cliStatus, lookupByCli } from './cli.js';
 
 // 每个插件实例（一条长连接）一个 relay：deliver() 由静静调用，按实例找到对应的连接。
 const relays = new Map();
 
-export async function test(config) {
+export async function test(config, ctx = {}) {
   if (!config.botId || !config.secret) return { ok: false, detail: 'BotID 和 Secret 都要填' };
+  // 认人：wecom-cli 没装不算失败（只是认不出名字），自建应用凭证填了就必须能用。
+  const cli = await cliStatus(config, { signal: ctx.signal });
+  const notes = [cli.ok ? 'wecom-cli 已授权，新认识的人会去通讯录查姓名和部门。' : `认人：${cli.detail}。`];
+  if (String(config.corpId || '').trim() || String(config.contactSecret || '').trim()) {
+    if (!directoryConfigured(config)) return { ok: false, detail: '自建应用查通讯录要 CorpID 和 Secret 都填' };
+    try {
+      await checkDirectory(config, ctx.signal);
+      notes.push('自建应用凭证可用，wecom-cli 搜不到的人用它补查。');
+    } catch (err) {
+      return { ok: false, detail: err.message };
+    }
+  }
   return {
     ok: true,
-    detail: '凭证已填写。保存并启用后会建立 WebSocket 长连接；企业微信不会在“测试连接”时被连接。'
+    detail: `机器人凭证已填写。保存并启用后会建立 WebSocket 长连接；企业微信不会在“测试连接”时被连接。${notes.join('')}`
   };
+}
+
+/**
+ * 静静认人：新认识的人马上查一次，之后每天刷新。ids 是企微 userid。
+ * 先用 wecom-cli（机器人的通讯录授权）；没装、没授权或搜不到的，配了自建应用就用它补查。两条路都没有时返回空。
+ */
+export async function lookupPeople(config, ids, ctx) {
+  const found = new Map();
+  let cliError = null;
+  try {
+    for (const p of await lookupByCli(config, ids, { signal: ctx.signal })) found.set(p.id, p);
+  } catch (err) {
+    cliError = err;
+    if (err.code !== 'NO_CLI') ctx.log?.(`wecom-cli 查通讯录失败：${err.message}`);
+  }
+  const rest = ids.filter((id) => !found.has(String(id)));
+  if (rest.length && directoryConfigured(config)) {
+    for (const p of await lookupMembers(config, rest, { signal: ctx.signal, log: ctx.log })) found.set(p.id, p);
+  } else if (cliError && cliError.code !== 'NO_CLI') {
+    // CLI 装了却调不通（没授权、网络），又没有备用：抛出去，静静下一小时再试。
+    throw cliError;
+  }
+  return { people: [...found.values()] };
 }
 
 export async function poll() {
@@ -107,6 +144,8 @@ export async function start(config, ctx) {
           occurredAt,
           // 机器人只收得到私聊和群里 @ 它的消息：都是直接找过来的。
           direct: true,
+          // 谁说的：企微 userid，名字由静静去通讯录查（lookupPeople）。
+          ...(body.from?.userid ? { actor: { id: body.from.userid } } : {}),
           replyTo: {
             chatid: body.chatid || body.from?.userid || '',
             chattype: body.chattype || 'single',

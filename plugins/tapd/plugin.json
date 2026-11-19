@@ -3,9 +3,9 @@
   "id": "tapd",
   "apiVersion": 1,
   "name": "TAPD",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "icon": "T",
-  "description": "通过本机的 tapd-cli 发现分给你的缺陷 / 需求并建任务；任务卡上跟踪它在 TAPD 里的状态。开启自动归类后，按「缺陷 → 关联需求、子需求 → 父需求」把卡归到需求下。只读，不会改 TAPD。",
+  "description": "通过本机的 tapd-cli 发现一个 TAPD 项目里的缺陷 / 需求并建任务：默认是分给你的，也可以按这个项目自己的字段和状态筛选；任务卡上跟踪它在 TAPD 里的状态，和你有关的新评论也会告诉你。每个项目建一条。只读，不会改 TAPD。",
   "entry": "index.js",
   "type": "poll",
   "intervalMinutes": 15,
@@ -20,26 +20,49 @@
       "label": "项目 ID",
       "type": "text",
       "required": true,
-      "placeholder": "33349361, 41055554",
-      "help": "TAPD 项目链接里 tapd.cn/ 后面那串数字，多个用逗号分隔"
+      "placeholder": "33349361",
+      "help": "TAPD 项目链接里 tapd.cn/ 后面那串数字。一条配置只对应一个项目：各项目的字段和状态不一样，其他项目再加一条"
     },
     {
       "key": "entities",
       "label": "跟踪哪些",
       "type": "select",
       "options": [
-        { "value": "bug", "label": "分给我的缺陷" },
-        { "value": "story", "label": "分给我的需求" },
+        { "value": "bug", "label": "缺陷" },
+        { "value": "story", "label": "需求" },
         { "value": "both", "label": "缺陷和需求" }
       ],
       "default": "bug"
     },
     {
+      "key": "scope",
+      "label": "范围",
+      "type": "select",
+      "options": [
+        { "value": "mine", "label": "分给我的（处理人是我）" },
+        { "value": "any", "label": "不限，只按下面的筛选条件" }
+      ],
+      "default": "mine"
+    },
+    {
+      "key": "filters",
+      "label": "筛选条件",
+      "type": "filters",
+      "help": "从这个项目实际的字段里选，比如状态、优先级、迭代、开发人员、自定义字段；同一字段选多个值是「或」，不同字段之间是「且」。没选状态时，已经结束的单子不会进来"
+    },
+    {
       "key": "startFresh",
-      "label": "只为启用之后新分给我的单子建卡",
+      "label": "只为启用之后新出现的单子建卡",
       "type": "checkbox",
       "default": true,
-      "help": "不勾的话，启用时手上所有没结束的单子都会交给静静判断、建卡（每次最多 10 条）"
+      "help": "不勾的话，启用时已经符合条件的单子都会交给静静判断、建卡（每次最多 10 条）。改了范围或筛选条件也会重新记一次"
+    },
+    {
+      "key": "comments",
+      "label": "评论和 @ 提醒",
+      "type": "checkbox",
+      "default": true,
+      "help": "有人 @ 你、在分给你的单子上评论、或在你评论过的单子上回复时，交给静静：要处理的建卡，只是知会的在对话里说一声。只看启用之后的新评论"
     },
     {
       "key": "owner",

@@ -1,5 +1,6 @@
-// TAPD 来源插件：调本机的 tapd-cli（只读：list / count / fields / user info / related-stories），
-// 发现分给你、还没结束的缺陷 / 需求交给静静判断建卡；任务卡上跟踪它在 TAPD 里的状态（syncStatus）。
+// TAPD 来源插件：调本机的 tapd-cli（只读：list / count / fields / user info / related-stories / comment list），
+// 发现分给你、还没结束的缺陷 / 需求交给静静判断建卡；任务卡上跟踪它在 TAPD 里的状态（syncStatus）；
+// 和你有关的新评论（@ 你、在你的单子上、你参与过讨论的单子上）也交给静静，见「评论和 @ 提醒」。
 // 状态映射全在这里（status.js），静静核心不认识 TAPD。
 //
 // 归类（docs/architecture/external.md「插件怎么接」）：只交事实，不挑分类。
@@ -83,11 +84,16 @@ export function runCli(config, args, { signal } = {}) {
 
 /* --------------------------------- 配置 --------------------------------- */
 
+/**
+ * 一条配置只对应一个项目：各项目的字段、状态、自定义字段都不一样，筛选条件只对这一个项目有意义。
+ * 返回数组只是为了下面的循环写法不变。
+ */
 function workspaceIds(config) {
   const ids = String(config.workspaceIds || '').split(/[\s,，;；]+/).map((s) => s.trim()).filter(Boolean);
   const bad = ids.find((id) => !/^\d+$/.test(id));
   if (bad) throw new Error(`项目 ID 只能是数字：${bad}`);
   if (!ids.length) throw new Error('先在插件设置里填项目 ID');
+  if (ids.length > 1) throw new Error(`一条配置只对应一个项目（现在填了 ${ids.length} 个）。各项目的字段和状态不一样：这里留一个，其他项目在「任务来源 → TAPD」里各加一条`);
   return ids;
 }
 
@@ -296,7 +302,7 @@ function toItem(config, kind, ws, row, status) {
   const entity = ENTITIES[kind];
   const title = String(row[entity.title] || `${entity.label} ${row.id}`).trim();
   const facts = [
-    `分给你的 TAPD ${entity.label}，请查看并处理。`,
+    `TAPD ${entity.label}（符合这个来源的筛选条件），请查看并处理。`,
     `状态：${status.label}`,
     row.priority_label ? `优先级：${row.priority_label}` : '',
     row.severity ? `严重程度：${row.severity}` : '',
@@ -318,18 +324,48 @@ function toItem(config, kind, ws, row, status) {
   };
 }
 
+const FIELD_KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
+const ME = new Set(['我', '@me', '$me']);
+
+/**
+ * 这一类单子（缺陷 / 需求）的查询条件：范围（分给我的）+ 用户配的筛选条件，转成 TAPD list 的参数。
+ * 筛选条件的字段写成「类型.字段」（bug.status、story.developer），只取这一类的；同一字段多个值用 | 表示「或」；
+ * 值写「我」换成处理人昵称。返回 { params, statusFiltered }：选了状态就完全按用户的来，不再自动去掉已结束的。
+ */
+export function queryFor(config, kind, owner) {
+  const entity = ENTITIES[kind];
+  const params = new Map();
+  if ((config.scope || 'mine') !== 'any') params.set(entity.owner, owner);
+  for (const row of Array.isArray(config.filters) ? config.filters : []) {
+    const [type, key] = String(row?.field || '').split('.');
+    if (type !== kind || !FIELD_KEY_RE.test(key || '')) continue;
+    const values = (Array.isArray(row.values) ? row.values : [])
+      .map((value) => (ME.has(String(value).trim()) ? owner : String(value).trim()))
+      .filter((value) => value && !value.includes('|'));
+    if (values.length) params.set(key, [...new Set(values)].join('|'));
+  }
+  if (!params.size) {
+    throw new Error(`范围选了「不限」，${entity.label}至少要加一个筛选条件，不然会把整个项目的${entity.label}都拉进来`);
+  }
+  return {
+    params: [...params].map(([key, value]) => `${key}=${value}`),
+    statusFiltered: params.has('status') || params.has('v_status')
+  };
+}
+
 async function listOpen(config, ctx, ws, kind, owner, overrides) {
   const entity = ENTITIES[kind];
   const fields = ['id', entity.title, 'status', 'modified', 'resolution', 'priority_label', 'iteration_id', 'description', ...(kind === 'bug' ? ['severity'] : ['parent_id'])];
+  const query = queryFor(config, kind, owner);
   const [labels, rows] = await Promise.all([
     statusLabels(config, ctx, ws, kind),
-    runCli(config, [entity.cmd, 'list', `workspaceid=${ws}`, `${entity.owner}=${owner}`, `limit=${LIST_LIMIT}`, 'order=modified desc', `fields=${fields.join(',')}`], ctx)
+    runCli(config, [entity.cmd, 'list', `workspaceid=${ws}`, ...query.params, `limit=${LIST_LIMIT}`, 'order=modified desc', `fields=${fields.join(',')}`], ctx)
   ]);
   return (Array.isArray(rows) ? rows : [])
     .map((wrapped) => wrapped?.[entity.wrap] || wrapped)
     .filter((row) => row?.id)
     .map((row) => ({ row, status: statusOf(row, labels, overrides) }))
-    .filter(({ status }) => !isFinished(status.category))
+    .filter(({ status }) => query.statusFiltered || !isFinished(status.category))
     .map(({ row, status }) => {
       const item = toItem(config, kind, ws, row, status);
       // 原始行只留在内存里，补归类关系时用；不交给静静。
@@ -338,7 +374,207 @@ async function listOpen(config, ctx, ws, kind, owner, overrides) {
     });
 }
 
+/* ------------------------------ 评论和 @ 提醒 ------------------------------ */
+//
+// TAPD OpenAPI（tapd-cli）没有消息通知接口，这里用增量拉评论拼出来：
+// 每个项目一次 comment list（created > 游标），只留「不是我写的」且和我有关的——
+// @ 了我、挂在分给我的单子上、或者是我参与过讨论（评论过）的单子。
+// 评论交给静静判断：要处理的（测试打回、提了问题）建卡，只是知会的在对话里汇总一句。
+
+const COMMENT_ENTRIES = {
+  stories: { kind: 'story', label: '需求' },
+  story: { kind: 'story', label: '需求' },
+  bug: { kind: 'bug', label: '缺陷' },
+  bug_remark: { kind: 'bug', label: '缺陷' },
+  tasks: { kind: 'task', label: '任务' },
+  task: { kind: 'task', label: '任务' }
+};
+const COMMENT_LIMIT = 200;
+const COMMENT_OVERLAP_MS = 60 * 1000;
+const COMMENT_QUEUE_MAX = 100;
+const SEEN_COMMENTS = 1000;
+const TALKED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const TASK_VIEW = (ws, id) => `${ws}/prong/tasks/view/${id}`;
+
+/** TAPD 用北京时间、不带时区的字符串：YYYY-MM-DD HH:MM:SS。 */
+function tapdTime(ms) {
+  const d = new Date(ms + 8 * 3600 * 1000);
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+const escapeRe = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** 有没有 @ 我：TAPD 界面里的 @ 是 <b class="at-who" data-userid="昵称">；用接口发的评论只有纯文本「@昵称」。 */
+export function mentions(html, nick) {
+  if (!nick) return false;
+  const name = escapeRe(nick);
+  return new RegExp(`data-userid="${name}"`).test(html) || new RegExp(`@\\s*${name}(?![\\p{L}\\p{N}])`, 'u').test(plainText(html));
+}
+
+/** 单子的标题（不是分给我的单子，评论里只有 id），按项目和类型批量查、缓存 12 小时。 */
+async function entryTitles(config, ctx, ws, kind, ids) {
+  const out = new Map();
+  const entity = ENTITIES[kind];
+  if (!entity) return out;
+  const missing = [];
+  for (const id of new Set(ids)) {
+    const cached = cachedOr(ctx, `title:${ws}:${kind}:${id}`);
+    if (cached) out.set(id, cached.title);
+    else missing.push(id);
+  }
+  for (let i = 0; i < missing.length; i += SYNC_CHUNK) {
+    const part = missing.slice(i, i + SYNC_CHUNK);
+    try {
+      const rows = await runCli(config, [entity.cmd, 'list', `workspaceid=${ws}`, `id=${part.join(',')}`, `limit=${SYNC_CHUNK}`, `fields=id,${entity.title}`], ctx);
+      for (const wrapped of Array.isArray(rows) ? rows : []) {
+        const row = wrapped?.[entity.wrap] || wrapped;
+        if (!row?.id) continue;
+        const title = String(row[entity.title] || '').slice(0, 200);
+        out.set(String(row.id), title);
+        ctx.state?.set(`title:${ws}:${kind}:${row.id}`, { at: Date.now(), title });
+      }
+    } catch (err) {
+      ctx.log?.(`查单子标题失败（${kind} ${ws}）：${err.message}`);
+    }
+  }
+  return out;
+}
+
+function commentItem(config, ws, comment, { title, mention }) {
+  const entry = COMMENT_ENTRIES[comment.entry_type];
+  const entryId = String(comment.entry_id);
+  const name = title || `${entry.label} #${entryId.slice(-7)}`;
+  const view = entry.kind === 'task' ? TASK_VIEW : ENTITIES[entry.kind].view;
+  const flow = String(comment.title || '').trim();
+  const body = plainText(comment.description).slice(0, 1500);
+  const facts = [
+    mention ? `${comment.author} 在 TAPD ${entry.label}「${name}」里 @ 了你。` : `TAPD ${entry.label}「${name}」有新评论。`,
+    `评论人：${comment.author}`,
+    flow ? `场景：${flow}` : '',
+    // 只交事实：评论是外人写的，不能替静静挑 Worker。
+    `项目 ID：${ws}，${entry.label} ID：${entryId}`
+  ].filter(Boolean);
+  return {
+    externalId: `comment:${comment.id}`,
+    externalType: '评论',
+    kind: 'note',
+    eventType: mention ? 'tapd.comment.mention' : 'tapd.comment',
+    title: `${comment.author}${mention ? ' @ 了你' : ' 评论了'}：${name}`.slice(0, 120),
+    content: [facts.join('\n'), body].filter(Boolean).join('\n\n'),
+    url: `${webBase(config)}/${view(ws, entryId)}`,
+    occurredAt: isoTime(comment.created),
+    // 同一张单子上的多条评论：在排队的卡上合并，不各建一张。
+    groupKey: `tapd:${ws}:${entry.kind}:${entryId}`,
+    // 评论没有自己的状态可跟踪；单子的状态由单子本身那张卡跟。
+    track: false,
+    // 归类：评论挂在哪张单子上（父节点之前拉单子时已经交过，这次不说）。
+    ...(ENTITIES[entry.kind] ? { node: { workspace: ws, type: entry.kind, id: entryId } } : {}),
+    // 评论人：TAPD 里用昵称当身份。
+    ...(comment.author ? { actor: { id: comment.author, name: comment.author } } : {}),
+    meta: { workspaceId: ws, entity: entry.kind, entryId, commentId: String(comment.id), author: comment.author, mention }
+  };
+}
+
+/**
+ * 拉新评论，和我有关的放进待交队列（state.commentQueue）。第一次只记游标、认一下参与过的单子，不回补历史。
+ * mine：这次拉到的、分给我且没结束的单子 id。
+ */
+async function collectComments(config, ctx, ws, nick, mine) {
+  const state = ctx.state;
+  const cursorKey = `comments:cursor:${ws}`;
+  const talkedKey = `comments:talked:${ws}`;
+  const cursor = state?.get(cursorKey);
+  const now = Date.now();
+  const args = ['comment', 'list', `workspaceid=${ws}`, `limit=${COMMENT_LIMIT}`, '--full'];
+  // 往前多看一分钟，同一秒里的评论不会漏；重复的按评论 id 去掉。
+  if (cursor) args.push(`created=>${tapdTime(cursor - COMMENT_OVERLAP_MS)}`);
+  const rows = await runCli(config, args, ctx);
+  const comments = (Array.isArray(rows) ? rows : [])
+    .map((wrapped) => wrapped?.Comment || wrapped)
+    .filter((c) => c?.id && COMMENT_ENTRIES[c.entry_type])
+    .sort((a, b) => String(a.created).localeCompare(String(b.created)));
+
+  const talked = Object.fromEntries(Object.entries(state?.get(talkedKey) || {}).filter(([, at]) => now - at < TALKED_TTL_MS));
+  for (const c of comments) {
+    if (c.author === nick) talked[String(c.entry_id)] = Date.parse(isoTime(c.created) || '') || now;
+  }
+  state?.set(talkedKey, talked);
+  const latest = comments.length ? Date.parse(isoTime(comments[comments.length - 1].created) || '') : NaN;
+  state?.set(cursorKey, Number.isFinite(latest) ? Math.max(latest, cursor || 0) : cursor || now);
+  if (!cursor) {
+    ctx.log?.(`评论提醒：第一次运行，项目 ${ws} 从现在开始看（认出参与过的单子 ${Object.keys(talked).length} 张）`);
+    return 0;
+  }
+
+  const seen = new Set(state?.get('comments:seen') || []);
+  const relevant = [];
+  for (const c of comments) {
+    if (seen.has(String(c.id)) || c.author === nick) continue;
+    seen.add(String(c.id));
+    const entryId = String(c.entry_id);
+    const mention = mentions(c.description, nick);
+    if (mention || mine.has(entryId) || talked[entryId]) relevant.push({ c, mention });
+  }
+  state?.set('comments:seen', [...seen].slice(-SEEN_COMMENTS));
+  if (!relevant.length) return 0;
+
+  // 单子标题：分给我的这次已经拉到了，其他的按类型批量查一次。
+  const titles = new Map([...mine.entries()]);
+  for (const kind of ['bug', 'story']) {
+    const ids = relevant.map(({ c }) => c).filter((c) => COMMENT_ENTRIES[c.entry_type].kind === kind && !titles.has(String(c.entry_id))).map((c) => String(c.entry_id));
+    if (ids.length) for (const [id, title] of await entryTitles(config, ctx, ws, kind, ids)) titles.set(id, title);
+  }
+  const queue = state?.get('commentQueue') || [];
+  for (const { c, mention } of relevant) queue.push(commentItem(config, ws, c, { title: titles.get(String(c.entry_id)), mention }));
+  state?.set('commentQueue', queue.slice(-COMMENT_QUEUE_MAX));
+  return relevant.length;
+}
+
 /* --------------------------------- 入口 --------------------------------- */
+
+const SKIP_FIELDS = new Set(['project_id', 'workspace_id', 'id', 'workitem_type_id', 'secret_workitem']);
+const FIELD_ORDER = ['status', 'priority_label', 'severity', 'iteration_id', 'label', 'current_owner', 'owner', 'developer', 'de', 'te', 'fixer', 'reporter', 'creator', 'category_id', 'module'];
+const ENUM_TYPES = new Set(['select', 'multi_select', 'radio', 'checkbox']);
+
+function fieldOptions(options) {
+  if (Array.isArray(options)) return options.map((o) => (o && typeof o === 'object' ? { value: String(o.value ?? o.id ?? ''), label: String(o.label ?? o.name ?? o.value ?? '') } : { value: String(o), label: String(o) }));
+  if (options && typeof options === 'object') return Object.entries(options).map(([value, label]) => ({ value, label: String(label) }));
+  return [];
+}
+
+/**
+ * 设置页「筛选条件」可选的字段：这个项目实际的字段（含自定义字段）和候选值，按缺陷 / 需求分组。
+ * 只给能直接拿来过滤的：下拉 / 多选（带候选值）和选人字段（填昵称，「我」表示自己）。
+ */
+export async function filterFields(config, ctx = {}) {
+  const [ws] = workspaceIds(config);
+  const out = [];
+  for (const kind of entityKinds(config)) {
+    const entity = ENTITIES[kind];
+    const data = await runCli(config, [entity.cmd, 'fields', `workspaceid=${ws}`], ctx);
+    const fields = data && typeof data === 'object' ? data : {};
+    const list = [];
+    for (const [key, info] of Object.entries(fields)) {
+      if (!info || typeof info !== 'object' || !FIELD_KEY_RE.test(key) || SKIP_FIELDS.has(key)) continue;
+      // 新旧两个优先级字段都有时只留 priority_label（列表查询用它）。
+      if (key === 'priority' && fields.priority_label) continue;
+      const type = String(info.html_type || '');
+      const label = String(info.label || info.name || key);
+      if (type === 'user_chooser') {
+        list.push({ key: `${kind}.${key}`, label, group: entity.label, input: 'user', help: '填昵称，多个用逗号分开；写「我」表示你自己' });
+      } else if (ENUM_TYPES.has(type)) {
+        const options = fieldOptions(info.options).filter((o) => o.value);
+        if (options.length) list.push({ key: `${kind}.${key}`, label, group: entity.label, input: 'enum', options });
+      }
+    }
+    const rank = (field) => {
+      const index = FIELD_ORDER.indexOf(field.key.split('.')[1]);
+      return index < 0 ? FIELD_ORDER.length : index;
+    };
+    out.push(...list.sort((a, b) => rank(a) - rank(b)));
+  }
+  return { fields: out };
+}
 
 export async function test(config, ctx = {}) {
   try {
@@ -350,11 +586,13 @@ export async function test(config, ctx = {}) {
     for (const ws of ids) {
       for (const kind of entityKinds(config)) {
         const entity = ENTITIES[kind];
-        const data = await runCli(config, [entity.cmd, 'count', `workspaceid=${ws}`, `${entity.owner}=${owner}`], ctx);
-        counts.push(`${ws} 的${entity.label} ${data?.count ?? '?'} 条`);
+        const query = queryFor(config, kind, owner);
+        const data = await runCli(config, [entity.cmd, 'count', `workspaceid=${ws}`, ...query.params], ctx);
+        counts.push(`${entity.label} ${data?.count ?? '?'} 条${query.statusFiltered ? '' : '（含已结束的）'}`);
       }
     }
-    return { ok: true, detail: `已连上 TAPD（${bin}），处理人「${owner}」：${counts.join('，')}（含已结束的）` };
+    const who = (config.scope || 'mine') === 'any' ? '按筛选条件' : `处理人「${owner}」`;
+    return { ok: true, detail: `已连上 TAPD（${bin}），项目 ${ids[0]}，${who}：${counts.join('，')}` };
   } catch (err) {
     return { ok: false, detail: err.message };
   }
@@ -370,7 +608,23 @@ export async function poll(config, ctx = {}) {
     }
   }
   const state = ctx.state;
-  const scope = `${workspaceIds(config).join(',')}|${entityKinds(config).join(',')}|${owner}`;
+  // 范围或筛选条件变了就重新记一次基线：新条件下已经存在的单子不会一下子全涌进来。
+  // 默认（分给我的、没有条件）保持旧格式，升级后不会无故重记基线、漏掉两次拉取之间新分来的单子。
+  const narrowed = (config.scope || 'mine') !== 'mine' || (Array.isArray(config.filters) && config.filters.length);
+  const scope = `${workspaceIds(config).join(',')}|${entityKinds(config).join(',')}|${owner}${narrowed ? `|${config.scope || 'mine'}|${JSON.stringify(config.filters || [])}` : ''}`;
+
+  // 评论和 @ 提醒：拉不到只记日志，不影响单子本身。
+  if (config.comments !== false) {
+    for (const ws of workspaceIds(config)) {
+      const mine = new Map(items.filter((item) => item._tapd.ws === ws).map((item) => [item.externalId, item.title]));
+      try {
+        const added = await collectComments(config, ctx, ws, owner, mine);
+        if (added) ctx.log?.(`项目 ${ws} 有 ${added} 条和你有关的新评论`);
+      } catch (err) {
+        ctx.log?.(`拉评论失败（${ws}）：${err.message}`);
+      }
+    }
+  }
 
   // 第一次启用：记下现在手上已有的单子，之后只为新分来的建卡，免得一启用就建一大堆。
   if (config.startFresh !== false) {
@@ -384,14 +638,18 @@ export async function poll(config, ctx = {}) {
     items.splice(0, items.length, ...items.filter((item) => !known.has(item.externalId)));
   }
 
-  // 静静一次最多处理 10 条：还没交过的排前面，交过的（静静已经见过，只会顺带更新状态）补在后面。
+  // 静静一次最多处理 10 条：评论先交（有时效），剩下的名额给单子；没交完的评论留在队列里下次再交。
+  const queue = state?.get('commentQueue') || [];
+  const comments = queue.slice(0, MAX_ITEMS);
+  state?.set('commentQueue', queue.slice(comments.length));
+  // 单子：还没交过的排前面，交过的（静静已经见过，只会顺带更新状态）补在后面。
   const handed = new Set(state?.get('handed') || []);
-  const ordered = [...items.filter((item) => !handed.has(item.externalId)), ...items.filter((item) => handed.has(item.externalId))].slice(0, MAX_ITEMS);
+  const ordered = [...items.filter((item) => !handed.has(item.externalId)), ...items.filter((item) => handed.has(item.externalId))].slice(0, MAX_ITEMS - comments.length);
   for (const item of ordered) handed.add(item.externalId);
   state?.set('handed', [...handed].slice(-REMEMBER));
   await attachTrees(config, ctx, ordered.map((item) => ({ ...item._tapd, target: item })), overrides);
-  ctx.log?.(`没结束的 ${items.length} 条，这次交 ${ordered.length} 条`);
-  return { items: ordered };
+  ctx.log?.(`没结束的 ${items.length} 条，这次交 ${ordered.length} 条${comments.length ? `，评论 ${comments.length} 条` : ''}`);
+  return { items: [...comments, ...ordered] };
 }
 
 /** 刷新已经绑在任务卡上的单子的状态：按项目和类型分组，一次查一批 id。 */

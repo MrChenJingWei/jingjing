@@ -451,6 +451,8 @@ export function listPlugins() {
       autoChat: canSpeak(item.module) && (row.auto_chat === null || row.auto_chat === undefined ? Boolean(row.auto_reply) : Boolean(row.auto_chat)),
       // 导出了 deliver()：收到回执、状态播报、在渠道里拍板都由静静按 relay 策略来管。
       canDeliver: typeof item.module?.deliver === 'function',
+      // 导出了 filterFields()：设置页的「筛选条件」可以从这个实例实际有的字段里选（比如每个 TAPD 项目各自的字段和状态）。
+      filterFields: typeof item.module?.filterFields === 'function',
       relay: (({ autoResult: _a, ...rest }) => ({ ...rest, owners: rest.owners.join(', ') }))(relayPolicy(row)),
       // 声明了归类能力（manifest.classification）：设置页据此显示三态开关。声明不等于启用。
       classification: manifest.classification

@@ -3,7 +3,10 @@ import path from 'node:path';
 
 export const PLUGIN_API_VERSION = 1;
 // folder：本机文件夹路径，界面上是文件夹选择器（值就是路径字符串）。
-export const FIELD_TYPES = ['text', 'url', 'password', 'number', 'checkbox', 'textarea', 'select', 'folder'];
+// filters：一组「字段 + 取值」条件（值是 [{ field, values: [] }]）。可选的字段和候选值由插件的 filterFields() 按当前配置给出，
+// 所以每个实例（比如每个 TAPD 项目）可以有自己的一套字段。
+export const FIELD_TYPES = ['text', 'url', 'password', 'number', 'checkbox', 'textarea', 'select', 'folder', 'filters'];
+export const FILTER_LIMITS = Object.freeze({ rows: 12, values: 50, field: 64, value: 120 });
 export const PLUGIN_TYPES = ['poll', 'webhook', 'stream', 'manual', 'watch'];
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,31}$/;
 const KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
@@ -184,6 +187,8 @@ function validateField(field, index) {
     }
   } else if (type === 'checkbox') {
     out.default = field.default === undefined ? false : Boolean(field.default);
+  } else if (type === 'filters') {
+    out.default = field.default === undefined ? [] : normalizeFilters(field.default, key);
   } else if (type === 'select') {
     if (!Array.isArray(field.options) || field.options.length === 0) {
       bad(`config.${key} 是 select，必须提供非空 options`);
@@ -349,7 +354,34 @@ export function validateGroupAt(raw, nodeTypes, label = 'groupAt') {
   return out;
 }
 
+/** 归一化筛选条件：[{ field, values }]，去空、去重、截断；字段名只允许字母数字和 . _ -。 */
+export function normalizeFilters(value, key = 'filters') {
+  let list = value;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch { bad(`config.${key} 不是合法的条件列表`); }
+  }
+  if (!Array.isArray(list)) bad(`config.${key} 必须是条件列表`);
+  if (list.length > FILTER_LIMITS.rows) bad(`config.${key} 最多 ${FILTER_LIMITS.rows} 个条件`);
+  const out = [];
+  for (const row of list) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) bad(`config.${key} 的每个条件都必须是对象`);
+    const field = String(row.field ?? '').trim();
+    if (!field) continue;
+    if (field.length > FILTER_LIMITS.field || !/^[A-Za-z][\w.-]*$/.test(field)) bad(`config.${key} 的字段名不合法：${field.slice(0, 40)}`);
+    const values = [...new Set((Array.isArray(row.values) ? row.values : [row.values])
+      .map((v) => String(v ?? '').trim())
+      .filter(Boolean))];
+    if (!values.length) continue;
+    if (values.length > FILTER_LIMITS.values) bad(`config.${key} 的「${field}」最多选 ${FILTER_LIMITS.values} 个值`);
+    if (values.some((v) => v.length > FILTER_LIMITS.value)) bad(`config.${key} 的「${field}」有值太长`);
+    out.push({ field, values });
+  }
+  return out;
+}
+
 function coerceValue(field, value) {
+  if (field.type === 'filters') return normalizeFilters(value, field.key);
+
   if (field.type === 'checkbox') {
     if (typeof value === 'boolean') return value;
     if (value === 'true' || value === '1') return true;
@@ -394,7 +426,7 @@ export function validateConfig(manifest, raw = {}, { requireAll = false } = {}) 
   for (const field of manifest.config || []) {
     const supplied = Object.prototype.hasOwnProperty.call(raw, field.key);
     const value = supplied ? raw[field.key] : undefined;
-    const empty = value === undefined || value === null || value === '';
+    const empty = value === undefined || value === null || value === '' || (field.type === 'filters' && Array.isArray(value) && !value.length);
     if (empty) {
       if (requireAll && field.required) bad(`缺少必填配置：${field.label || field.key}`);
       out[field.key] = field.default;

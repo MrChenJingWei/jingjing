@@ -15,12 +15,15 @@ import * as relay from './relay.js';
 import * as memory from './memory.js';
 import * as classification from './task-classification.js';
 import * as knowledge from './knowledge.js';
+import * as people from './people.js';
+import { appraise } from './affect.js';
 
 const MAX_ITEMS_PER_RUN = 10;
 const running = new Set();
 const lifecycles = new Map();
 let timer = null;
 let syncTimer = null;
+let peopleTimer = null;
 let syncing = false;
 let shuttingDown = false;
 
@@ -40,6 +43,7 @@ export const limits = {
   startMs: 30 * 1000,
   stopMs: 10 * 1000,
   syncMs: 30 * 1000,
+  lookupMs: 30 * 1000,
   // 长连接断了以后自动重连：30 秒起，每次翻倍，最长 30 分钟；连上后稳定 5 分钟才把退避清零。
   restartBaseMs: 30 * 1000,
   restartMaxMs: 30 * 60 * 1000,
@@ -226,6 +230,8 @@ export function normalizeItem(raw) {
     occurredAt,
     meta: raw.meta && typeof raw.meta === 'object' ? raw.meta : {},
     replyTo: normalizeReplyTo(raw.replyTo),
+    // 这条是谁说的 / 谁做的：{ id, name? }。用来认人；没给时按旧字段（meta.userid 等）兜底。
+    actor: normalizeActor(raw.actor),
     // 对方直接找过来的消息（私聊、群里 @ 机器人）：不是要办的事也不直接丢掉，交给静静按人格决定回不回。
     direct: raw.direct === true,
     // 带状态的来源（TAPD 缺陷、PR……）：外部状态和类型，建卡时绑到任务上；track: false 表示不要跟踪。
@@ -239,6 +245,14 @@ export function normalizeItem(raw) {
 }
 
 /** 回传地址只是插件自己认识的一小段数据（比如 { chatId }），宿主原样存、原样交回 reply()。 */
+function normalizeActor(value) {
+  if (!value) return null;
+  const raw = typeof value === 'object' ? value : { id: value };
+  const id = String(raw.id ?? '').trim().slice(0, 80);
+  if (!id) return null;
+  return { id, name: String(raw.name || '').trim().slice(0, 40) };
+}
+
 function normalizeReplyTo(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   try {
@@ -468,9 +482,12 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
       details.push({ externalId: item.externalId, title: item.title, status: 'skipped', taskId: null, reason });
       continue;
     }
+    const speaker = speakerOf(id, plugin, item);
+    const newcomer = Boolean(speaker) && !people.get(speaker.id);
     if (!decision?.actionable && item.direct) {
       // 有人直接找静静，但不是要办的事：不建任务，交给她按人格决定回不回。
-      const chatted = await chatBack(id, plugin, item, { canReply, autoChat });
+      const chatted = await chatBack(id, plugin, item, { canReply, autoChat, speaker });
+      if (newcomer) lookupSoon(id, [speaker.id]);
       recordItem(id, item, 'chat', null, chatted.reason);
       details.push({ externalId: item.externalId, title: item.title, status: 'chat', taskId: null, reason: chatted.reason, replied: chatted.replied, reply: chatted.reply || '' });
       continue;
@@ -481,6 +498,10 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
       details.push({ externalId: item.externalId, title: item.title, status: 'skipped', taskId: null, reason });
       continue;
     }
+    // 要办的事：派活的人也记下来（熟悉一点），新人去查一下通讯录；任务上记下是谁派的（合并过的人记到主身份上）。
+    noteSpeaker(speaker, item);
+    if (newcomer) lookupSoon(id, [speaker.id]);
+    const requester = speaker ? people.get(speaker.id)?.id || null : null;
     // 事项命中工作流程时，按流程指定的 Worker / 工作区派活，并把步骤附进指令。
     // 先用原消息匹配触发词；没命中再看模型挑的流程；最后用模型改写的任务名再匹配一次
     // （「蓝马的4.5做的怎么样了」里没有「进度」，改写成「回复蓝马4.5需求进度」就有了）。
@@ -577,7 +598,8 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
       workflowName: flow?.name || '',
       replyTo: canReply ? item.replyTo : null,
       hold: routing?.hold || null,
-      sourceLink: sourceLinkFor(id, plugin, item)
+      sourceLink: sourceLinkFor(id, plugin, item),
+      requester
     });
     recordItem(id, item, 'task', task.id, decision.reason || '需要处理');
     if (injected.length) knowledge.recordInjection(task.id, injected, scope?.key);
@@ -744,6 +766,42 @@ export async function testPlugin(id, overrideConfig = {}) {
     emitPluginStatus(id);
   }
   return { ...result, latencyMs: Date.now() - started };
+}
+
+/**
+ * 设置页「筛选条件」用：按表单里当前的配置（可以还没保存）问插件，这个实例有哪些字段可以筛、各有什么候选值。
+ * 插件返回 { fields: [{ key, label, input?: 'enum' | 'user' | 'text', options?: [{ value, label }] }] }，这里白名单收口。
+ */
+export async function pluginFilterFields(id, overrideConfig = {}) {
+  const plugin = plugins.getPlugin(id);
+  if (!plugin) throw Object.assign(new Error('插件不存在'), { statusCode: 404 });
+  if (typeof plugin.module.filterFields !== 'function') throw Object.assign(new Error('这个来源没有提供可筛选的字段'), { statusCode: 400 });
+  const config = { ...plugin.config, ...overrideConfig };
+  for (const field of plugin.manifest.config || []) {
+    if (field.type === 'password' && config[field.key] === plugins.MASK) config[field.key] = plugin.config[field.key];
+  }
+  const result = await withTimeout(() => plugin.module.filterFields(config, {
+    settings: pluginSettings(),
+    log: (msg) => console.log(`[plugin:${id}:fields] ${msg}`),
+    instanceId: id,
+    pluginId: plugin.pluginId,
+    state: stateFor(id)
+  }), limits.testMs, `读取字段 ${seconds(limits.testMs)}还没有结果`);
+  const cut = (value, n) => String(value ?? '').trim().slice(0, n);
+  const fields = (Array.isArray(result?.fields) ? result.fields : [])
+    .filter((field) => field && /^[A-Za-z][\w.-]{0,63}$/.test(String(field.key || '')))
+    .slice(0, 200)
+    .map((field) => ({
+      key: String(field.key),
+      label: cut(field.label || field.key, 60),
+      group: cut(field.group, 30),
+      input: ['enum', 'user', 'text'].includes(field.input) ? field.input : (Array.isArray(field.options) && field.options.length ? 'enum' : 'text'),
+      help: cut(field.help, 120),
+      options: (Array.isArray(field.options) ? field.options : []).slice(0, 500)
+        .map((option) => ({ value: cut(option?.value, 120), label: cut(option?.label ?? option?.value, 80) }))
+        .filter((option) => option.value)
+    }));
+  return { fields };
 }
 
 export async function runAll({ force = false } = {}) {
@@ -1079,6 +1137,109 @@ export async function refreshLink(taskId, linkId) {
   return result;
 }
 
+/* ------------------------------ 认人：查通讯录 ------------------------------ */
+
+const LOOKUP_BATCH = 50;
+const lookingUp = new Set();
+
+/**
+ * 用来源插件的 lookupPeople(config, ids, ctx) 查一批人（ids 是对方在来源里的 id）。
+ * 返回 [{ id, name?, title?, department?, alias? }]；查不到的不返回。插件不支持、停用了，或返回了结果，都记下查过的时间（一天后再查）；
+ * 抛错不记，下一轮（每小时）再试。
+ */
+export async function lookupPeople(id, persons) {
+  if (!persons.length) return { looked: 0, found: 0 };
+  const plugin = plugins.getPlugin(id);
+  const supported = plugin?.enabled && typeof plugin.module?.lookupPeople === 'function';
+  if (!supported) {
+    for (const p of persons) people.applyDirectory(p.id, null);
+    return { skipped: !plugin ? 'removed' : !plugin.enabled ? 'disabled' : 'unsupported' };
+  }
+  if (lookingUp.has(id)) return { skipped: 'running' };
+  lookingUp.add(id);
+  const controller = new AbortController();
+  try {
+    const byExternal = new Map(persons.map((p) => [String(p.external_id), p]));
+    const result = await withTimeout(() => plugin.module.lookupPeople(plugin.config, [...byExternal.keys()], {
+      settings: pluginSettings(),
+      signal: controller.signal,
+      log: lifecycleLogger(id),
+      instanceId: id,
+      pluginId: plugin.pluginId,
+      state: stateFor(id)
+    }), limits.lookupMs, `查通讯录超时（${seconds(limits.lookupMs)}）`);
+    const list = Array.isArray(result) ? result : Array.isArray(result?.people) ? result.people : [];
+    const found = new Map();
+    for (const entry of list) {
+      if (entry && entry.id !== undefined && byExternal.has(String(entry.id))) found.set(String(entry.id), entry);
+    }
+    for (const [externalId, person] of byExternal) people.applyDirectory(person.id, found.get(externalId) || null);
+    if (found.size) bus.emit('mind/updated', { people: true });
+    return { looked: byExternal.size, found: found.size };
+  } finally {
+    controller.abort();
+    lookingUp.delete(id);
+  }
+}
+
+/** 新认识的人：不等每天的刷新，马上（后台）查。同一阵子进来的新人攒成一批；这个来源正在查就等它查完再查。 */
+const lookupQueue = new Map();
+function lookupSoon(id, personIds) {
+  if (!lookupQueue.has(id)) lookupQueue.set(id, new Set());
+  const queue = lookupQueue.get(id);
+  const scheduled = queue.size > 0;
+  for (const pid of personIds) queue.add(pid);
+  if (!scheduled) setTimeout(() => flushLookups(id), 200).unref?.();
+}
+
+async function flushLookups(id) {
+  const queue = lookupQueue.get(id);
+  if (!queue?.size || shuttingDown) return;
+  if (lookingUp.has(id)) {
+    setTimeout(() => flushLookups(id), 500).unref?.();
+    return;
+  }
+  // 合并过的人用主身份查：主身份不在这个来源（查不了）的跳过，交给每天的刷新按它自己的来源查。
+  const lookupable = (pid) => {
+    const p = people.get(pid);
+    return p?.external_id && p.source_id === id ? p : null;
+  };
+  const persons = [];
+  for (const pid of [...queue]) {
+    const p = lookupable(pid);
+    queue.delete(pid);
+    if (p && !persons.some((x) => x.id === p.id) && persons.length < LOOKUP_BATCH) persons.push(p);
+    else if (p && persons.length >= LOOKUP_BATCH) queue.add(pid);
+  }
+  try {
+    if (persons.length) await lookupPeople(id, persons);
+  } catch (err) {
+    console.warn(`[plugin:${id}] 查通讯录失败：${err.message}`);
+  }
+  if (queue.size) setTimeout(() => flushLookups(id), 0).unref?.();
+}
+
+/** 每小时看一眼：一天没查过（或从没查过）的人，按来源分组、每组一批去查。 */
+export async function refreshPeopleDue() {
+  if (shuttingDown) return {};
+  const groups = new Map();
+  for (const person of people.dueForLookup()) {
+    if (!groups.has(person.source_id)) groups.set(person.source_id, []);
+    groups.get(person.source_id).push(person);
+  }
+  const summary = {};
+  for (const [id, persons] of groups) {
+    if (shuttingDown) break;
+    try {
+      summary[id] = await lookupPeople(id, persons.slice(0, LOOKUP_BATCH));
+    } catch (err) {
+      summary[id] = { error: err.message };
+      console.warn(`[plugin:${id}] 查通讯录失败：${err.message}`);
+    }
+  }
+  return summary;
+}
+
 export function start() {
   shuttingDown = false;
   // 上次进程在判断途中退出留下的占位：放掉，下次轮询重新处理。
@@ -1089,6 +1250,10 @@ export function start() {
   timer.unref();
   syncTimer = setInterval(() => syncDue().catch((err) => console.warn('[discovery] 同步状态：', err.message)), 30000);
   syncTimer.unref();
+  const refreshPeople = () => refreshPeopleDue().catch((err) => console.warn('[discovery] 查通讯录：', err.message));
+  setTimeout(refreshPeople, 90000).unref();
+  peopleTimer = setInterval(refreshPeople, 60 * 60 * 1000);
+  peopleTimer.unref();
   console.log('[discovery] 来源插件轮询已启动');
 }
 
@@ -1097,6 +1262,7 @@ export function stop() {
   shuttingDown = true;
   if (timer) clearInterval(timer);
   if (syncTimer) clearInterval(syncTimer);
+  if (peopleTimer) clearInterval(peopleTimer);
   for (const id of [...restarts.keys()]) cancelRestart(id);
 }
 
@@ -1107,28 +1273,55 @@ export function stop() {
  * 有人私聊或 @ 静静、但说的不是要办的事：不建任务，由静静按人格决定回不回（爱回不回）。
  * 往外发消息要主人打开这个来源的「自动发回」；没开就不回，也不调模型。
  */
-/** 说话的人是谁：来源插件给的用户 id（企微的 userid 等），认不出来时按会话分组。用来让静静认人、接上之前的聊天。 */
+/**
+ * 说话的人是谁：插件在条目上给的 actor（{ id, name }）。老插件没给时，按 meta / replyTo 里常见的用户字段兜底。
+ * 不再拿 groupKey 兜底：那是会话 / 事项，不是人。身份按来源实例区分：`<实例 id>:<对方 id>`。
+ */
+const LEGACY_ACTOR_KEYS = ['userid', 'userId', 'sender', 'author'];
 function speakerOf(instanceId, plugin, item) {
   const meta = item.meta || {};
   const to = item.replyTo && typeof item.replyTo === 'object' ? item.replyTo : {};
-  const key = meta.userid || meta.userId || meta.sender || to.userId || to.userid || item.groupKey || '';
-  if (!key) return null;
+  const legacy = LEGACY_ACTOR_KEYS.map((key) => meta[key] ?? to[key]).find((v) => typeof v === 'string' || typeof v === 'number');
+  const actor = item.actor || normalizeActor(legacy === undefined ? null : {
+    id: legacy,
+    name: meta.name || meta.userName || meta.nickname || ''
+  });
+  if (!actor) return null;
   return {
-    id: `${instanceId}:${String(key).slice(0, 80)}`,
-    name: String(meta.name || meta.userName || meta.nickname || '').slice(0, 40),
-    source: plugin.label || plugin.manifest.name
+    id: `${instanceId}:${actor.id}`,
+    name: actor.name,
+    source: plugin.label || plugin.manifest.name,
+    sourceId: instanceId,
+    externalId: actor.id
   };
 }
 
-async function chatBack(instanceId, plugin, item, { canReply, autoChat }) {
-  if (!canReply || !item.replyTo) return { replied: false, reason: '闲聊；这个来源不能回消息' };
-  if (!autoChat) return { replied: false, reason: '闲聊；没开「闲聊自动回」，静静不回' };
+/** 来往了一次（派活、找她却没让她回话）：熟悉一点，好感按这句话的情绪动一点。只改人，不碰心情。 */
+function noteSpeaker(speaker, item) {
+  if (!speaker) return;
+  try {
+    people.touch(speaker.id, { ...speaker, valence: appraise(`${item.title}\n${item.content || ''}`).valence });
+  } catch (err) {
+    console.warn('[discovery] 记下说话的人失败：', err.message);
+  }
+}
+
+async function chatBack(instanceId, plugin, item, { canReply, autoChat, speaker = null }) {
+  // 不回也记得这个人来找过她；回的话由 chatReply 记（连同这次聊天的情绪）。
+  if (!canReply || !item.replyTo) {
+    noteSpeaker(speaker, item);
+    return { replied: false, reason: '闲聊；这个来源不能回消息' };
+  }
+  if (!autoChat) {
+    noteSpeaker(speaker, item);
+    return { replied: false, reason: '闲聊；没开「闲聊自动回」，静静不回' };
+  }
   let reply = '';
   try {
     ({ reply } = await persona.chatReply({
       text: item.content || item.title,
       where: plugin.label || plugin.manifest.name,
-      person: speakerOf(instanceId, plugin, item)
+      person: speaker
     }));
   } catch (err) {
     return { replied: false, reason: `闲聊；没回成：${truncate(err.message, 80)}` };

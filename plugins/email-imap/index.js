@@ -1,5 +1,14 @@
 import { fetchUnread, testImap } from './imap.js';
 
+/** 发件人：「张三 <zhangsan@example.com>」→ { id: 邮箱（小写）, name: 张三 }。 */
+export function senderOf(from) {
+  const text = String(from || '').trim();
+  const address = (text.match(/<([^<>\s]+@[^<>\s]+)>/) || text.match(/([^\s<>"]+@[^\s<>"]+)/) || [])[1];
+  if (!address) return null;
+  const name = text.replace(/<[^>]*>/, '').replace(/^["'\s]+|["'\s]+$/g, '').trim();
+  return { id: address.toLowerCase(), name: name && !name.includes('@') ? name : '' };
+}
+
 const PRESETS = {
   qq: { host: 'imap.qq.com', port: 993 },
   '163': { host: 'imap.163.com', port: 993 },
@@ -53,6 +62,7 @@ export async function poll(config, ctx = {}) {
           '',
           message.text.slice(0, 2000)
         ].filter(Boolean).join('\n'),
+        ...(senderOf(message.from) ? { actor: senderOf(message.from) } : {}),
         meta: {
           from: message.from,
           date: message.date,

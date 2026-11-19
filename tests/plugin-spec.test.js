@@ -170,3 +170,28 @@ test('仓库里的内置 Worker 和 Worker 模板都符合规范', () => {
   const template = validateManifest(JSON.parse(fs.readFileSync(path.join(templateDir, 'plugin.json'), 'utf8')), { dir: templateDir });
   assert.equal(template.kind, 'worker');
 });
+
+test('筛选条件（filters）：归一化去空去重，接受 JSON 字符串，拒绝非法字段名和过多条件', () => {
+  const { dir, raw } = tempPlugin({ config: [{ key: 'filters', label: '筛选条件', type: 'filters' }] });
+  const manifest = validateManifest(raw, { dir, dirName: 'demo' });
+  assert.deepEqual(manifest.config[0].default, []);
+  assert.deepEqual(validateConfig(manifest, {}).filters, [], '没填就是空列表');
+
+  const config = validateConfig(manifest, {
+    filters: [
+      { field: 'bug.status', values: ['new', 'new', ' ', 'reopened'] },
+      { field: '', values: ['x'] },
+      { field: 'story.owner', values: '我' },
+      { field: 'bug.label', values: [] }
+    ]
+  });
+  assert.deepEqual(config.filters, [
+    { field: 'bug.status', values: ['new', 'reopened'] },
+    { field: 'story.owner', values: ['我'] }
+  ]);
+  assert.deepEqual(validateConfig(manifest, { filters: '[{"field":"bug.status","values":["new"]}]' }).filters, [{ field: 'bug.status', values: ['new'] }]);
+
+  assert.throws(() => validateConfig(manifest, { filters: [{ field: 'bug status', values: ['x'] }] }), /字段名不合法/);
+  assert.throws(() => validateConfig(manifest, { filters: 'not json' }), /不是合法的条件列表/);
+  assert.throws(() => validateConfig(manifest, { filters: Array.from({ length: 13 }, (_, i) => ({ field: `f${i}`, values: ['x'] })) }), /最多 12 个条件/);
+});

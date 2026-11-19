@@ -132,7 +132,9 @@ export function createTask({
   linkKind = null,
   // 绑定的外部对象（见 source-links.linkFromItem），和任务在同一个事务里写入；sourceLinks 是多条。
   sourceLink = null,
-  sourceLinksList = null
+  sourceLinksList = null,
+  // 派活的人（people.id）：外部来源里说这件事的人。另起的后续卡不传时沿用上一张的。
+  requester = null
 }) {
   const chosen = worker || defaultWorker();
   if (!chosen) {
@@ -150,17 +152,18 @@ export function createTask({
   const stamp = now();
   const cleanTitle = String(title || prompt || '未命名任务').slice(0, 80);
   const approvalId = hold ? uid('a_') : null;
+  const askedBy = requester || (parentId ? db.prepare('SELECT requester FROM tasks WHERE id = ?').get(parentId)?.requester : null) || null;
   transaction(() => {
     db.prepare(`
-      INSERT INTO tasks(id, title, prompt, worker, cwd, status, priority, origin, rule_id, session_id, group_key, hops, workflow_id, options, reply_to, approval_id, progress, parent_id, link_kind, recoveries, created_at, updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
+      INSERT INTO tasks(id, title, prompt, worker, cwd, status, priority, origin, rule_id, session_id, group_key, hops, workflow_id, options, reply_to, approval_id, progress, parent_id, link_kind, requester, recoveries, created_at, updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
     `).run(
       id, cleanTitle, String(prompt || cleanTitle), chosen,
       cwd || settings.defaultCwd || '', hold ? 'waiting_approval' : 'queued', priority, origin, ruleId, sessionId,
       groupKey || null, Math.max(0, Number(hops) || 0), workflowId || null,
       options ? JSON.stringify(options) : null, replyTo ? JSON.stringify(replyTo) : null,
       approvalId, hold ? hold.progress || '等你决定交给谁' : null,
-      parentId || null, parentId ? linkKind || 'followup' : null, stamp, stamp
+      parentId || null, parentId ? linkKind || 'followup' : null, askedBy, stamp, stamp
     );
     event(id, 'task/created', {
       worker: chosen, origin, title: cleanTitle, source,

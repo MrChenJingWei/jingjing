@@ -625,6 +625,26 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, mind.overview());
     }
 
+    // 合并同一个人：把 from 并进 :id。
+    const mergeMatch = pathname.match(/^\/api\/people\/([^/]+)\/merge$/);
+    if (mergeMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      try {
+        const person = people.merge(decodeURIComponent(mergeMatch[1]), String(body.from || ''));
+        bus.emit('mind/updated', { people: true });
+        return json(res, 200, { person, mind: mind.overview() });
+      } catch (err) {
+        return fail(res, 400, err.message);
+      }
+    }
+    // 主人说这两个不是同一个人：不再提示合并。
+    if (req.method === 'POST' && pathname === '/api/people/distinct') {
+      const body = await readBody(req);
+      if (!people.markDistinct(String(body.a || ''), String(body.b || ''))) return fail(res, 400, '这两个人不对');
+      bus.emit('mind/updated', { people: true });
+      return json(res, 200, mind.overview());
+    }
+
     const personMatch = pathname.match(/^\/api\/people\/([^/]+)$/);
     if (personMatch && req.method === 'PATCH') {
       const body = await readBody(req);
@@ -994,6 +1014,12 @@ const server = http.createServer(async (req, res) => {
       const list = plugins.listPlugins();
       bus.emit('plugins/updated', { plugins: list, errors: plugins.pluginErrors() });
       return json(res, 200, { plugin, plugins: list, errors: plugins.pluginErrors() });
+    }
+
+    const filterFieldsMatch = pathname.match(/^\/api\/plugins\/([^/]+)\/filter-fields$/);
+    if (filterFieldsMatch && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      return json(res, 200, await discovery.pluginFilterFields(decodeURIComponent(filterFieldsMatch[1]), body.config || {}));
     }
 
     const pluginMatch = pathname.match(/^\/api\/plugins\/([^/]+)(?:\/(test|scan|fork|restore-official))?$/);

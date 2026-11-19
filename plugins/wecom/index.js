@@ -9040,11 +9040,11 @@ var require_mime_types = __commonJS({
       }
       return exts[0];
     }
-    function lookup(path) {
-      if (!path || typeof path !== "string") {
+    function lookup(path2) {
+      if (!path2 || typeof path2 !== "string") {
         return false;
       }
-      var extension2 = extname("x." + path).toLowerCase().substr(1);
+      var extension2 = extname("x." + path2).toLowerCase().substr(1);
       if (!extension2) {
         return false;
       }
@@ -9749,10 +9749,10 @@ var require_get_proto = __commonJS({
 var require_hasown = __commonJS({
   "plugin-src/wecom/node_modules/hasown/index.js"(exports, module) {
     "use strict";
-    var call = Function.prototype.call;
+    var call2 = Function.prototype.call;
     var $hasOwn = Object.prototype.hasOwnProperty;
     var bind = require_function_bind();
-    module.exports = bind.call(call, $hasOwn);
+    module.exports = bind.call(call2, $hasOwn);
   }
 });
 
@@ -10149,11 +10149,11 @@ var require_form_data = __commonJS({
     "use strict";
     var CombinedStream = require_combined_stream();
     var util = __require("util");
-    var path = __require("path");
+    var path2 = __require("path");
     var http = __require("http");
     var https = __require("https");
     var parseUrl = __require("url").parse;
-    var fs = __require("fs");
+    var fs2 = __require("fs");
     var Stream = __require("stream").Stream;
     var crypto = __require("crypto");
     var mime = require_mime_types();
@@ -10223,7 +10223,7 @@ var require_form_data = __commonJS({
         if (value.end != void 0 && value.end != Infinity && value.start != void 0) {
           callback(null, value.end + 1 - (value.start ? value.start : 0));
         } else {
-          fs.stat(value.path, function(err, stat) {
+          fs2.stat(value.path, function(err, stat) {
             if (err) {
               callback(err);
               return;
@@ -10280,11 +10280,11 @@ var require_form_data = __commonJS({
     FormData2.prototype._getContentDisposition = function(value, options) {
       var filename;
       if (typeof options.filepath === "string") {
-        filename = path.normalize(options.filepath).replace(/\\/g, "/");
+        filename = path2.normalize(options.filepath).replace(/\\/g, "/");
       } else if (options.filename || value && (value.name || value.path)) {
-        filename = path.basename(options.filename || value && (value.name || value.path));
+        filename = path2.basename(options.filename || value && (value.name || value.path));
       } else if (value && value.readable && hasOwn(value, "httpVersion")) {
-        filename = path.basename(value.client._httpMessage.path || "");
+        filename = path2.basename(value.client._httpMessage.path || "");
       }
       if (filename) {
         return 'filename="' + escapeHeaderParam(filename) + '"';
@@ -12109,7 +12109,7 @@ var require_axios = __commonJS({
     var https = __require("https");
     var http2 = __require("http2");
     var util = __require("util");
-    var path = __require("path");
+    var path2 = __require("path");
     var followRedirects = require_follow_redirects();
     var zlib = __require("zlib");
     var stream = __require("stream");
@@ -12783,13 +12783,13 @@ var require_axios = __commonJS({
       return utils$1.isArray(value) ? value.map(normalizeValue) : sanitizeHeaderValue(String(value));
     }
     function parseTokens(str) {
-      const tokens = /* @__PURE__ */ Object.create(null);
+      const tokens2 = /* @__PURE__ */ Object.create(null);
       const tokensRE = /([^\s,;=]+)\s*(?:=\s*([^,;]+))?/g;
       let match;
       while (match = tokensRE.exec(str)) {
-        tokens[match[1]] = match[2];
+        tokens2[match[1]] = match[2];
       }
-      return tokens;
+      return tokens2;
     }
     var parameterNameRE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
     function trimOWS(value) {
@@ -13299,9 +13299,9 @@ var require_axios = __commonJS({
     function removeBrackets(key) {
       return utils$1.endsWith(key, "[]") ? key.slice(0, -2) : key;
     }
-    function renderKey(path2, key, dots) {
-      if (!path2) return key;
-      return path2.concat(key).map(function each(token, i) {
+    function renderKey(path3, key, dots) {
+      if (!path3) return key;
+      return path3.concat(key).map(function each(token, i) {
         token = removeBrackets(token);
         return !dots && i ? "[" + token + "]" : token;
       }).join(dots ? "." : "");
@@ -13376,13 +13376,13 @@ var require_axios = __commonJS({
           return currentValue;
         });
       }
-      function defaultVisitor(value, key, path2) {
+      function defaultVisitor(value, key, path3) {
         let arr = value;
         if (utils$1.isReactNative(formData) && utils$1.isReactNativeBlob(value)) {
-          formData.append(renderKey(path2, key, dots), convertValue(value));
+          formData.append(renderKey(path3, key, dots), convertValue(value));
           return false;
         }
-        if (value && !path2 && typeof value === "object") {
+        if (value && !path3 && typeof value === "object") {
           if (utils$1.endsWith(key, "{}")) {
             key = metaTokens ? key : key.slice(0, -2);
             value = stringifyWithDepthLimit(value, 1);
@@ -13401,7 +13401,7 @@ var require_axios = __commonJS({
         if (isVisitable(value)) {
           return true;
         }
-        formData.append(renderKey(path2, key, dots), convertValue(value));
+        formData.append(renderKey(path3, key, dots), convertValue(value));
         return false;
       }
       const exposedHelpers = Object.assign(predicates, {
@@ -13409,17 +13409,17 @@ var require_axios = __commonJS({
         convertValue,
         isVisitable
       });
-      function build(value, path2, depth = 0) {
+      function build(value, path3, depth = 0) {
         if (utils$1.isUndefined(value)) return;
         throwIfMaxDepthExceeded(depth);
         if (stack.indexOf(value) !== -1) {
-          throw new Error("Circular reference detected in " + path2.join("."));
+          throw new Error("Circular reference detected in " + path3.join("."));
         }
         stack.push(value);
         utils$1.forEach(value, function each(el, key) {
-          const result = !(utils$1.isUndefined(el) || el === null) && visitor.call(formData, el, utils$1.isString(key) ? key.trim() : key, path2, exposedHelpers);
+          const result = !(utils$1.isUndefined(el) || el === null) && visitor.call(formData, el, utils$1.isString(key) ? key.trim() : key, path3, exposedHelpers);
           if (result === true) {
-            build(el, path2 ? path2.concat(key) : [key], depth + 1);
+            build(el, path3 ? path3.concat(key) : [key], depth + 1);
           }
         });
         stack.pop();
@@ -13689,7 +13689,7 @@ var require_axios = __commonJS({
     };
     function toURLEncodedForm(data, options) {
       return toFormData(data, new platform.classes.URLSearchParams(), {
-        visitor: function(value, key, path2, helpers) {
+        visitor: function(value, key, path3, helpers) {
           if (platform.isNode && utils$1.isBuffer(value)) {
             this.append(key, value.toString("base64"));
             return false;
@@ -13706,14 +13706,14 @@ var require_axios = __commonJS({
       }
     }
     function parsePropPath(name) {
-      const path2 = [];
+      const path3 = [];
       const pattern = /[^.[\]]+|\[([^.[\]]*)]/g;
       let match;
       while ((match = pattern.exec(name)) !== null) {
-        throwIfDepthExceeded(path2.length);
-        path2.push(match[0] === "[]" ? "" : match[1] || match[0]);
+        throwIfDepthExceeded(path3.length);
+        path3.push(match[0] === "[]" ? "" : match[1] || match[0]);
       }
-      return path2;
+      return path3;
     }
     function arrayToObject(arr) {
       const obj = {};
@@ -13746,12 +13746,12 @@ var require_axios = __commonJS({
       return obj;
     }
     function formDataToJSON(formData) {
-      function buildPath(path2, value, target, index) {
+      function buildPath(path3, value, target, index) {
         throwIfDepthExceeded(index);
-        let name = path2[index++];
+        let name = path3[index++];
         if (name === "__proto__") return true;
         const isNumericKey = Number.isFinite(+name);
-        const isLast = index >= path2.length;
+        const isLast = index >= path3.length;
         name = !name && utils$1.isArray(target) ? target.length : name;
         if (isLast) {
           if (utils$1.hasOwnProp(target, name)) {
@@ -13765,7 +13765,7 @@ var require_axios = __commonJS({
         if (!utils$1.hasOwnProp(target, name) || !utils$1.isObject(target[name])) {
           target[name] = [];
         }
-        const result = buildPath(path2, value, target[name], index);
+        const result = buildPath(path3, value, target[name], index);
         if (result && utils$1.isArray(target[name])) {
           target[name] = arrayToObject(target[name]);
         }
@@ -15641,8 +15641,8 @@ var require_axios = __commonJS({
           const allowedSocketPaths = own2("allowedSocketPaths");
           if (allowedSocketPaths != null) {
             const allowed = Array.isArray(allowedSocketPaths) ? allowedSocketPaths : [allowedSocketPaths];
-            const resolvedSocket = path.resolve(socketPath);
-            const isAllowed = allowed.some((entry) => typeof entry === "string" && path.resolve(entry) === resolvedSocket);
+            const resolvedSocket = path2.resolve(socketPath);
+            const isAllowed = allowed.some((entry) => typeof entry === "string" && path2.resolve(entry) === resolvedSocket);
             if (!isAllowed) {
               return reject(new AxiosError(`socketPath "${socketPath}" is not permitted by allowedSocketPaths`, AxiosError.ERR_BAD_OPTION_VALUE, config));
             }
@@ -15956,14 +15956,14 @@ var require_axios = __commonJS({
     var cookies = platform.hasStandardBrowserEnv ? (
       // Standard browser envs support document.cookie
       {
-        write(name, value, expires, path2, domain, secure, sameSite) {
+        write(name, value, expires, path3, domain, secure, sameSite) {
           if (typeof document === "undefined") return;
           const cookie = [`${name}=${encodeURIComponent(value)}`];
           if (utils$1.isNumber(expires)) {
             cookie.push(`expires=${new Date(expires).toUTCString()}`);
           }
-          if (utils$1.isString(path2)) {
-            cookie.push(`path=${path2}`);
+          if (utils$1.isString(path3)) {
+            cookie.push(`path=${path3}`);
           }
           if (utils$1.isString(domain)) {
             cookie.push(`domain=${domain}`);
@@ -23001,14 +23001,228 @@ function createRelay({ client, newStreamId, log = () => {
   return { open, deliver: deliver2, onCardEvent, dispose, streams, cards };
 }
 
+// plugin-src/wecom/directory.js
+var API = "https://qyapi.weixin.qq.com/cgi-bin";
+var tokens = /* @__PURE__ */ new Map();
+function directoryConfigured(config) {
+  return Boolean(String(config.corpId || "").trim() && String(config.contactSecret || "").trim());
+}
+var HINTS = {
+  40001: "Secret \u4E0D\u5BF9",
+  40013: "corpid \u4E0D\u5BF9",
+  60011: "\u8FD9\u4E2A\u5E94\u7528\u6CA1\u6709\u901A\u8BAF\u5F55\u6743\u9650\uFF08\u53EF\u89C1\u8303\u56F4\u4E0D\u5305\u542B\u5BF9\u65B9\uFF09",
+  60020: "\u4E3B\u673A IP \u4E0D\u5728\u4F01\u4E1A\u53EF\u4FE1 IP \u91CC\uFF1A\u5230\u5E94\u7528\u8BE6\u60C5 \u2192\u300C\u4F01\u4E1A\u53EF\u4FE1 IP\u300D\u52A0\u4E0A\u8FD9\u53F0\u673A\u5668\u7684\u51FA\u53E3 IP"
+};
+function apiError(data, what) {
+  const hint = HINTS[data.errcode];
+  return new Error(`\u4F01\u4E1A\u5FAE\u4FE1${what}\u5931\u8D25\uFF1A${data.errcode} ${data.errmsg || ""}${hint ? `\uFF08${hint}\uFF09` : ""}`.trim());
+}
+async function getJson(url, signal) {
+  const res = await fetch(url, { signal });
+  if (!res.ok) throw new Error(`\u4F01\u4E1A\u5FAE\u4FE1\u63A5\u53E3 HTTP ${res.status}`);
+  return res.json();
+}
+async function accessToken(config, signal, { fresh = false } = {}) {
+  const corpId = String(config.corpId).trim();
+  const secret = String(config.contactSecret).trim();
+  const key = `${corpId}
+${secret}`;
+  const cached = tokens.get(key);
+  if (!fresh && cached && cached.expiresAt > Date.now()) return cached.token;
+  const data = await getJson(`${API}/gettoken?corpid=${encodeURIComponent(corpId)}&corpsecret=${encodeURIComponent(secret)}`, signal);
+  if (data.errcode) throw apiError(data, "\u53D6 access_token");
+  tokens.set(key, { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in || 7200) - 300) * 1e3 });
+  return data.access_token;
+}
+async function call(config, signal, pathAndQuery) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = await accessToken(config, signal, { fresh: attempt > 0 });
+    const data = await getJson(`${API}/${pathAndQuery}&access_token=${encodeURIComponent(token)}`, signal);
+    if (data.errcode === 40014 || data.errcode === 42001) continue;
+    return data;
+  }
+  throw new Error("\u4F01\u4E1A\u5FAE\u4FE1 access_token \u4E00\u76F4\u65E0\u6548");
+}
+async function checkDirectory(config, signal) {
+  await accessToken(config, signal, { fresh: true });
+}
+async function lookupMembers(config, userIds, { signal, log = () => {
+} } = {}) {
+  if (!directoryConfigured(config)) return [];
+  const departments = /* @__PURE__ */ new Map();
+  const departmentName = async (id) => {
+    if (!departments.has(id)) {
+      const data = await call(config, signal, `department/get?id=${encodeURIComponent(id)}`).catch(() => null);
+      departments.set(id, data && !data.errcode ? String(data.department?.name || "") : "");
+    }
+    return departments.get(id);
+  };
+  const out = [];
+  for (const userId of userIds) {
+    const data = await call(config, signal, `user/get?userid=${encodeURIComponent(userId)}`);
+    if (data.errcode) {
+      if ([60111, 60011, 60123, 46004].includes(data.errcode)) {
+        log(`\u901A\u8BAF\u5F55\u91CC\u67E5\u4E0D\u5230 ${userId}\uFF08${data.errcode}\uFF09`);
+        continue;
+      }
+      throw apiError(data, "\u67E5\u6210\u5458");
+    }
+    const main = data.main_department ?? (Array.isArray(data.department) ? data.department[0] : null);
+    out.push({
+      id: userId,
+      name: String(data.name || "").trim(),
+      title: String(data.position || "").trim(),
+      department: main !== null && main !== void 0 ? await departmentName(main) : "",
+      alias: String(data.alias || "").trim()
+    });
+  }
+  return out;
+}
+
+// plugin-src/wecom/cli.js
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+var CALL_TIMEOUT_MS = 20 * 1e3;
+var KEYWORDS_PER_CALL = 10;
+function findCli(config = {}) {
+  const configured = String(config.cliPath || "").trim().replace(/^~(?=\/)/, os.homedir());
+  if (configured) return configured;
+  const dirs = [
+    ...String(process.env.PATH || "").split(":"),
+    path.dirname(process.execPath),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    path.join(os.homedir(), ".npm-global/bin"),
+    path.join(os.homedir(), ".local/bin"),
+    path.join(os.homedir(), ".volta/bin"),
+    path.join(os.homedir(), "Library/pnpm")
+  ].filter(Boolean);
+  for (const dir of dirs) {
+    const file = path.join(dir, "wecom-cli");
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return file;
+    } catch {
+    }
+  }
+  return null;
+}
+function envFor(config, bin) {
+  const env = { ...process.env, PATH: [path.dirname(bin), path.dirname(process.execPath), process.env.PATH || ""].filter(Boolean).join(":") };
+  const dir = String(config.cliConfigDir || "").trim().replace(/^~(?=\/)/, os.homedir());
+  if (dir) env.WECOM_CLI_CONFIG_DIR = dir;
+  return env;
+}
+function parseJson(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const last = raw.split("\n").filter(Boolean).pop();
+    try {
+      return JSON.parse(last);
+    } catch {
+      return null;
+    }
+  }
+}
+function runCli(config, args, { signal } = {}) {
+  const bin = findCli(config);
+  if (!bin) return Promise.reject(Object.assign(new Error("\u6CA1\u88C5 wecom-cli\uFF1A\u7EC8\u7AEF\u91CC\u8FD0\u884C npm install -g @wecom/cli\uFF0C\u518D\u8FD0\u884C wecom-cli auth init \u6388\u6743"), { code: "NO_CLI" }));
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { env: envFor(config, bin), signal, timeout: CALL_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err?.code === "ENOENT") {
+        reject(Object.assign(new Error(`\u627E\u4E0D\u5230 wecom-cli\uFF08${bin}\uFF09\u3002\u5728\u63D2\u4EF6\u8BBE\u7F6E\u91CC\u586B\u5B83\u7684\u5B8C\u6574\u8DEF\u5F84\uFF0C\u7EC8\u7AEF\u91CC which wecom-cli \u53EF\u4EE5\u67E5\u5230`), { code: "NO_CLI" }));
+        return;
+      }
+      const data = parseJson(stdout);
+      if (data?.error) {
+        reject(Object.assign(new Error(`wecom-cli\uFF1A${data.error.message || data.error.type || "\u51FA\u9519\u4E86"}\uFF08${data.error.code ?? "?"}\uFF09`), { code: "CLI_ERROR", cliCode: data.error.code }));
+        return;
+      }
+      if (err) {
+        reject(new Error(`wecom-cli \u8FD0\u884C\u5931\u8D25\uFF1A${String(stderr || err.message).trim().slice(0, 300)}`));
+        return;
+      }
+      resolve(data);
+    });
+  });
+}
+async function cliStatus(config, { signal } = {}) {
+  const bin = findCli(config);
+  if (!bin) return { ok: false, detail: "\u6CA1\u88C5 wecom-cli\uFF08npm install -g @wecom/cli\uFF09" };
+  return new Promise((resolve) => {
+    execFile(bin, ["auth", "show", "--status"], { env: envFor(config, bin), signal, timeout: CALL_TIMEOUT_MS }, (err, stdout) => {
+      const status = String(stdout || "").trim();
+      if (status === "authorized") resolve({ ok: true, detail: "wecom-cli \u5DF2\u6388\u6743" });
+      else if (status === "unauthorized") resolve({ ok: false, detail: "wecom-cli \u8FD8\u6CA1\u6388\u6743\uFF1A\u7EC8\u7AEF\u91CC\u8FD0\u884C wecom-cli auth init" });
+      else resolve({ ok: false, detail: `wecom-cli \u72B6\u6001\u672A\u77E5\uFF1A${String(err?.message || status).slice(0, 200)}` });
+    });
+  });
+}
+async function lookupByCli(config, userIds, { signal, run = runCli } = {}) {
+  const wanted = new Set(userIds.map(String));
+  const out = /* @__PURE__ */ new Map();
+  const ids = [...wanted];
+  for (let i = 0; i < ids.length; i += KEYWORDS_PER_CALL) {
+    const keywords = ids.slice(i, i + KEYWORDS_PER_CALL);
+    const data = await run(config, ["contact", "users", "search", "--json", JSON.stringify({ keywords })], { signal });
+    for (const user of Array.isArray(data?.users) ? data.users : []) {
+      const id = String(user?.userid ?? "");
+      if (!wanted.has(id) || out.has(id)) continue;
+      const departments = Array.isArray(user.departments) ? user.departments : [];
+      const main = String(departments[0] || "");
+      out.set(id, {
+        id,
+        name: String(user.name || "").trim(),
+        title: String(user.position || "").trim(),
+        department: main.split(/[/>]/).map((s) => s.trim()).filter(Boolean).pop() || main,
+        alias: String(user.alias || "").trim()
+      });
+    }
+  }
+  return [...out.values()];
+}
+
 // plugin-src/wecom/index.js
 var relays = /* @__PURE__ */ new Map();
-async function test(config) {
+async function test(config, ctx = {}) {
   if (!config.botId || !config.secret) return { ok: false, detail: "BotID \u548C Secret \u90FD\u8981\u586B" };
+  const cli = await cliStatus(config, { signal: ctx.signal });
+  const notes = [cli.ok ? "wecom-cli \u5DF2\u6388\u6743\uFF0C\u65B0\u8BA4\u8BC6\u7684\u4EBA\u4F1A\u53BB\u901A\u8BAF\u5F55\u67E5\u59D3\u540D\u548C\u90E8\u95E8\u3002" : `\u8BA4\u4EBA\uFF1A${cli.detail}\u3002`];
+  if (String(config.corpId || "").trim() || String(config.contactSecret || "").trim()) {
+    if (!directoryConfigured(config)) return { ok: false, detail: "\u81EA\u5EFA\u5E94\u7528\u67E5\u901A\u8BAF\u5F55\u8981 CorpID \u548C Secret \u90FD\u586B" };
+    try {
+      await checkDirectory(config, ctx.signal);
+      notes.push("\u81EA\u5EFA\u5E94\u7528\u51ED\u8BC1\u53EF\u7528\uFF0Cwecom-cli \u641C\u4E0D\u5230\u7684\u4EBA\u7528\u5B83\u8865\u67E5\u3002");
+    } catch (err) {
+      return { ok: false, detail: err.message };
+    }
+  }
   return {
     ok: true,
-    detail: "\u51ED\u8BC1\u5DF2\u586B\u5199\u3002\u4FDD\u5B58\u5E76\u542F\u7528\u540E\u4F1A\u5EFA\u7ACB WebSocket \u957F\u8FDE\u63A5\uFF1B\u4F01\u4E1A\u5FAE\u4FE1\u4E0D\u4F1A\u5728\u201C\u6D4B\u8BD5\u8FDE\u63A5\u201D\u65F6\u88AB\u8FDE\u63A5\u3002"
+    detail: `\u673A\u5668\u4EBA\u51ED\u8BC1\u5DF2\u586B\u5199\u3002\u4FDD\u5B58\u5E76\u542F\u7528\u540E\u4F1A\u5EFA\u7ACB WebSocket \u957F\u8FDE\u63A5\uFF1B\u4F01\u4E1A\u5FAE\u4FE1\u4E0D\u4F1A\u5728\u201C\u6D4B\u8BD5\u8FDE\u63A5\u201D\u65F6\u88AB\u8FDE\u63A5\u3002${notes.join("")}`
   };
+}
+async function lookupPeople(config, ids, ctx) {
+  const found = /* @__PURE__ */ new Map();
+  let cliError = null;
+  try {
+    for (const p of await lookupByCli(config, ids, { signal: ctx.signal })) found.set(p.id, p);
+  } catch (err) {
+    cliError = err;
+    if (err.code !== "NO_CLI") ctx.log?.(`wecom-cli \u67E5\u901A\u8BAF\u5F55\u5931\u8D25\uFF1A${err.message}`);
+  }
+  const rest = ids.filter((id) => !found.has(String(id)));
+  if (rest.length && directoryConfigured(config)) {
+    for (const p of await lookupMembers(config, rest, { signal: ctx.signal, log: ctx.log })) found.set(p.id, p);
+  } else if (cliError && cliError.code !== "NO_CLI") {
+    throw cliError;
+  }
+  return { people: [...found.values()] };
 }
 async function poll() {
   return { items: [] };
@@ -23092,6 +23306,8 @@ ${content}` : content;
           occurredAt,
           // 机器人只收得到私聊和群里 @ 它的消息：都是直接找过来的。
           direct: true,
+          // 谁说的：企微 userid，名字由静静去通讯录查（lookupPeople）。
+          ...body.from?.userid ? { actor: { id: body.from.userid } } : {},
           replyTo: {
             chatid: body.chatid || body.from?.userid || "",
             chattype: body.chattype || "single",
@@ -23164,6 +23380,7 @@ ${content}` : content;
 }
 export {
   deliver,
+  lookupPeople,
   poll,
   start,
   test
