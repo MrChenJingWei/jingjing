@@ -189,7 +189,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "静静"
+        if let button = statusItem.button {
+            // 睡猫剪影（template image，跟着菜单栏深浅自动着色）；有待拍板时右边跟数字。
+            button.image = MenuBarIcon.image
+            button.imagePosition = .imageLeft
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+            button.title = ""
+            button.appearsDisabled = true
+            button.toolTip = "静静 · 服务启动中"
+            button.setAccessibilityLabel("静静")
+        }
 
         let menu = NSMenu()
         statusMenuItem = NSMenuItem(title: "服务启动中…", action: nil, keyEquivalent: "")
@@ -314,8 +323,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatus() {
-        let badge = pendingApprovals > 0 ? " \(pendingApprovals)" : ""
-        setStatusTitle(running ? "静静 ●\(badge)" : "静静 ○")
+        // 运行中：猫正常显示，有待拍板时跟数字；没运行：猫变灰。
+        setStatusTitle(running && pendingApprovals > 0 ? " \(pendingApprovals)" : "")
+        setStatusDimmed(!running)
+        setStatusToolTip(running
+            ? (pendingApprovals > 0 ? "静静 · \(pendingApprovals) 件事等你拍板" : "静静 · 运行中")
+            : "静静 · 服务未运行")
         if running {
             setStatusMenuTitle("服务运行中 · 端口 \(port) · \(localOnly ? "仅本机" : "局域网可访问")")
         } else if serverProcess == nil {
@@ -328,6 +341,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setStatusTitle(_ title: String) {
         guard let button = statusItem.button, button.title != title else { return }
         button.title = title
+    }
+
+    private func setStatusDimmed(_ dimmed: Bool) {
+        guard let button = statusItem.button, button.appearsDisabled != dimmed else { return }
+        button.appearsDisabled = dimmed
+    }
+
+    private func setStatusToolTip(_ text: String) {
+        guard let button = statusItem.button, button.toolTip != text else { return }
+        button.toolTip = text
     }
 
     private func setStatusMenuTitle(_ title: String) {
@@ -560,7 +583,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func notify(_ message: String) {
-        setStatusTitle("静静 ✓")
+        setStatusTitle(" ✓")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
             self?.updateStatus()
         }
