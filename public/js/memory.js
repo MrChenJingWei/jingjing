@@ -1,7 +1,7 @@
 // 记忆页：业务 / 人格两类，按层筛选、搜索、补充、编辑、删除。
 // 人格记忆那一页顶上是静静的「心智」：此刻的心情、认识的人、上次反思。
 import { $, $$, state, on, changed, esc, timeAgo, toast, api, LAYER_LABEL, MEMORY_DOMAIN_LABEL } from './core.js';
-import { icon, openDialog, ask } from './ui.js';
+import { icon, openDialog, ask, catMark } from './ui.js';
 
 const DOMAIN_NOTE = {
   work: '业务记忆：你的偏好、项目、做事经验和你们聊过的事。Router 派活、Worker 执行时会用到；会按遗忘曲线慢慢淡忘，常被想起的会记得更牢。',
@@ -38,14 +38,14 @@ function personName(id) {
   return (state.mind?.people || []).find((p) => p.id === id)?.name || id.split(':').pop();
 }
 
-/** 记得多清楚：一条细进度条；情绪：一个小圆点（暖色开心、冷色难过，越激动越实）。 */
+/** 记得多清楚：四格小信号（不用颜色）；情绪用字说，不用圆点。 */
 function memoryMarks(m) {
   const r = Math.max(0, Math.min(1, m.retention ?? 1));
-  const label = r >= 0.8 ? '清楚' : r >= 0.5 ? '记得' : r >= 0.2 ? '模糊' : '快忘了';
-  const feel = Math.abs(m.valence || 0) > 0.15 || (m.arousal || 0) > 0.3
-    ? `<span class="feel-dot" data-v="${(m.valence || 0) > 0.15 ? 'pos' : (m.valence || 0) < -0.15 ? 'neg' : 'mid'}" style="opacity:${(0.45 + 0.55 * (m.arousal || 0)).toFixed(2)}" title="${(m.valence || 0) > 0.15 ? '开心' : (m.valence || 0) < -0.15 ? '难过' : '激动'}"></span>`
-    : '';
-  return `${feel}<span class="ret" title="记得${label}（${Math.round(r * 100)}%）"><i style="width:${Math.round(r * 100)}%"></i></span><span>${label}</span>`;
+  const level = r >= 0.8 ? 4 : r >= 0.5 ? 3 : r >= 0.2 ? 2 : 1;
+  const label = ['', '快忘了', '模糊', '记得', '记得清楚'][level];
+  const v = m.valence || 0;
+  const feel = Math.abs(v) > 0.15 || (m.arousal || 0) > 0.3 ? (v > 0.15 ? '开心' : v < -0.15 ? '难过' : '激动') : '';
+  return `<span class="mem-meter" data-level="${level}" title="${label}（${Math.round(r * 100)}%）"><i></i><i></i><i></i><i></i></span><span>${label}</span>${feel ? `<span class="mem-feel">${feel}</span>` : ''}`;
 }
 
 function renderMemories() {
@@ -63,13 +63,13 @@ function renderMemories() {
   const layers = ['profile', 'semantic', 'episodic', 'working'].filter((layer) => counts[layer] || state.memLayer === layer);
   if (state.memLayer && !layers.includes(state.memLayer)) state.memLayer = '';
   const archivedChip = state.memArchived || state.memArchivedCount
-    ? `<button type="button" class="fchip ${state.memArchived ? 'is-active' : ''}" data-mem-archived title="快忘光的经历会归档到这里；想起来时会回去">已淡忘<em>${state.memArchived ? state.memories.length : state.memArchivedCount}</em></button>`
+    ? `<button type="button" class="stab ${state.memArchived ? 'is-active' : ''}" data-mem-archived title="快忘光的经历会归档到这里；想起来时会回去">已淡忘<em>${state.memArchived ? state.memories.length : state.memArchivedCount}</em></button>`
     : '';
   $('#mem-layers').innerHTML = state.memArchived
-    ? `<button type="button" class="fchip" data-mem-archived>${icon('chevronLeft', 'sm')}回到记得的</button>${archivedChip}`
+    ? `<button type="button" class="stab" data-mem-archived>${icon('chevronLeft', 'sm')}回到记得的</button>${archivedChip}`
     : state.memories.length || archivedChip
-      ? [`<button type="button" class="fchip ${state.memLayer ? '' : 'is-active'}" data-mem-layer="">全部<em>${state.memories.length}</em></button>`,
-        ...layers.map((layer) => `<button type="button" class="fchip ${state.memLayer === layer ? 'is-active' : ''}" data-mem-layer="${layer}">${LAYER_LABEL[layer]}<em>${counts[layer] || 0}</em></button>`),
+      ? [`<button type="button" class="stab ${state.memLayer ? '' : 'is-active'}" data-mem-layer="">全部<em>${state.memories.length}</em></button>`,
+        ...layers.map((layer) => `<button type="button" class="stab ${state.memLayer === layer ? 'is-active' : ''}" data-mem-layer="${layer}">${LAYER_LABEL[layer]}<em>${counts[layer] || 0}</em></button>`),
         archivedChip].join('')
       : '';
 
@@ -82,31 +82,36 @@ function renderMemories() {
         : state.memDomain === 'persona'
           ? '还没有人格记忆。她在外面和人聊天、每天反思之后，这里会慢慢多起来；也可以手动记一条她的设定。'
           : '还没有记忆。和静静聊几句，或者对她说「记住……」，就会出现在这里。';
-    $('#memory-list').innerHTML = `<div class="empty"><div class="empty-mark">忆</div><p>${emptyText}</p></div>`;
+    $('#memory-list').innerHTML = `<div class="empty"><div class="empty-mark">${catMark({ sleeping: false })}</div><p>${emptyText}</p></div>`;
     return;
   }
   $('#memory-list').innerHTML = list.map((m) => {
     const about = m.subject && m.subject !== 'owner' && m.subject !== 'self' ? personName(m.subject) : '';
+    const tags = [
+      KIND_LABEL[m.kind] ? `<span class="mem-tag">${esc(KIND_LABEL[m.kind])}</span>` : '',
+      about ? `<span class="mem-tag">关于 ${esc(about)}</span>` : '',
+      ...(m.tags || []).map((t) => `<span class="mem-tag">#${esc(t)}</span>`)
+    ].join('');
     return `
-    <div class="mem-row ${m.archived ? 'is-faded' : ''}">
-      <span class="mem-layer" data-layer="${esc(m.layer)}">${esc(LAYER_LABEL[m.layer] || m.layer)}</span>
-      <div class="mem-main">
-        <div class="mem-text">${esc(m.text)}</div>
-        <div class="mem-meta">
-          ${KIND_LABEL[m.kind] ? `<span class="mem-tag kind">${esc(KIND_LABEL[m.kind])}</span>` : ''}
-          ${about ? `<span class="mem-tag who">关于 ${esc(about)}</span>` : ''}
-          ${(m.tags || []).map((t) => `<span class="mem-tag">${esc(t)}</span>`).join('')}
-          <span>${timeAgo(m.created_at)}</span>
-          <span class="mem-strength">${memoryMarks(m)}</span>
-          ${m.use_count ? `<span title="被想起的次数">想起 ${m.use_count} 次</span>` : ''}
-        </div>
-      </div>
-      <div class="row-actions">
-        ${m.archived ? `<button type="button" class="btn xs" data-mem-restore="${esc(m.id)}" title="让她重新想起来">想起来</button>` : ''}
-        <button type="button" class="icon-btn sm" data-mem-edit="${esc(m.id)}" title="编辑">${icon('edit', 'sm')}</button>
-        <button type="button" class="icon-btn sm danger" data-mem-forget="${esc(m.id)}" title="删除">${icon('trash', 'sm')}</button>
-      </div>
-    </div>`;
+    <article class="mem-card ${m.archived ? 'is-faded' : ''} ${m.text.length > 140 ? 'is-long' : ''}" data-layer="${esc(m.layer)}">
+      <header class="mem-card-head">
+        <span class="mem-layer" data-layer="${esc(m.layer)}">${esc(LAYER_LABEL[m.layer] || m.layer)}</span>
+        <span class="grow"></span>
+        <span class="mem-actions">
+          ${m.archived ? `<button type="button" class="btn xs" data-mem-restore="${esc(m.id)}" title="让她重新想起来">想起来</button>` : ''}
+          <button type="button" class="icon-btn xs" data-mem-edit="${esc(m.id)}" title="编辑">${icon('edit', 'sm')}</button>
+          <button type="button" class="icon-btn xs danger" data-mem-forget="${esc(m.id)}" title="删除">${icon('trash', 'sm')}</button>
+        </span>
+      </header>
+      <p class="mem-text" data-mem-expand>${esc(m.text)}</p>
+      ${tags ? `<div class="mem-tags">${tags}</div>` : ''}
+      <footer class="mem-foot">
+        <span class="mem-strength">${memoryMarks(m)}</span>
+        <span class="grow"></span>
+        ${m.use_count ? `<span title="被想起的次数">想起 ${m.use_count} 次</span>` : ''}
+        <span>${timeAgo(m.created_at)}</span>
+      </footer>
+    </article>`;
   }).join('');
 }
 
@@ -358,7 +363,10 @@ $('#memory-list')?.addEventListener('click', (event) => {
   const forget = event.target.closest('[data-mem-forget]');
   if (forget) { forgetMemory(forget.dataset.memForget); return; }
   const restore = event.target.closest('[data-mem-restore]');
-  if (restore) restoreMemory(restore.dataset.memRestore);
+  if (restore) { restoreMemory(restore.dataset.memRestore); return; }
+  // 长记忆默认折起来，点正文展开 / 收起。
+  const text = event.target.closest('[data-mem-expand]');
+  if (text && !window.getSelection()?.toString()) text.closest('.mem-card')?.classList.toggle('is-open');
 });
 
 $('#mind-panel')?.addEventListener('click', async (event) => {

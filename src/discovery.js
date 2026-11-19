@@ -13,6 +13,8 @@ import * as scheduler from './scheduler.js';
 import * as sourceLinks from './source-links.js';
 import * as relay from './relay.js';
 import * as memory from './memory.js';
+import * as classification from './task-classification.js';
+import * as knowledge from './knowledge.js';
 
 const MAX_ITEMS_PER_RUN = 10;
 const running = new Set();
@@ -229,7 +231,10 @@ export function normalizeItem(raw) {
     // 带状态的来源（TAPD 缺陷、PR……）：外部状态和类型，建卡时绑到任务上；track: false 表示不要跟踪。
     status: sourceLinks.normalizeStatus(raw.status),
     externalType: String(raw.externalType || '').slice(0, 30),
-    track: raw.track !== false
+    track: raw.track !== false,
+    // 声明了归类能力的来源交的外部对象树：node（必填）/ parent（唯一主父，null = 不知道）/ links（≤ 8）。
+    tree: raw.node ? classification.normalizeTree(raw) : null,
+    nodeKey: null
   };
 }
 
@@ -367,6 +372,12 @@ export async function ingestItems(id, rawItems, { verb = '接收', override = nu
     .map(normalizeItem)
     .filter(Boolean)
     .slice(0, MAX_ITEMS_PER_RUN);
+  // 自动归类开着（试运行或开启）时先记下外部对象树：拉到的新旧条目都算一次观察。
+  try {
+    classification.observeItems(id, items);
+  } catch (err) {
+    console.warn(`[plugin:${id}] 记录归类关系失败：${err.message}`);
+  }
   const seenInBatch = new Set();
   const known = [];
   const fresh = items.filter((item) => {
@@ -408,6 +419,15 @@ export async function ingestItems(id, rawItems, { verb = '接收', override = nu
 function refreshKnown(id, items) {
   const touched = new Set();
   for (const item of items) {
+    // 归类刚打开时，旧卡的绑定还没有节点：拉到同一条时补上，并按树重算归属。
+    if (item.nodeKey) {
+      const rows = db.prepare('SELECT id, task_id FROM task_sources WHERE provider = ? AND external_id = ? AND (node_key IS NULL OR node_key <> ?)').all(id, item.externalId, item.nodeKey);
+      for (const row of rows) {
+        db.prepare('UPDATE task_sources SET node_key = ? WHERE id = ?').run(item.nodeKey, row.id);
+        classification.route(row.task_id);
+        touched.add(row.task_id);
+      }
+    }
     if (!item.status) continue;
     for (const taskId of sourceLinks.applyStatus(id, item.externalId, item.status, { url: item.url, title: item.title })) touched.add(taskId);
   }
@@ -418,7 +438,7 @@ function refreshKnown(id, items) {
 /** 这条条目建卡时要绑的外部对象：条目带了状态，或者插件能同步状态（导出了 syncStatus）才绑。 */
 function sourceLinkFor(id, plugin, item) {
   if (item.track === false) return null;
-  if (!item.status && typeof plugin.module?.syncStatus !== 'function') return null;
+  if (!item.status && typeof plugin.module?.syncStatus !== 'function' && !item.nodeKey) return null;
   return sourceLinks.linkFromItem(id, plugin.label || plugin.manifest?.name || id, item);
 }
 
@@ -485,18 +505,31 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
     const memoryText = recalled.length
       ? `相关记忆（内部参考，可能不全对；只用来判断，不要把原文写进给用户的回复）：\n${memory.serializeForPrompt(recalled)}`
       : '';
+    // 分类域上的历史知识：这时任务还没建、也没有归属行，按条目现场算域（只在来源「开启」自动归类时）。
+    // 只进 prompt，不进路由：下面挑 Worker 时完全不看它。
+    let injected = [];
+    let scope = null;
+    try {
+      scope = classification.scopeFor(id, item);
+      if (scope) injected = knowledge.context(knowledge.settings().includeAncestors ? scope.keys : [scope.key], { query: rawText });
+    } catch (err) {
+      console.warn('[discovery] 读取分类知识失败：', err.message);
+    }
+    const knowledgeText = knowledge.serializeForPrompt(injected, scope?.title);
     const prompt = [
       decision.prompt || `处理来自「${plugin.manifest.name}」的这条事项。`,
       '',
       '---',
       `来源：${plugin.manifest.name}`,
       `工作区：${taskWorkspace.name}（${taskWorkspace.path}）`,
+      taskWorkspace.extraPaths?.length ? `工作区里另外的文件夹：${taskWorkspace.extraPaths.join('、')}` : '',
       `工作区里的目录：${workspaceDirs(taskWorkspace.path)}`,
       `判断理由：${decision.reason || '需要跟进'}`,
       `标题：${item.title}`,
       item.url ? `链接：${item.url}` : '',
       item.content ? `内容：\n${item.content}` : '',
       memoryText,
+      knowledgeText,
       // 能发回原会话：发消息是静静的事，Worker 只管写回复正文（否则它会以为要自己去群里发，然后说做不到）。
       canReply && item.replyTo
         ? `\n注意：发回「${plugin.label || plugin.manifest.name}」原会话由静静负责（${autoReply ? '任务完成后自动发出' : '主人确认后发出'}），你不需要、也不要说自己无法发消息。你的最终结果会${autoReply ? '原样' : '作为草稿'}发给对方，请直接写成给对方看的回复正文，不要写给静静主人的分析；拿不准、需要主人决定的地方先提问。`
@@ -547,6 +580,7 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
       sourceLink: sourceLinkFor(id, plugin, item)
     });
     recordItem(id, item, 'task', task.id, decision.reason || '需要处理');
+    if (injected.length) knowledge.recordInjection(task.id, injected, scope?.key);
     details.push({
       externalId: item.externalId,
       title: task.title,
@@ -629,7 +663,9 @@ export async function runPlugin(id, { force = false, override = null } = {}) {
       log,
       instanceId: id,
       pluginId: plugin.pluginId,
-      state: stateFor(id)
+      state: stateFor(id),
+      // 自动归类状态（off / observing / on）：插件可以据此在关闭时省掉查父节点的额外调用。
+      classify: classification.stateOf(id)
     }), limits.pollMs, `拉取超时（${seconds(limits.pollMs)}）`);
     const rawItems = Array.isArray(result?.items) ? result.items : [];
     const ingested = await ingestItems(id, rawItems, { verb: '扫描', override });
@@ -662,6 +698,8 @@ export async function receiveWebhook(plugin, { payload, headers, rawBody, query,
     instanceId: id,
     pluginId: plugin.pluginId,
     state: stateFor(id),
+    // 自动归类状态（off / observing / on）：插件可以据此在关闭时省掉查父节点的额外调用。
+    classify: classification.stateOf(id),
     log: (message) => console.log(`[webhook:${id}] ${message}`),
     // 卡片按钮这类回调走 Webhook 的渠道（比如飞书）也可以把操作转给静静。
     interact: (request) => relay.interact(id, request)
@@ -694,7 +732,9 @@ export async function testPlugin(id, overrideConfig = {}) {
       log: (msg) => console.log(`[plugin:${id}:test] ${msg}`),
       instanceId: id,
       pluginId: plugin.pluginId,
-      state: stateFor(id)
+      state: stateFor(id),
+      // 自动归类状态（off / observing / on）：插件可以据此在关闭时省掉查父节点的额外调用。
+      classify: classification.stateOf(id)
     }), limits.testMs, `测试 ${seconds(limits.testMs)}还没有结果`);
   } catch (err) {
     return { ok: false, detail: err.message, latencyMs: Date.now() - started };
@@ -860,7 +900,9 @@ export async function startLifecycle(id) {
     },
     instanceId: id,
     pluginId: plugin.pluginId,
-    state: stateFor(id)
+    state: stateFor(id),
+    // 自动归类状态（off / observing / on）：插件可以据此在关闭时省掉查父节点的额外调用。
+    classify: classification.stateOf(id)
   };
 
   const starting = Promise.resolve().then(() => plugin.module.start(plugin.config, ctx));
@@ -944,7 +986,9 @@ export async function syncLinks(id, rows) {
         log: lifecycleLogger(id),
         instanceId: id,
         pluginId: plugin.pluginId,
-        state: stateFor(id)
+        state: stateFor(id),
+        // 自动归类状态（off / observing / on）：插件可以据此在关闭时省掉查父节点的额外调用。
+        classify: classification.stateOf(id)
       }), limits.syncMs, `同步状态超时（${seconds(limits.syncMs)}）`);
     } catch (err) {
       for (const taskId of sourceLinks.markSyncError(rows.map((row) => row.id), err.message)) touched.add(taskId);
@@ -954,6 +998,26 @@ export async function syncLinks(id, rows) {
     const byId = new Map();
     for (const entry of list) {
       if (entry && entry.externalId !== undefined) byId.set(String(entry.externalId), entry);
+    }
+    // 同步时插件可以顺带交父节点（壳节点回填、父指针变化）：照常观察，补上绑定的 node_key。
+    const observed = [];
+    for (const entry of byId.values()) {
+      if (entry.node && !entry.missing) observed.push({ externalId: String(entry.externalId), tree: classification.normalizeTree(entry) });
+    }
+    if (observed.length) {
+      try {
+        classification.observeItems(id, observed);
+        for (const item of observed) {
+          if (!item.nodeKey) continue;
+          for (const row of rows.filter((r) => String(r.external_id) === item.externalId && r.node_key !== item.nodeKey)) {
+            db.prepare('UPDATE task_sources SET node_key = ? WHERE id = ?').run(item.nodeKey, row.id);
+            touched.add(row.task_id);
+            classification.route(row.task_id);
+          }
+        }
+      } catch (err) {
+        console.warn(`[plugin:${id}] 同步归类关系失败：${err.message}`);
+      }
     }
     for (const row of rows) {
       const entry = byId.get(String(row.external_id));

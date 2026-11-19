@@ -115,6 +115,13 @@ export function workerLabelOf(id) {
   return workerRegistry.get(id)?.manifest.name || id;
 }
 
+/** 任务主目录对应的工作区里，另外挂的文件夹。 */
+export function extraDirsFor(cwd, settings = getSettings()) {
+  const target = path.resolve(String(cwd || ''));
+  const workspace = (settings.workspaces || []).find((ws) => path.resolve(ws.path) === target);
+  return (workspace?.extraPaths || []).map((dir) => path.resolve(dir)).filter((dir) => dir !== target);
+}
+
 /** Worker 回传进度用的本机地址。服务监听在 0.0.0.0 时用回环地址。 */
 export function reportUrl(runId) {
   const host = !HOST || HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : HOST;
@@ -420,6 +427,8 @@ function hostContext(descriptor, task, ctx) {
     tasks: ctx.tasks || [],
     workers: workerCatalog({ onlyAvailable: true }),
     workspace: path.resolve(task.cwd || settings.defaultCwd || SANDBOX_DIR),
+    // 这个工作区挂的其他文件夹（任务在 workspace 里执行，这些也要能用到）。
+    extraDirs: extraDirsFor(task.cwd || settings.defaultCwd || SANDBOX_DIR, settings),
     paths: { sandbox: SANDBOX_DIR },
     llm: {
       mode: llmMode(settings),

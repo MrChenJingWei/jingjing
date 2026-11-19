@@ -3,8 +3,9 @@ import { state, changed, toast, api, upsertTask, taskById } from './core.js';
 import { setConnectionLive, updateBadges } from './shell.js';
 import { noteIncoming } from './chat.js';
 import { refreshTaskDetail, removeTask } from './tasks.js';
+import { loadCategories, refreshCategory } from './classify.js';
 
-const ALL_TOPICS = ['settings', 'workers', 'workerRules', 'tasks', 'approvals', 'messages', 'memories', 'rules', 'workflows', 'drafts', 'plugins', 'stats', 'channels', 'mind'];
+const ALL_TOPICS = ['settings', 'workers', 'workerRules', 'tasks', 'approvals', 'messages', 'memories', 'rules', 'workflows', 'drafts', 'plugins', 'stats', 'channels', 'mind', 'categories'];
 
 export function applySnapshot(data) {
   Object.assign(state, {
@@ -24,6 +25,7 @@ export function applySnapshot(data) {
     pluginDrafts: data.pluginDrafts || [],
     plugins: data.plugins || [],
     pluginErrors: data.pluginErrors || [],
+    categories: data.categories || [],
     channels: data.channels,
     mind: data.mind || null,
     server: data.server,
@@ -179,6 +181,12 @@ export function connectEvents() {
     if (index >= 0) state.plugins[index] = plugin;
     changed('pluginStatus');
   });
+
+  // 归类：分类项变了（新建、合并、成员进出）就重拉分类列表；知识变了刷新正开着的分类详情。
+  on('categories/updated', () => loadCategories());
+  on('category/merged', () => loadCategories());
+  on('knowledge/updated', () => refreshCategory());
+  on('classification/plugin', () => loadCategories());
 
   on('task/replied', ({ label, by }) => {
     if (by === 'auto') toast(`任务结果已自动发到「${label}」。`);

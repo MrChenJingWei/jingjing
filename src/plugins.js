@@ -452,6 +452,10 @@ export function listPlugins() {
       // 导出了 deliver()：收到回执、状态播报、在渠道里拍板都由静静按 relay 策略来管。
       canDeliver: typeof item.module?.deliver === 'function',
       relay: (({ autoResult: _a, ...rest }) => ({ ...rest, owners: rest.owners.join(', ') }))(relayPolicy(row)),
+      // 声明了归类能力（manifest.classification）：设置页据此显示三态开关。声明不等于启用。
+      classification: manifest.classification
+        ? { declared: true, state: ['observing', 'on'].includes(row.classify_state) ? row.classify_state : 'off', nodeTypes: manifest.classification.nodeTypes, nodeLabels: manifest.classification.nodeLabels || {} }
+        : { declared: false, state: 'off' },
       webhookPath: token ? `/api/hooks/${token}` : null,
       workspaceId: row.workspace_id || null,
       config: maskConfig(manifest, config),

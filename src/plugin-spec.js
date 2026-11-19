@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const PLUGIN_API_VERSION = 1;
-export const FIELD_TYPES = ['text', 'url', 'password', 'number', 'checkbox', 'textarea', 'select'];
+// folder：本机文件夹路径，界面上是文件夹选择器（值就是路径字符串）。
+export const FIELD_TYPES = ['text', 'url', 'password', 'number', 'checkbox', 'textarea', 'select', 'folder'];
 export const PLUGIN_TYPES = ['poll', 'webhook', 'stream', 'manual', 'watch'];
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,31}$/;
 const KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
@@ -26,7 +27,7 @@ function asString(value, fallback = '') {
 }
 
 const FIELD_KEYS = new Set(['key', 'label', 'type', 'default', 'placeholder', 'help', 'required', 'wide', 'min', 'max', 'options']);
-const MANIFEST_KEYS = new Set(['$schema', 'id', 'apiVersion', 'kind', 'name', 'version', 'description', 'icon', 'entry', 'type', 'intervalMinutes', 'webhook', 'lifecycle', 'multiInstance', 'capabilities', 'config', 'worker']);
+const MANIFEST_KEYS = new Set(['$schema', 'id', 'apiVersion', 'kind', 'name', 'version', 'description', 'icon', 'entry', 'type', 'intervalMinutes', 'webhook', 'lifecycle', 'multiInstance', 'capabilities', 'config', 'worker', 'classification']);
 
 /**
  * Worker 能力词表。Router 只按能力挑 Worker，不认具体 id：
@@ -289,7 +290,63 @@ export function validateManifest(raw, { dir, dirName } = {}) {
     config
   };
   if (kind === 'worker') manifest.worker = validateWorkerBlock(raw.worker);
+  if (raw.classification !== undefined) {
+    if (kind === 'worker') bad('只有来源插件才能声明 classification');
+    manifest.classification = validateClassificationBlock(raw.classification);
+  }
   return manifest;
+}
+
+const NODE_TYPE_RE = /^[a-z][a-z0-9_-]{0,23}$/;
+// 项目 / 空间由 node.workspace 表达，不能作为树上的节点：否则切层可能切出「整个项目一个组」。
+const WORKSPACE_TYPES = new Set(['workspace', 'project', 'space', 'repo', 'org', 'organization', 'team']);
+
+/**
+ * 来源插件的归类声明（见 docs/architecture/external.md「插件怎么接」）：
+ * { tree: true, nodeTypes: ['story', 'bug'], defaultGroupAt: { type: 'story' } | { levels: 1, anchor?: 'story' } }
+ * 声明不等于启用：每个实例默认关，用户手动开。
+ */
+export function validateClassificationBlock(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad('classification 必须是对象');
+  for (const key of Object.keys(raw)) {
+    if (!['tree', 'nodeTypes', 'nodeLabels', 'defaultGroupAt'].includes(key)) bad(`classification 有未知字段：${key}`);
+  }
+  if (raw.tree !== true) bad('classification.tree 目前只能是 true');
+  if (!Array.isArray(raw.nodeTypes) || !raw.nodeTypes.length) bad('classification.nodeTypes 必须是非空数组');
+  if (raw.nodeTypes.length > 12) bad('classification.nodeTypes 最多 12 个');
+  const nodeTypes = [];
+  for (const type of raw.nodeTypes) {
+    if (typeof type !== 'string' || !NODE_TYPE_RE.test(type)) bad(`classification.nodeTypes 里的类型不合法：${type}`);
+    if (WORKSPACE_TYPES.has(type)) bad(`classification.nodeTypes 不能包含项目级类型「${type}」：项目 / 空间用 node.workspace 表达`);
+    if (!nodeTypes.includes(type)) nodeTypes.push(type);
+  }
+  const nodeLabels = {};
+  if (raw.nodeLabels !== undefined) {
+    if (!raw.nodeLabels || typeof raw.nodeLabels !== 'object' || Array.isArray(raw.nodeLabels)) bad('classification.nodeLabels 必须是对象');
+    for (const [type, label] of Object.entries(raw.nodeLabels)) {
+      if (!nodeTypes.includes(type)) bad(`classification.nodeLabels 里的「${type}」不在 nodeTypes 里`);
+      nodeLabels[type] = asString(label).slice(0, 12);
+    }
+  }
+  const defaultGroupAt = validateGroupAt(raw.defaultGroupAt ?? { levels: 1 }, nodeTypes, 'classification.defaultGroupAt');
+  return { tree: true, nodeTypes, nodeLabels, defaultGroupAt };
+}
+
+/** 切层策略：{ type } 从节点自身开始找第一个这个类型的；{ levels, anchor? } 自身是 anchor 类型就归自己，否则上溯 levels 层。 */
+export function validateGroupAt(raw, nodeTypes, label = 'groupAt') {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad(`${label} 必须是对象`);
+  if (raw.type !== undefined) {
+    if (!nodeTypes.includes(raw.type)) bad(`${label}.type 必须是 nodeTypes 里的类型`);
+    return { type: raw.type };
+  }
+  const levels = Number(raw.levels);
+  if (!Number.isInteger(levels) || levels < 1 || levels > 8) bad(`${label}.levels 必须是 1–8 的整数`);
+  const out = { levels };
+  if (raw.anchor !== undefined) {
+    if (!nodeTypes.includes(raw.anchor)) bad(`${label}.anchor 必须是 nodeTypes 里的类型`);
+    out.anchor = raw.anchor;
+  }
+  return out;
 }
 
 function coerceValue(field, value) {

@@ -3,6 +3,10 @@
 //   chat.js 对话    tasks.js 任务    memory.js 记忆    settings.js 设置外壳与表单分页
 //   workers.js / plugins.js / automation.js / system.js 设置里的各个分页
 //   sync.js 首屏快照与实时事件
+// 最先加载：把页面里的原生 <select> 换成能搜索的自绘选择器（之后动态插入的也会自动接管）。
+import './js/select.js';
+// 要填路径的地方换成文件夹选择器。
+import './js/folder.js';
 import { $, state, api, toast, hideLogin, showLogin } from './js/core.js';
 import { initTheme, switchView, parseHash, renderActivity, updateInstallStatus, nativeApp } from './js/shell.js';
 import { renderChat } from './js/chat.js';

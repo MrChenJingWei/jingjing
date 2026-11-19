@@ -18,7 +18,21 @@ import { db, now, getSettings, getSetting, setSetting } from './db.js';
 
 export const ARCHIVE_DIR = path.join(DATA_DIR, 'archive');
 const NAME_RE = /^archive-[0-9TZ-]+(?:-\d+)?\.jsonl\.gz$/;
-const TASK_TABLES = ['task_events', 'approvals', 'task_runs', 'task_sources'];
+const TASK_TABLES = ['task_events', 'approvals', 'task_runs', 'task_sources', 'task_assignments', 'task_class_suppressions'];
+
+// 恢复时按表改写行：有的表不能原样写回（比如自动归属要按当前的树重算，旧分类可能已经回收）。
+const restoreHooks = new Map();
+const afterRestore = new Set();
+
+/** 注册某张表的恢复钩子：fn(rows) → 要写回的行。 */
+export function registerRestoreHook(table, fn) {
+  restoreHooks.set(table, fn);
+}
+
+/** 恢复完成后的回调（比如重算归属）。 */
+export function onRestored(fn) {
+  afterRestore.add(fn);
+}
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function settingsFor(days) {
@@ -193,7 +207,8 @@ export function restoreTask(name, taskId) {
   try {
     for (const table of ['tasks', ...TASK_TABLES]) {
       const columns = columnsOf(table);
-      const rows = table === 'tasks' ? [task.row] : records.filter((r) => r.table === table && r.row.task_id === taskId).map((r) => r.row);
+      let rows = table === 'tasks' ? [task.row] : records.filter((r) => r.table === table && r.row.task_id === taskId).map((r) => r.row);
+      if (restoreHooks.has(table)) rows = restoreHooks.get(table)(rows);
       for (const row of rows) {
         const keys = Object.keys(row).filter((key) => columns.has(key) && !(table === 'task_events' && key === 'id'));
         db.prepare(`INSERT OR IGNORE INTO ${table}(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`)
@@ -205,6 +220,9 @@ export function restoreTask(name, taskId) {
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
+  }
+  for (const fn of afterRestore) {
+    try { fn(taskId); } catch (err) { console.warn('[archive] 恢复后处理失败：', err.message); }
   }
   return restored;
 }

@@ -3,9 +3,9 @@
   "id": "tapd",
   "apiVersion": 1,
   "name": "TAPD",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "icon": "T",
-  "description": "通过本机的 tapd-cli 发现分给你的缺陷 / 需求并建任务；任务卡上跟踪它在 TAPD 里的状态。只读，不会改 TAPD。",
+  "description": "通过本机的 tapd-cli 发现分给你的缺陷 / 需求并建任务；任务卡上跟踪它在 TAPD 里的状态。开启自动归类后，按「缺陷 → 关联需求、子需求 → 父需求」把卡归到需求下。只读，不会改 TAPD。",
   "entry": "index.js",
   "type": "poll",
   "intervalMinutes": 15,
@@ -75,5 +75,11 @@
       "help": "自动推断不准时手动指定，每行「状态名或 key = 分类」。分类：open / in_progress / blocked / review / done / cancelled"
     }
   ],
-  "multiInstance": true
+  "multiInstance": true,
+  "classification": {
+    "tree": true,
+    "nodeTypes": ["story", "bug"],
+    "nodeLabels": { "story": "需求", "bug": "缺陷" },
+    "defaultGroupAt": { "type": "story" }
+  }
 }

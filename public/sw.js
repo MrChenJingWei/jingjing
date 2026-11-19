@@ -1,5 +1,5 @@
-const CACHE = 'jingjing-shell-v29';
-const ASSET_VERSION = '20261118-4';
+const CACHE = 'jingjing-shell-v44';
+const ASSET_VERSION = '20261118-v11';
 const ASSETS = [
   '/',
   '/index.html',
@@ -18,13 +18,16 @@ const ASSETS = [
   '/js/automation.js',
   '/js/system.js',
   '/js/sync.js',
+  '/js/classify.js',
+  '/js/select.js',
+  '/js/folder.js',
   '/manifest.webmanifest',
   '/icon.svg',
+  '/logo-wordmark.svg',
+  '/logo-wordmark-dark.svg',
   '/icon-192.png',
   '/icon-512.png',
-  '/icon-maskable-512.png',
-  '/screenshots/chat.png',
-  '/screenshots/tasks.png'
+  '/icon-maskable-512.png'
 ];
 
 self.addEventListener('install', (event) => {

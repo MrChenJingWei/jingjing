@@ -22,6 +22,8 @@ import { chat as llmChat, listModels } from './src/llm.js';
 import * as plugins from './src/plugins.js';
 import * as discovery from './src/discovery.js';
 import * as sourceLinks from './src/source-links.js';
+import * as classification from './src/task-classification.js';
+import * as knowledge from './src/knowledge.js';
 import * as pluginDocs from './src/plugin-docs.js';
 import { installPluginZip } from './src/plugin-install.js';
 import * as auth from './src/auth.js';
@@ -137,6 +139,7 @@ function bootstrap() {
     stats: scheduler.stats(),
     plugins: plugins.listPlugins(),
     pluginErrors: plugins.pluginErrors(),
+    categories: classification.listCategories(),
     channels: channels.channelStatus(),
     mind: mind.overview(),
     server: {
@@ -348,6 +351,85 @@ const server = http.createServer(async (req, res) => {
         priority: Number(body.priority || 2)
       });
       return json(res, 200, { task });
+    }
+
+    // ---------------------------- 任务归类（docs/architecture/external.md） ----------------------------
+    if (pathname === '/api/categories' && req.method === 'GET') {
+      return json(res, 200, { categories: classification.listCategories({ axis: url.searchParams.get('axis') || null }) });
+    }
+    if (pathname === '/api/categories' && req.method === 'POST') {
+      const body = await readBody(req);
+      const category = classification.createCategory({ title: body.title });
+      if (body.taskId) classification.assign(body.taskId, category.id);
+      return json(res, 200, { category: classification.getCategory(category.id, { knowledgeOf: knowledge.listFor }), categories: classification.listCategories() });
+    }
+    const categoryMatch = pathname.match(/^\/api\/categories\/(cat_[A-Za-z0-9]+)(?:\/(merge|knowledge))?$/);
+    if (categoryMatch) {
+      const [, id, action] = categoryMatch;
+      if (req.method === 'GET' && !action) return json(res, 200, { category: classification.getCategory(id, { knowledgeOf: knowledge.listFor }) });
+      if (req.method === 'PATCH' && !action) {
+        const body = await readBody(req);
+        classification.renameCategory(id, body.title);
+        return json(res, 200, { category: classification.getCategory(id, { knowledgeOf: knowledge.listFor }), categories: classification.listCategories() });
+      }
+      if (req.method === 'DELETE' && !action) {
+        return json(res, 200, { ...classification.deleteCategory(id), categories: classification.listCategories() });
+      }
+      if (req.method === 'POST' && action === 'merge') {
+        const body = await readBody(req);
+        const into = classification.mergeCategories(id, body.into, { moveKnowledge: knowledge.moveScope });
+        return json(res, 200, { category: classification.getCategory(into.id, { knowledgeOf: knowledge.listFor }), categories: classification.listCategories() });
+      }
+      if (action === 'knowledge') {
+        const category = classification.getCategory(id);
+        if (req.method === 'GET') return json(res, 200, { knowledge: knowledge.listFor(category.key) });
+        if (req.method === 'POST') {
+          const body = await readBody(req);
+          const item = knowledge.record(category.key, { kind: body.kind, text: body.text, subject: body.subject, value: body.value, taskId: body.taskId || null });
+          return json(res, 200, { item, knowledge: knowledge.listFor(category.key) });
+        }
+      }
+    }
+    const knowledgeMatch = pathname.match(/^\/api\/knowledge\/(kn_[A-Za-z0-9]+)$/);
+    if (knowledgeMatch) {
+      const [, id] = knowledgeMatch;
+      if (req.method === 'PATCH') return json(res, 200, { item: knowledge.edit(id, await readBody(req)) });
+      if (req.method === 'DELETE') return json(res, 200, knowledge.remove(id));
+    }
+    const classifyMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/classification(?:\/(auto|optout))?$/);
+    if (classifyMatch) {
+      const [, taskId, action] = classifyMatch;
+      if (!scheduler.getTask(taskId)) return fail(res, 404, '任务不存在');
+      const axis = url.searchParams.get('axis') || 'relation';
+      if (req.method === 'POST' && !action) {
+        const body = await readBody(req);
+        if (body.key) classification.assignByKey(taskId, String(body.key));
+        else classification.assign(taskId, body.categoryId);
+      } else if (req.method === 'DELETE' && !action) {
+        classification.unassign(taskId, axis);
+      } else if (req.method === 'POST' && action === 'auto') {
+        classification.restoreAuto(taskId, axis);
+      } else if (req.method === 'POST' && action === 'optout') {
+        classification.optOut(taskId, axis);
+      } else {
+        return fail(res, 405, '不支持的操作');
+      }
+      return json(res, 200, { task: scheduler.getTask(taskId), categories: classification.listCategories() });
+    }
+    if (pathname === '/api/classification/reconcile' && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      const result = classification.reconcile({ taskIds: Array.isArray(body.taskIds) ? body.taskIds : null, provider: body.provider || null });
+      return json(res, 200, { ...result, categories: classification.listCategories() });
+    }
+    if (pathname === '/api/classification/plugins' && req.method === 'GET') {
+      const list = plugins.listPlugins().map((plugin) => ({ id: plugin.id, label: plugin.label, pluginId: plugin.pluginId, source: plugin.source, enabled: plugin.enabled, ...classification.pluginSummary(plugin.id) }));
+      return json(res, 200, { plugins: list, settings: classification.settings(), knowledge: knowledge.settings() });
+    }
+    const classifyPluginMatch = pathname.match(/^\/api\/classification\/plugins\/([^/]+)$/);
+    if (classifyPluginMatch && req.method === 'PATCH') {
+      const body = await readBody(req);
+      const summary = classification.configurePlugin(classifyPluginMatch[1], { state: body.state, groupAt: body.groupAt });
+      return json(res, 200, { plugin: summary, plugins: plugins.listPlugins(), categories: classification.listCategories() });
     }
 
     // 任务绑定的外部对象：手动刷新状态、停止 / 恢复跟踪、解除绑定。只改绑定，不改任务本身。
@@ -635,7 +717,7 @@ const server = http.createServer(async (req, res) => {
       bus.emit('settings/updated', { settings: maskSettings(next) });
       bus.emit('workflows/updated', workflows.overview({ fresh: true }));
       bus.emit('plugins/updated', { plugins: plugins.listPlugins(), errors: plugins.pluginErrors() });
-      return json(res, 200, { settings: maskSettings(next), workers: availability(), workerRules: workerRules.listWorkerRules() });
+      return json(res, 200, { settings: maskSettings(next), workers: availability(), workerRules: workerRules.listWorkerRules(), capabilities: capabilityCatalog(next) });
     }
 
     if (req.method === 'GET' && pathname === '/api/admin/overview') {
@@ -1060,6 +1142,17 @@ const runArchive = () => {
 };
 setTimeout(runArchive, 60 * 1000).unref();
 setInterval(runArchive, 6 * 60 * 60 * 1000).unref();
+// 归类：启动后重算一遍，之后每天一次（重算 + 回收空的自动分类，连带它的自动知识）。
+const runClassification = () => {
+  try {
+    classification.reconcile();
+    classification.maintain({ dropKnowledge: knowledge.dropScope });
+  } catch (err) {
+    console.warn('[classification] 维护失败：', err.message);
+  }
+};
+setTimeout(runClassification, 30 * 1000).unref();
+setInterval(runClassification, 24 * 60 * 60 * 1000).unref();
 router.startProactiveLoop();
 discovery.start();
 channels.restartTelegram();

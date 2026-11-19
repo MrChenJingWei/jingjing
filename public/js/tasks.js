@@ -5,8 +5,9 @@ import {
   ensureWorkspaceForPath, pickFolder, isWide, onWideChange, copyText,
   STATUS_LABEL, EVENT_LABEL, RUN_STATUS_LABEL, ORIGIN_LABEL, ACTIVE_STATUSES
 } from './core.js';
-import { icon, openDialog, ask } from './ui.js';
+import { icon, openDialog, ask, openPopover, openMenu, closePopover, catMark } from './ui.js';
 import { switchView, renderActivity } from './shell.js';
+import * as classify from './classify.js';
 
 /* ------------------------------ 小部件 -------------------------------- */
 
@@ -137,13 +138,12 @@ export function replyBox(task, approval, { compact = false } = {}) {
   }
   return `
     <div class="followup ${asked ? 'is-asked' : ''}">
-      ${asked ? `<div class="followup-ask">${icon('alert', 'sm')}<span>它最后在问你，直接在这里回答就能接着做。</span></div>` : ''}
-      <textarea rows="${compact ? 1 : 2}" maxlength="4000" data-draft="${esc(key)}" data-followup-input="${id}"
-        placeholder="${esc(compact ? (asked ? '直接回答它，或者接着说…' : '接着说点什么…') : FOLLOWUP_PLACEHOLDER[task.status])}">${esc(drafts.get(key) || '')}</textarea>
-      <div class="followup-actions">
-        <button type="button" class="btn xs primary" data-action="followup-same" data-id="${id}" title="同一张卡，接着上次的上下文（能续会话的 Worker 会续上会话）">接着做</button>
-        <button type="button" class="btn xs" data-action="followup-new" data-id="${id}" title="新开一张卡，带上这张的指令和结果，两张卡互相连着">另起一张</button>
-        <span class="followup-hint">回车接着做 · Shift+回车换行</span>
+      ${asked ? `<div class="followup-ask">${icon('alert', 'sm')}<span>它最后在问你</span></div>` : ''}
+      <div class="followup-row">
+        <textarea rows="1" maxlength="4000" data-draft="${esc(key)}" data-followup-input="${id}" title="回车接着做 · Shift+回车换行"
+          placeholder="${esc(compact ? (asked ? '直接回答它，或者接着说…' : '接着说点什么…') : (asked ? '直接回答它，回车就接着做' : FOLLOWUP_PLACEHOLDER[task.status]))}">${esc(drafts.get(key) || '')}</textarea>
+        <button type="button" class="followup-new" data-action="followup-new" data-id="${id}" title="新开一张卡，带上这张的指令和结果，两张卡互相连着">另起一张</button>
+        <button type="button" class="send-btn" data-action="followup-same" data-id="${id}" title="接着做（回车）：同一张卡，接着上次的上下文" aria-label="接着做">${icon('send')}</button>
       </div>
     </div>`;
 }
@@ -295,48 +295,6 @@ function mismatchHint(task, link) {
   return '';
 }
 
-function sourcesSection(task) {
-  const links = task.sources || [];
-  if (!links.length) return '';
-  const id = esc(task.id);
-  return `
-    <section class="dsec">
-      <div class="dsec-head"><h4>来源</h4></div>
-      <div class="src-list">
-        ${links.map((link) => {
-          const hint = mismatchHint(task, link);
-          const lid = esc(link.id);
-          const synced = link.syncedAt ? `同步于 ${timeAgo(link.syncedAt)}` : '还没同步过';
-          const updated = link.status?.updatedAt ? ` · ${esc(link.providerLabel)} 更新于 ${timeAgo(link.status.updatedAt)}` : '';
-          return `
-            <div class="src-item">
-              <div class="src-head">
-                <b>${esc(link.providerLabel)}</b>
-                <span class="src-ref">${esc([link.externalType, link.externalId ? `#${link.externalId}` : ''].filter(Boolean).join(' '))}</span>
-                <span class="grow"></span>
-                ${link.url ? `<a class="btn xs ghost" href="${esc(link.url)}" target="_blank" rel="noopener noreferrer">${icon('external', 'sm')}打开原单</a>` : ''}
-              </div>
-              ${link.title ? `<div class="src-title">${esc(link.title)}</div>` : ''}
-              <div class="src-state">
-                <span class="src-tag ${link.tracking && link.providerState === 'enabled' ? '' : 'is-off'}" data-c="${esc(link.status?.category || 'unknown')}">${esc(sourceStatusText(link))}</span>
-                ${link.status?.detail ? `<span class="src-detail">${esc(link.status.detail)}</span>` : ''}
-              </div>
-              <div class="src-sync ${link.syncState === 'error' ? 'is-error' : ''}">
-                ${esc(SYNC_TEXT[link.syncState] || '')} · ${esc(synced)}${updated}
-                ${link.syncError ? `<div>${icon('alert', 'sm')}${esc(link.syncError)}</div>` : ''}
-              </div>
-              ${hint ? `<div class="src-hint">${icon('alert', 'sm')}<span>${esc(hint)}</span></div>` : ''}
-              <div class="src-actions">
-                ${link.canRefresh ? `<button type="button" class="btn xs" data-action="source-refresh" data-id="${id}" data-link="${lid}">${icon('refresh', 'sm')}刷新状态</button>` : ''}
-                ${link.providerState === 'enabled' ? `<button type="button" class="btn xs" data-action="source-track" data-id="${id}" data-link="${lid}" data-on="${link.tracking ? '0' : '1'}">${link.tracking ? `${icon('pause', 'sm')}停止跟踪` : `${icon('play', 'sm')}恢复跟踪`}</button>` : ''}
-                <button type="button" class="btn xs ghost" data-action="source-unlink" data-id="${id}" data-link="${lid}">解除绑定</button>
-              </div>
-            </div>`;
-        }).join('')}
-      </div>
-    </section>`;
-}
-
 async function sourceAction(action, el) {
   const { id, link } = el.dataset;
   if (action === 'source-unlink') {
@@ -370,25 +328,6 @@ export function parentLink(task, size = 'xs') {
   if (!task?.parent_id) return '';
   const parent = taskById(task.parent_id);
   return `<button type="button" class="link-chip ${size}" data-action="open-task" data-id="${esc(task.parent_id)}" title="打开上一张">${icon('chevronLeft', 'sm')}接着「${esc(parent?.title || '上一张')}」</button>`;
-}
-
-function linksSection(task, links) {
-  const parent = links?.parent;
-  const children = links?.children || [];
-  if (!parent && !children.length) return '';
-  const row = (item, dir) => item.status === 'deleted'
-    ? `<div class="link-row is-gone"><span class="link-dir">${dir}</span><span>上一张已经删除了</span></div>`
-    : `<button type="button" class="link-row" data-action="open-task" data-id="${esc(item.id)}">
-        <span class="link-dir">${dir}</span><b>${esc(item.title || '（无标题）')}</b>${statusPill(item.status)}${icon('chevronRight', 'sm')}
-      </button>`;
-  return `
-    <section class="dsec">
-      <div class="dsec-head"><h4>前后的卡</h4></div>
-      <div class="link-list">
-        ${parent ? row(parent, '上一张') : ''}
-        ${children.map((child) => row(child, '后续')).join('')}
-      </div>
-    </section>`;
 }
 
 /** 同一张卡接着做过几轮：按时间排出「指令 / 结果 / 你接着说」。 */
@@ -503,34 +442,73 @@ function filteredTasks() {
   return baseFilteredTasks();
 }
 
-/** 来源 / 来源状态 / 完成情况三个下拉，选项从当前任务里现算。 */
-function renderTaskFilterSelects() {
+/* 来源 / 外部状态 / 结论：收进「筛选」面板，用可点的标签选；选中的条件在状态页签下面显示，点 × 去掉。 */
+function filterGroups() {
   const sources = [...new Set(state.tasks.map(sourceKey))].sort();
-  if (state.taskSource !== 'all' && !sources.includes(state.taskSource)) state.taskSource = 'all';
-  const sourceSel = $('#task-source-filter');
-  if (sourceSel) {
-    sourceSel.innerHTML = [
-      `<option value="all">全部来源</option>`,
-      ...sources.map((key) => `<option value="${esc(key)}">${esc(sourceName(key))}</option>`)
-    ].join('');
-    sourceSel.value = state.taskSource;
-  }
-
   const categories = [...new Set(state.tasks.flatMap((t) => [...sourceCategories(t)]))].sort();
-  const statusSel = $('#task-source-status');
-  if (statusSel) {
-    const options = [['all', '全部来源状态'], ['none', '未关联来源']];
-    for (const category of categories) options.push([category, SOURCE_STATUS_LABEL[category] || category]);
-    statusSel.innerHTML = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
-    statusSel.value = state.taskSourceStatus;
-  }
+  return [
+    { key: 'taskSource', title: '来源', options: [['all', '全部'], ...sources.map((key) => [key, sourceName(key)])] },
+    { key: 'taskSourceStatus', title: '外部单子的状态', options: [['all', '全部'], ['none', '没关联外部单子'], ...categories.map((c) => [c, SOURCE_STATUS_LABEL[c] || c])] },
+    { key: 'taskOutcome', title: '结论', options: [['all', '全部'], ...Object.entries(OUTCOME_FILTER_LABEL)] }
+  ];
+}
 
-  const outcomeSel = $('#task-outcome-filter');
-  if (outcomeSel) {
-    const options = [['all', '全部完成情况'], ['unset', OUTCOME_FILTER_LABEL.unset], ...Object.entries(OUTCOME_FILTER_LABEL).filter(([key]) => key !== 'unset')];
-    outcomeSel.innerHTML = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
-    outcomeSel.value = state.taskOutcome;
-  }
+function activeFilterCount() {
+  return ['taskSource', 'taskSourceStatus', 'taskOutcome'].filter((key) => state[key] !== 'all').length;
+}
+
+function renderActiveFilters() {
+  // 当前任务里已经没有的来源：退回全部，免得筛出一片空。
+  const sources = new Set(state.tasks.map(sourceKey));
+  if (state.taskSource !== 'all' && !sources.has(state.taskSource)) state.taskSource = 'all';
+  const box = $('#task-active-filters');
+  const count = activeFilterCount();
+  const badge = $('#task-filter-count');
+  if (badge) { badge.hidden = !count; badge.textContent = String(count); }
+  $('#task-filter-btn')?.classList.toggle('is-on', count > 0);
+  if (!box) return;
+  const chips = filterGroups().filter((group) => state[group.key] !== 'all').map((group) => {
+    const label = group.options.find(([value]) => value === state[group.key])?.[1] || state[group.key];
+    return `<button type="button" class="afilter" data-clear-filter="${group.key}" title="去掉这个条件">${esc(group.title)}：${esc(label)}${icon('x', 'sm')}</button>`;
+  });
+  box.hidden = !chips.length;
+  box.innerHTML = chips.length ? `${chips.join('')}<button type="button" class="afilter-clear" data-clear-filter="all">清除</button>` : '';
+}
+
+function filterPanelHtml() {
+  return `
+    <div class="fpanel">
+      ${filterGroups().map((group) => `
+        <div class="fpanel-group">
+          <div class="fpanel-title">${esc(group.title)}</div>
+          <div class="fpanel-options">
+            ${group.options.map(([value, label]) => `<button type="button" class="fopt ${state[group.key] === value ? 'is-on' : ''}" data-filter-key="${group.key}" data-filter-value="${esc(value)}">${esc(label)}</button>`).join('')}
+          </div>
+        </div>`).join('')}
+      <div class="fpanel-foot">
+        <span>${filteredTasks().length} 张卡符合</span>
+        <button type="button" class="btn xs ghost" data-filter-key="__reset">全部清除</button>
+      </div>
+    </div>`;
+}
+
+function openFilterPanel(anchor) {
+  const handle = openPopover(anchor, {
+    html: filterPanelHtml(),
+    className: 'is-panel',
+    width: 320,
+    onClick: (target) => {
+      const opt = target.closest('[data-filter-key]');
+      if (!opt) return;
+      if (opt.dataset.filterKey === '__reset') {
+        state.taskSource = 'all'; state.taskSourceStatus = 'all'; state.taskOutcome = 'all';
+      } else {
+        state[opt.dataset.filterKey] = opt.dataset.filterValue;
+      }
+      renderTaskList();
+      if (handle?.pop.isConnected) { handle.pop.innerHTML = filterPanelHtml(); handle.place(); }
+    }
+  });
 }
 
 function taskSubtitle(t) {
@@ -546,34 +524,41 @@ function taskSubtitle(t) {
 function renderFilters() {
   const box = $('#task-filters');
   if (!box) return;
-  renderTaskFilterSelects();
+  renderActiveFilters();
   const base = baseFilteredTasks({ ignoreChip: true });
   box.innerHTML = FILTERS.map((f) => {
     const count = base.filter(f.test).length;
     if (f.id !== 'all' && f.id !== state.taskFilter && count === 0 && f.id !== 'active') return '';
-    return `<button type="button" class="fchip ${f.id === state.taskFilter ? 'is-active' : ''} ${f.warm && count ? 'is-warm' : ''}" data-task-filter="${f.id}" role="tab" aria-selected="${f.id === state.taskFilter}">${f.label}<em>${count}</em></button>`;
+    return `<button type="button" class="stab ${f.id === state.taskFilter ? 'is-active' : ''} ${f.warm && count ? 'is-warm' : ''}" data-task-filter="${f.id}" role="tab" aria-selected="${f.id === state.taskFilter}">${f.label}${count ? `<em>${count}</em>` : ''}</button>`;
   }).join('');
+}
+
+function taskRow(t, { inGroup = false } = {}) {
+  return `
+    <button type="button" class="trow ${t.id === state.selectedTaskId && isWide() ? 'is-selected' : ''} ${t.status === 'waiting_approval' ? 'is-waiting' : ''}" data-s="${esc(t.status)}" data-select-task="${esc(t.id)}">
+      <span class="sdot" data-s="${esc(t.status)}"></span>
+      <span class="trow-main">
+        <span class="trow-top"><b>${esc(t.title)}</b><time>${timeAgo(t.created_at)}</time></span>
+        <span class="trow-sub">${esc(taskSubtitle(t).slice(0, 140))}</span>
+        <span class="trow-meta">${statusPill(t.status, t.outcome)}${sourceTag(t)}${classify.classTag(t, { inGroup })}${t.parent_id ? `<span class="trow-chain">${icon('link', 'sm')}接着上一张</span>` : ''}</span>
+      </span>
+    </button>`;
 }
 
 export function renderTaskList() {
   renderFilters();
   renderQueueInfo();
+  const toggle = $('#task-view-toggle');
+  if (toggle) toggle.innerHTML = classify.viewToggleHtml();
   const box = $('#task-list');
   if (!box) return;
   const tasks = filteredTasks();
   if (!tasks.length) {
-    box.innerHTML = `<div class="empty"><div class="empty-mark">静</div><p>${state.taskQuery ? '没有搜到相关任务。' : '这个分类下还没有任务。回对话里说一句，或者点右上角新建。'}</p></div>`;
+    box.innerHTML = `<div class="empty"><div class="empty-mark">${catMark({ sleeping: !state.taskQuery })}</div><p>${state.taskQuery ? '没有搜到相关任务，换个词试试？' : '这里还空着，静静在打盹。回对话里说一句，或者点右上角新建。'}</p></div>`;
     return;
   }
-  box.innerHTML = tasks.map((t) => `
-    <button type="button" class="trow ${t.id === state.selectedTaskId && isWide() ? 'is-selected' : ''} ${t.status === 'waiting_approval' ? 'is-waiting' : ''}" data-select-task="${esc(t.id)}">
-      <span class="sdot" data-s="${esc(t.status)}"></span>
-      <span class="trow-main">
-        <span class="trow-top"><b>${esc(t.title)}</b><time>${timeAgo(t.created_at)}</time></span>
-        <span class="trow-sub">${esc(taskSubtitle(t).slice(0, 140))}</span>
-        <span class="trow-meta">${statusPill(t.status, t.outcome)}${sourceTag(t)}<span>${esc(workerLabel(t.worker))}</span><span>·</span><span>${esc(t.parent_id ? '接着上一张' : originLabel(t))}</span></span>
-      </span>
-    </button>`).join('');
+  box.classList.toggle('is-grouped', classify.grouped());
+  box.innerHTML = classify.grouped() ? classify.renderGrouped(tasks, taskRow) : tasks.map((t) => taskRow(t)).join('');
 }
 
 function renderQueueInfo() {
@@ -628,6 +613,8 @@ export async function enterTasks() {
 
 function ensureSelection() {
   if (state.view !== 'tasks' || !isWide()) return;
+  // 右侧正开着分类详情：不抢。
+  if (classify.currentCategory() && $('#task-pane .cat-detail')) return;
   const list = filteredTasks();
   if (state.selectedTaskId && state.tasks.some((t) => t.id === state.selectedTaskId)) {
     if (!$('#task-pane .detail')) loadDetail(state.selectedTaskId, 'pane');
@@ -640,10 +627,12 @@ function ensureSelection() {
 
 function renderPaneEmpty() {
   const pane = $('#task-pane');
-  if (pane) pane.innerHTML = `<div class="empty pane-empty"><div class="empty-mark">静</div><p>选一个任务，在这里看指令、结果和时间线。</p></div>`;
+  if (pane) pane.innerHTML = `<div class="empty pane-empty"><div class="empty-mark">${catMark()}</div><p>选一张卡，在这里看它做了什么。</p></div>`;
 }
 
 function selectTask(id) {
+  classify.forgetCategory();
+  $$('#task-list .cgroup').forEach((g) => g.classList.remove('is-selected'));
   state.selectedTaskId = id;
   $$('#task-list .trow').forEach((row) => row.classList.toggle('is-selected', row.dataset.selectTask === id));
   renderActivity();
@@ -680,6 +669,7 @@ export async function openTask(id, { reveal = false } = {}) {
 }
 
 function openDrawer(id) {
+  classify.forgetCategory();
   state.drawerTaskId = id;
   $('#drawer-backdrop').hidden = false;
   const drawer = $('#drawer');
@@ -689,6 +679,7 @@ function openDrawer(id) {
 }
 
 export function closeDrawer() {
+  classify.forgetCategory();
   if (!state.drawerTaskId && $('#drawer')?.hidden) return;
   state.drawerTaskId = null;
   $('#drawer').hidden = true;
@@ -773,122 +764,241 @@ function runsHtml(runs = []) {
     </section>`;
 }
 
-function execSection(task) {
-  const workspaces = state.settings?.workspaces || [];
-  if (task.status === 'running') {
-    return `<div class="dbox pre">${esc(workerLabel(task.worker))} · ${esc(task.cwd || '未指定工作目录')}</div>`;
-  }
-  const known = workspaces.some((ws) => ws.path === task.cwd);
+/* ------------------------------ 详情：重新设计 ------------------------------ */
+// 头部只留一个主动作（停止 / 重跑）和「⋯」菜单；状态标签本身就是「结论」选择器。
+// 内容分三个页签：概览（拍板、结果、接着做、属性）· 指令与执行 · 记录。属性一行一项，操作收进行内的小菜单。
+
+const detailTabs = new Map();
+const TABS = [['overview', '概览'], ['exec', '指令与执行'], ['log', '记录']];
+
+function statusControl(task) {
+  if (task.status !== 'done') return statusPill(task.status, task.outcome);
+  const label = OUTCOME_LABEL[task.outcome] || '本轮结束';
+  return `<button type="button" class="pill pill-btn" data-s="done" ${task.outcome ? `data-o="${esc(task.outcome)}"` : ''} data-action="outcome-menu" data-id="${esc(task.id)}" aria-haspopup="menu" title="改结论：算不算做完了">${esc(label)}${icon('down', 'sm')}</button>`;
+}
+
+function primaryAction(task) {
+  const id = esc(task.id);
+  if (ACTIVE_STATUSES.includes(task.status)) return `<button type="button" class="btn sm ghost danger" data-action="cancel-task" data-id="${id}">${icon('stop', 'sm')}停止</button>`;
+  if (['failed', 'cancelled', 'done'].includes(task.status)) return `<button type="button" class="btn sm" data-action="retry-task" data-id="${id}">${icon('retry', 'sm')}${task.status === 'done' ? '重跑' : '重试'}</button>`;
+  return '';
+}
+
+function prop(label, value, { cls = '' } = {}) {
+  if (!value) return '';
+  return `<div class="prop ${cls}"><span class="prop-k">${esc(label)}</span><div class="prop-v">${value}</div></div>`;
+}
+
+function sourceProps(task) {
+  return (task.sources || []).map((link) => {
+    const off = link.providerState !== 'enabled' || !link.tracking;
+    const hint = mismatchHint(task, link);
+    const sync = link.syncError ? `<div class="prop-note is-error">${icon('alert', 'sm')}同步失败：${esc(link.syncError)}</div>`
+      : `<div class="prop-note">${esc(SYNC_TEXT[link.syncState] || '')}${link.syncedAt ? ` · ${timeAgo(link.syncedAt)}` : ''}</div>`;
+    return prop('来源', `
+      <div class="src-line">
+        <span class="src-tag ${off ? 'is-off' : ''}" data-c="${esc(off ? 'off' : link.status?.category || 'unknown')}">${esc(sourceStatusText(link))}</span>
+        <span class="src-name" title="${esc(link.title || '')}">${esc(link.providerLabel)}${link.externalType || link.externalId ? ` · ${esc([link.externalType, link.externalId ? `#${link.externalId}` : ''].filter(Boolean).join(' '))}` : ''}</span>
+        <span class="grow"></span>
+        ${link.url ? `<a class="icon-btn xs" href="${esc(link.url)}" target="_blank" rel="noopener noreferrer" title="打开原单">${icon('external', 'sm')}</a>` : ''}
+        <button type="button" class="icon-btn xs" data-action="source-menu" data-id="${esc(task.id)}" data-link="${esc(link.id)}" title="刷新 / 跟踪 / 解除" aria-haspopup="menu">${icon('more', 'sm')}</button>
+      </div>
+      ${link.title && link.title !== task.title ? `<div class="prop-sub">${esc(link.title)}</div>` : ''}
+      ${hint ? `<div class="prop-note is-warn">${icon('alert', 'sm')}${esc(hint)}</div>` : sync}`);
+  }).join('');
+}
+
+function linkProps(links) {
+  const parent = links?.parent;
+  const children = links?.children || [];
+  const row = (item) => item.status === 'deleted'
+    ? '<span class="muted">已经删除了</span>'
+    : `<button type="button" class="link-line" data-action="open-task" data-id="${esc(item.id)}"><span class="sdot" data-s="${esc(item.status)}"></span><b>${esc(item.title || '（无标题）')}</b>${icon('chevronRight', 'sm')}</button>`;
+  return [
+    parent ? prop('上一张', row(parent)) : '',
+    children.length ? prop('后续', children.map(row).join('')) : ''
+  ].join('');
+}
+
+function execProp(task) {
+  const workspace = (state.settings?.workspaces || []).find((ws) => ws.path === task.cwd);
+  const where = workspace ? workspace.name : task.cwd ? task.cwd.replace(/^\/Users\/[^/]+/, '~') : '默认目录';
+  return prop('执行', `
+    <span class="exec-who">${esc(workerGlyph(task.worker))} ${esc(workerLabel(task.worker))}</span>
+    <span class="exec-where" title="${esc([task.cwd, ...(workspace?.extraPaths || [])].filter(Boolean).join('\n'))}">${icon('folder', 'sm')}${esc(where)}${workspace?.extraPaths?.length ? `<em class="exec-more">+${workspace.extraPaths.length} 个文件夹</em>` : ''}</span>
+    ${task.status !== 'running' ? `<button type="button" class="link-btn" data-action="edit-exec" data-id="${esc(task.id)}">换</button>` : ''}`);
+}
+
+function overviewTab(task, pending, links) {
+  const id = esc(task.id);
   return `
-    <div class="exec-edit">
-      <select data-task-worker="${esc(task.id)}" aria-label="Worker">
-        ${workerIds().map((worker) => `<option value="${esc(worker)}" ${task.worker === worker ? 'selected' : ''}>${esc(workerLabel(worker))}</option>`).join('')}
-        ${task.worker && !workerIds().includes(task.worker) ? `<option value="${esc(task.worker)}" selected>${esc(workerLabel(task.worker))}（不可用）</option>` : ''}
-      </select>
-      <select data-task-workspace="${esc(task.id)}" aria-label="工作目录">
-        ${workspaces.map((ws) => `<option value="${esc(ws.path)}" ${ws.path === task.cwd ? 'selected' : ''}>${esc(ws.name)} · ${esc(ws.path)}</option>`).join('')}
-        ${task.cwd && !known ? `<option value="${esc(task.cwd)}" selected>当前 · ${esc(task.cwd)}</option>` : ''}
-        <option value="__custom__">选择其他文件夹…</option>
-      </select>
-      <button type="button" class="btn sm" data-action="save-task-exec" data-id="${esc(task.id)}">应用</button>
-    </div>
-    <p class="hint">改完点「应用」；下次执行（重试或恢复）时生效。</p>`;
+    ${pending ? `<section class="dsec">${approvalBlock(task, pending)}</section>` : ''}
+    ${task.status === 'running' ? `
+      <section class="dsec"><div class="dbox progress-box"><span class="spinner"></span><span data-progress-text="${id}">${esc(task.progress || '执行中，等 Worker 回传进度…')}</span>${elapsedHtml(task)}</div></section>` : ''}
+    ${task.result ? `
+      <section class="dsec">
+        <div class="result-card ${task.status === 'failed' ? 'is-error' : ''}">
+          <div class="result-head"><h4>${task.status === 'failed' ? `${icon('alert', 'sm')}没做成，原因是` : '结果'}</h4>
+            <button type="button" class="icon-btn xs" data-action="copy-result" data-id="${id}" title="复制">${icon('copy', 'sm')}</button></div>
+          <div class="${task.status === 'failed' ? 'pre' : 'prose'}">${task.status === 'failed' ? esc(task.result) : md(task.result)}</div>
+        </div>
+      </section>` : ''}
+    ${pending ? '' : `<section class="dsec">${replyBox(task, null)}</section>`}
+    <section class="dsec props">
+      ${classify.classificationProp(task) ? prop('归类', classify.classificationProp(task)) : ''}
+      ${sourceProps(task)}
+      ${linkProps(links)}
+      ${execProp(task)}
+      ${task.workflow_id ? prop('流程', esc(workflowById(task.workflow_id)?.name || '已移除')) : ''}
+    </section>`;
+}
+
+function execTab(task, runs) {
+  return `
+    <section class="dsec">
+      <div class="dsec-head"><h4>交给 Worker 的指令</h4>
+        ${task.status !== 'running' ? `<button type="button" class="link-btn" data-action="edit-task" data-id="${esc(task.id)}">编辑</button>` : ''}</div>
+      <div class="prompt-box ${task.prompt.length > 600 ? 'is-long' : ''}" data-prompt-box>
+        <div class="dbox pre">${esc(task.prompt)}</div>
+        ${task.prompt.length > 600 ? '<button type="button" class="prompt-more" data-action="prompt-toggle">展开全部</button>' : ''}
+      </div>
+    </section>
+    <section class="dsec props">${execProp(task)}</section>
+    ${runsHtml(runs) || '<p class="muted small">还没有执行记录。</p>'}`;
+}
+
+function logTab(task, events) {
+  return `
+    ${roundsSection(task, events)}
+    <section class="dsec">
+      <ul class="timeline">
+        ${(events || []).map((e) => `
+          <li>
+            <span>${esc(EVENT_LABEL[e.type] || e.type)}</span><span class="t-time">${clock(e.created_at)}</span>
+            ${eventDetail(e) ? `<div class="t-data">${esc(eventDetail(e))}</div>` : ''}
+          </li>`).join('')}
+      </ul>
+    </section>`;
 }
 
 function renderDetail({ task, events, approval, runs, links }, mode) {
   const container = mode === 'drawer' ? $('#drawer') : $('#task-pane');
   if (!container) return;
   const pending = approval && approval.status === 'pending' ? approval : null;
-  const active = ACTIVE_STATUSES.includes(task.status);
   const id = esc(task.id);
-  const workflow = task.workflow_id ? workflowById(task.workflow_id) : null;
   const scrollTop = container.scrollTop;
   const sameTask = container.dataset.taskId === task.id;
+  const tab = detailTabs.get(task.id) || 'overview';
+  const rounds = (events || []).filter((e) => e.type === 'task/followup').length;
   keepApprovalFocus(() => {
     container.dataset.taskId = task.id;
     container.innerHTML = `
-      <article class="detail">
-        <div class="detail-bar">
-          ${statusPill(task.status, task.outcome)}
-          <span class="grow"></span>
-          ${active ? `<button type="button" class="btn sm danger" data-action="cancel-task" data-id="${id}">${icon('stop', 'sm')}停止</button>` : ''}
-          ${['failed', 'cancelled', 'done'].includes(task.status) ? `<button type="button" class="btn sm" data-action="retry-task" data-id="${id}">${icon('retry', 'sm')}${task.status === 'done' ? '重跑' : '重试'}</button>` : ''}
-          ${task.status === 'done' ? `<label class="outcome-pick">结论
-            <select data-task-outcome="${id}">
-              ${OUTCOME_OPTIONS.map(([value, label]) => `<option value="${value}" ${(task.outcome || '') === value ? 'selected' : ''}>${label}</option>`).join('')}
-            </select>
-          </label>` : ''}
-          ${replyButton(task)}
-          ${task.status === 'done' && !task.workflow_id ? `<button type="button" class="btn sm" data-action="learn-task" data-id="${id}" title="把这次的做法总结成工作流程，下次同类请求按它执行">${icon('flow', 'sm')}总结成流程</button>` : ''}
-          ${task.status !== 'running' ? `<button type="button" class="icon-btn" data-action="edit-task" data-id="${id}" title="编辑">${icon('edit')}</button>` : ''}
-          ${task.status !== 'running' ? `<button type="button" class="icon-btn danger" data-action="delete-task" data-id="${id}" title="删除">${icon('trash')}</button>` : ''}
-          ${mode === 'drawer' ? `<button type="button" class="icon-btn" data-action="close-drawer" title="关闭（Esc）" aria-label="关闭">${icon('x')}</button>` : ''}
+      <article class="detail detail-v2">
+        <header class="dhead">
+          <div class="dhead-bar">
+            ${statusControl(task)}
+            ${task.parent_id ? parentLink(task, 'sm') : ''}
+            <span class="grow"></span>
+            ${primaryAction(task)}
+            <button type="button" class="icon-btn" data-action="task-more" data-id="${id}" title="更多" aria-haspopup="menu">${icon('more')}</button>
+            ${mode === 'drawer' ? `<button type="button" class="icon-btn" data-action="close-drawer" title="关闭（Esc）" aria-label="关闭">${icon('x')}</button>` : ''}
+          </div>
+          <h2>${esc(task.title)}</h2>
+          <div class="dmeta">
+            <span>${esc(originLabel(task))}</span><span>创建于 ${timeAgo(task.created_at)}</span>
+            ${task.tokens ? `<span>${tokensText(task.tokens)} tokens</span>` : ''}
+          </div>
+          <nav class="dtabs" role="tablist">
+            ${TABS.map(([key, label]) => `<button type="button" role="tab" class="dtab ${tab === key ? 'is-active' : ''}" aria-selected="${tab === key}" data-action="detail-tab" data-id="${id}" data-tab="${key}">${label}${key === 'log' && rounds ? `<em>${rounds + 1} 轮</em>` : ''}</button>`).join('')}
+          </nav>
+        </header>
+        <div class="dbody">
+          ${tab === 'exec' ? execTab(task, runs) : tab === 'log' ? logTab(task, events) : overviewTab(task, pending, links)}
         </div>
-        <h2>${esc(task.title)}</h2>
-        <div class="detail-meta">
-          <span class="tag">${esc(workerGlyph(task.worker))} ${esc(workerLabel(task.worker))}</span>
-          ${task.workflow_id ? `<span class="tag">流程：${esc(workflow?.name || '已移除')}</span>` : ''}
-          <span>${esc(originLabel(task))}</span>
-          <span>创建于 ${timeAgo(task.created_at)}</span>
-          ${task.tokens ? `<span>${tokensText(task.tokens)} tokens</span>` : ''}
-        </div>
-        ${task.parent_id ? `<div class="detail-links">${parentLink(task, 'sm')}</div>` : ''}
-
-        ${pending ? `
-          <section class="dsec">
-            <div class="dsec-head"><h4>需要你拍板</h4></div>
-            ${approvalBlock(task, pending)}
-          </section>` : ''}
-
-        ${task.status === 'running' ? `
-          <section class="dsec">
-            <div class="dsec-head"><h4>正在做</h4></div>
-            <div class="dbox progress-box"><span class="spinner"></span><span data-progress-text="${id}">${esc(task.progress || '执行中，等 Worker 回传进度…')}</span>${elapsedHtml(task)}</div>
-          </section>` : ''}
-
-        ${task.result ? `
-          <section class="dsec">
-            <div class="dsec-head"><h4>${task.status === 'failed' ? '错误' : '结果'}</h4>
-              <button type="button" class="btn xs ghost" data-action="copy-result" data-id="${id}">${icon('copy', 'sm')}复制</button></div>
-            <div class="dbox ${task.status === 'failed' ? 'is-error pre' : 'prose'}">${task.status === 'failed' ? esc(task.result) : md(task.result)}</div>
-          </section>` : ''}
-
-        ${pending ? '' : `
-          <section class="dsec">
-            <div class="dsec-head"><h4>${['done', 'failed', 'cancelled'].includes(task.status) ? '接着做' : '现在'}</h4></div>
-            ${replyBox(task, null)}
-          </section>`}
-
-        ${sourcesSection(task)}
-        ${linksSection(task, links)}
-        ${roundsSection(task, events)}
-
-        <section class="dsec">
-          <div class="dsec-head"><h4>交给 Worker 的指令</h4></div>
-          <div class="dbox pre">${esc(task.prompt)}</div>
-        </section>
-
-        <section class="dsec">
-          <div class="dsec-head"><h4>Worker 与工作目录</h4></div>
-          ${execSection(task)}
-        </section>
-
-        ${runsHtml(runs)}
-
-        <section class="dsec">
-          <div class="dsec-head"><h4>时间线</h4></div>
-          <ul class="timeline">
-            ${(events || []).map((e) => `
-              <li>
-                <span>${esc(EVENT_LABEL[e.type] || e.type)}</span><span class="t-time">${clock(e.created_at)}</span>
-                ${eventDetail(e) ? `<div class="t-data">${esc(eventDetail(e))}</div>` : ''}
-              </li>`).join('')}
-          </ul>
-        </section>
       </article>`;
   });
   if (sameTask) container.scrollTop = scrollTop;
   else container.scrollTop = 0;
+}
+
+/* ------------------------------ 详情：菜单与对话框 ------------------------------ */
+
+function taskMenu(anchor, task) {
+  const running = task.status === 'running';
+  const items = [
+    !running ? { label: '编辑任务', icon: 'edit', onSelect: () => editTask(task.id) } : null,
+    !running ? { label: '换 Worker / 工作目录…', icon: 'cpu', onSelect: () => editExec(task.id) } : null,
+    task.result ? { label: '复制结果', icon: 'copy', onSelect: () => copyText(task.result, '结果已复制。') } : null,
+    replySourceOf(task) ? { label: '发回原会话', icon: 'reply', onSelect: () => openReplyDialog(task.id) } : null,
+    task.status === 'done' && !task.workflow_id ? { label: '总结成流程', icon: 'flow', onSelect: () => learnTask({ dataset: { id: task.id }, disabled: false }) } : null
+  ].filter(Boolean);
+  const cls = classify.taskMenuItems(task);
+  if (cls.length) items.push('divider', ...cls);
+  if (!running) items.push('divider', { label: '删除任务', icon: 'trash', danger: true, onSelect: () => deleteTask(task.id) });
+  openMenu(anchor, items);
+}
+
+function outcomeMenu(anchor, task) {
+  openMenu(anchor, [
+    { heading: '这件事算不算做完了？' },
+    ...OUTCOME_OPTIONS.map(([value, label]) => ({ label, checked: (task.outcome || '') === value, onSelect: () => setOutcome(task.id, value) }))
+  ], { align: 'start' });
+}
+
+function sourceMenu(anchor, task, linkId) {
+  const link = (task.sources || []).find((item) => item.id === linkId);
+  if (!link) return;
+  const run = (action, extra = {}) => () => sourceAction(action, { dataset: { id: task.id, link: linkId, ...extra }, disabled: false });
+  openMenu(anchor, [
+    link.canRefresh ? { label: '刷新状态', icon: 'refresh', onSelect: run('source-refresh') } : null,
+    link.providerState === 'enabled' ? { label: link.tracking ? '停止跟踪' : '恢复跟踪', icon: link.tracking ? 'pause' : 'play', onSelect: run('source-track', { on: link.tracking ? '0' : '1' }) } : null,
+    link.url ? { label: '打开原单', icon: 'external', onSelect: () => window.open(link.url, '_blank', 'noopener') } : null,
+    'divider',
+    { label: '解除绑定', icon: 'x', danger: true, onSelect: run('source-unlink') }
+  ]);
+}
+
+async function setOutcome(id, value) {
+  try {
+    const data = await api(`/api/tasks/${id}`, { method: 'PATCH', body: { outcome: value || null } });
+    upsertTask(data.task);
+    changed('tasks');
+    renderTaskList();
+    refreshTaskDetail(id);
+    toast(value ? `已标记为「${OUTCOME_LABEL[value]}」。` : '已恢复为「本轮结束（未确认完成）」。');
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function editExec(taskId) {
+  const task = taskById(taskId) || detailCache.get(taskId)?.task;
+  if (!task) return;
+  const workspaces = state.settings?.workspaces || [];
+  const known = workspaces.some((ws) => ws.path === task.cwd);
+  openDialog({
+    title: '换 Worker / 工作目录',
+    desc: '下次执行（重跑、重试或恢复）时生效。',
+    body: `
+      <label class="field"><span>Worker</span>
+        <select name="worker">
+          ${workerIds().map((worker) => `<option value="${esc(worker)}" ${task.worker === worker ? 'selected' : ''}>${esc(workerLabel(worker))}</option>`).join('')}
+          ${task.worker && !workerIds().includes(task.worker) ? `<option value="${esc(task.worker)}" selected>${esc(workerLabel(task.worker))}（不可用）</option>` : ''}
+        </select></label>
+      <label class="field"><span>工作目录</span>
+        <select name="cwd" data-task-workspace="${esc(task.id)}">
+          ${workspaces.map((ws) => `<option value="${esc(ws.path)}" ${ws.path === task.cwd ? 'selected' : ''}>${esc(ws.name)} · ${esc(ws.path)}</option>`).join('')}
+          ${task.cwd && !known ? `<option value="${esc(task.cwd)}" selected>当前 · ${esc(task.cwd)}</option>` : ''}
+          <option value="__custom__">选择其他文件夹…</option>
+        </select></label>`,
+    okText: '保存',
+    onSubmit: async ({ worker, cwd }) => {
+      if (!cwd || cwd === '__custom__') throw new Error('先选一个工作目录');
+      await api(`/api/tasks/${task.id}`, { method: 'PATCH', body: { cwd, ...(worker ? { worker } : {}) } });
+      toast('已更新，下次执行时生效。');
+      refreshTaskDetail(task.id);
+    }
+  });
 }
 
 function patchProgressText() {
@@ -1023,22 +1133,6 @@ function newTask() {
   });
 }
 
-async function saveTaskExec(id) {
-  const workspace = $(`[data-task-workspace="${CSS.escape(id)}"]`);
-  if (!workspace || !workspace.value || workspace.value === '__custom__') {
-    toast('先选择一个工作目录。');
-    return;
-  }
-  const worker = $(`[data-task-worker="${CSS.escape(id)}"]`)?.value;
-  try {
-    await api(`/api/tasks/${id}`, { method: 'PATCH', body: { cwd: workspace.value, ...(worker ? { worker } : {}) } });
-    toast('Worker 和工作目录已更新。');
-    refreshTaskDetail(id);
-  } catch (err) {
-    toast(err.message);
-  }
-}
-
 async function learnTask(el) {
   el.disabled = true;
   try {
@@ -1091,7 +1185,23 @@ document.addEventListener('click', async (event) => {
   else if (action === 'retry-task') { el.disabled = true; await retryTask(id); }
   else if (action === 'edit-task') editTask(id);
   else if (action === 'delete-task') deleteTask(id);
-  else if (action === 'save-task-exec') saveTaskExec(id);
+  else if (action === 'edit-exec') editExec(id);
+  else if (action === 'prompt-toggle') {
+    const box = el.closest('[data-prompt-box]');
+    const open = box.classList.toggle('is-open');
+    el.textContent = open ? '收起' : '展开全部';
+  }
+  else if (action === 'task-more' || action === 'outcome-menu' || action === 'source-menu') {
+    const task = detailCache.get(id)?.task || taskById(id);
+    if (!task) return;
+    if (action === 'task-more') taskMenu(el, task);
+    else if (action === 'outcome-menu') outcomeMenu(el, task);
+    else sourceMenu(el, task, el.dataset.link);
+  } else if (action === 'detail-tab') {
+    detailTabs.set(id, el.dataset.tab);
+    const data = detailCache.get(id);
+    if (data) renderDetail(data, el.closest('#drawer') ? 'drawer' : 'pane');
+  }
   else if (action === 'learn-task') learnTask(el);
   else if (action === 'copy-result') copyText(detailCache.get(id)?.task?.result || taskById(id)?.result || '', '结果已复制。');
 });
@@ -1128,38 +1238,13 @@ $('#task-filters')?.addEventListener('click', (event) => {
 });
 
 let searchTimer = null;
-$('#task-source-filter')?.addEventListener('change', (event) => {
-  state.taskSource = event.target.value;
+$('#task-filter-btn')?.addEventListener('click', (event) => openFilterPanel(event.currentTarget));
+$('#task-active-filters')?.addEventListener('click', (event) => {
+  const chip = event.target.closest('[data-clear-filter]');
+  if (!chip) return;
+  if (chip.dataset.clearFilter === 'all') { state.taskSource = 'all'; state.taskSourceStatus = 'all'; state.taskOutcome = 'all'; }
+  else state[chip.dataset.clearFilter] = 'all';
   renderTaskList();
-});
-$('#task-source-status')?.addEventListener('change', (event) => {
-  state.taskSourceStatus = event.target.value;
-  renderTaskList();
-});
-$('#task-outcome-filter')?.addEventListener('change', (event) => {
-  state.taskOutcome = event.target.value;
-  renderTaskList();
-});
-
-// 详情里的「结论」：done 只代表跑完了，这里才是算不算完成。
-document.addEventListener('change', async (event) => {
-  const select = event.target.closest('[data-task-outcome]');
-  if (!select) return;
-  const id = select.dataset.taskOutcome;
-  select.disabled = true;
-  try {
-    const data = await api(`/api/tasks/${id}`, { method: 'PATCH', body: { outcome: select.value || null } });
-    upsertTask(data.task);
-    changed('tasks');
-    renderTaskList();
-    refreshTaskDetail(id);
-    toast(select.value ? `已标记为「${OUTCOME_LABEL[select.value]}」。` : '已恢复为「本轮结束（未确认完成）」。');
-  } catch (err) {
-    toast(err.message);
-    select.value = taskById(id)?.outcome || '';
-  } finally {
-    select.disabled = false;
-  }
 });
 
 $('#task-search')?.addEventListener('input', (event) => {
@@ -1175,6 +1260,12 @@ $('#queue-toggle')?.addEventListener('click', toggleQueue);
 $('#status-queue-toggle')?.addEventListener('click', toggleQueue);
 
 on('tasks', () => { if (state.view === 'tasks') renderTaskList(); });
+on('plugins', () => { if (state.view === 'tasks') renderTaskList(); });
+classify.setHooks({
+  openTask: (id) => openTask(id),
+  renderList: () => { if (state.view === 'tasks') renderTaskList(); },
+  refreshDetail: (id) => refreshTaskDetail(id)
+});
 on('approvals', () => { if (state.view === 'tasks') renderTaskList(); });
 on('stats', renderQueueInfo);
 on('settings', renderQueueInfo);

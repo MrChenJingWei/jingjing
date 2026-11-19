@@ -12,7 +12,9 @@ export async function execute(task, ctx) {
   const base = ctx.resume
     ? `${task.prompt}\n\n用户的${ctx.resume.answer ? `决定：${ctx.resume.answer}` : `选择：${ctx.resume.choice >= 0 ? ctx.resume.options?.[ctx.resume.choice] : '取消'}`}`
     : task.prompt;
-  const prompt = ctx.approvalGuide ? `${base}\n\n${ctx.approvalGuide}` : base;
+  // 工作区挂的其他文件夹：Codex 在主目录里执行，指令里告诉它另外几个在哪。
+  const dirs = (ctx.extraDirs || []).length ? `\n\n这个工作区还包括这些文件夹：\n${ctx.extraDirs.map((dir) => `- ${dir}`).join('\n')}` : '';
+  const prompt = ctx.approvalGuide ? `${base}${dirs}\n\n${ctx.approvalGuide}` : `${base}${dirs}`;
   await ctx.emit('Codex 已启动…');
   // 静静明确允许改文件的任务才用 --full-auto（只能写工作目录）；其他任务按 codex 自己的默认沙箱。
   // `--` 之后都当成 prompt：以「-」开头的消息（比如 Markdown 列表）不会被当成命令行选项。

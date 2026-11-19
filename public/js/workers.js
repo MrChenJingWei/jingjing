@@ -10,10 +10,107 @@ const WORKER_LIMIT_FIELDS = [
 const ORIGIN = { builtin: '内置', official: '官方插件', user: '我的插件' };
 
 export function renderWorkerPage() {
+  renderCapabilities();
   renderFallbackSelect();
   renderWorkerList();
   renderWorkerRules();
 }
+
+/* ------------------------------ 本机能力 ------------------------------- */
+// 内置能力在 src/capabilities.json；自定义的存在 settings.capabilities，和内置目录合并后给 Worker 勾选、给路由匹配。
+
+const RISK_LABEL = { read: '只读', write: '会改东西', deploy: '会发布 / 上线' };
+
+function customCapabilities() {
+  return (state.settings?.capabilities || []).filter(Boolean);
+}
+
+function capabilityUsers(id) {
+  return Object.entries(state.workers || {}).filter(([, w]) => (w.capabilities || []).includes(id)).map(([wid, w]) => w.label || wid);
+}
+
+function renderCapabilities() {
+  const box = $('#capability-list');
+  if (!box) return;
+  const catalog = state.capabilities || [];
+  const custom = catalog.filter((item) => item.custom);
+  const builtin = catalog.filter((item) => !item.custom);
+  const chip = (item) => {
+    const users = capabilityUsers(item.id);
+    return `
+      <div class="cap-chip ${item.custom ? 'is-custom' : ''}" title="${esc([item.description, item.keywords?.length ? `触发词：${item.keywords.join('、')}` : ''].filter(Boolean).join('\n'))}">
+        <span class="cap-chip-main"><b>${esc(item.label)}</b><small>${users.length ? `${esc(users.join('、'))} 能用` : '还没有 Worker 勾它'}${item.hostTool ? ' · 需本机命令行' : ''}</small></span>
+        ${item.custom ? `<button type="button" class="icon-btn xs" data-cap-edit="${esc(item.id)}" title="改">${icon('edit', 'sm')}</button>
+          <button type="button" class="icon-btn xs danger" data-cap-remove="${esc(item.id)}" title="删除">${icon('trash', 'sm')}</button>` : ''}
+      </div>`;
+  };
+  box.innerHTML = `
+    ${custom.length ? `<div class="cap-group"><div class="cap-group-title">自定义</div><div class="cap-grid">${custom.map(chip).join('')}</div></div>` : ''}
+    <div class="cap-group"><div class="cap-group-title">内置</div><div class="cap-grid">${builtin.map(chip).join('')}</div></div>`;
+}
+
+async function saveCapabilities(list) {
+  const data = await api('/api/settings', { method: 'PUT', body: { capabilities: list } });
+  state.settings = data.settings;
+  if (data.workers) state.workers = data.workers;
+  if (data.capabilities) state.capabilities = data.capabilities;
+  changed('settings', 'workers');
+  renderCapabilities();
+}
+
+function capabilityDialog(existing = null) {
+  openDialog({
+    title: existing ? `改「${existing.label}」` : '添加本机能力',
+    desc: '告诉静静这台电脑还能做什么。加完到对应 Worker 的「配置」里勾上，派活时提到触发词就会优先交给它。',
+    body: `
+      <label class="field"><span>名称</span><input name="label" maxlength="40" value="${esc(existing?.label || '')}" placeholder="比如：公司发布系统" /></label>
+      <label class="field"><span>触发词 <small class="field-help">逗号分隔，对话或来源里出现这些词时会想到这项能力</small></span>
+        <input name="keywords" value="${esc((existing?.keywords || []).join(', '))}" placeholder="发版, release, 上线单" /></label>
+      <label class="field"><span>说明（可选）</span><input name="description" maxlength="200" value="${esc(existing?.description || '')}" placeholder="比如：用 relctl 提交上线单" /></label>
+      <label class="field"><span>风险</span>
+        <select name="risk">${Object.entries(RISK_LABEL).map(([value, label]) => `<option value="${value}" ${(existing?.risk || 'write') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="switch-row"><span><b>需要本机命令行</b><small>没有 Worker 勾它时，能执行本机命令的 Worker 也算候选</small></span>
+        <input type="checkbox" class="switch" name="hostTool" ${existing?.hostTool ? 'checked' : ''} /></label>`,
+    okText: existing ? '保存' : '添加',
+    onSubmit: async ({ label, keywords, description, risk, hostTool }) => {
+      const name = label.trim();
+      if (!name) throw new Error('写个名称');
+      const words = keywords.split(/[,，、\n]/).map((word) => word.trim()).filter(Boolean);
+      const item = {
+        id: existing?.id || `c-${Date.now().toString(36)}`,
+        label: name,
+        keywords: words.length ? words : [name],
+        description: description.trim(),
+        risk,
+        hostTool: Boolean(hostTool)
+      };
+      const list = customCapabilities().filter((cap) => cap.id !== item.id);
+      await saveCapabilities(existing ? customCapabilities().map((cap) => (cap.id === item.id ? item : cap)) : [...list, item]);
+      toast(existing ? '已保存。' : `加好了。去对应 Worker 的「配置」里勾上「${name}」。`, 3200);
+    }
+  });
+}
+
+$('#add-capability')?.addEventListener('click', () => capabilityDialog());
+$('#capability-list')?.addEventListener('click', async (event) => {
+  const edit = event.target.closest('[data-cap-edit]');
+  if (edit) {
+    capabilityDialog(customCapabilities().find((cap) => cap.id === edit.dataset.capEdit));
+    return;
+  }
+  const remove = event.target.closest('[data-cap-remove]');
+  if (!remove) return;
+  const cap = customCapabilities().find((item) => item.id === remove.dataset.capRemove);
+  const users = capabilityUsers(remove.dataset.capRemove);
+  const ok = await ask({ title: `删除「${cap?.label || '这项能力'}」？`, message: users.length ? `${users.join('、')} 勾了它，删除后派活时不再按它挑人。` : '删除后派活时不再按它挑人。', okText: '删除', danger: true });
+  if (!ok) return;
+  try {
+    await saveCapabilities(customCapabilities().filter((item) => item.id !== remove.dataset.capRemove));
+    toast('已删除。');
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 /* ------------------------------ 执行器 ------------------------------- */
 
@@ -38,15 +135,17 @@ function renderWorkerList() {
     const removable = w.origin !== 'builtin' && w.origin !== 'official';
     // 开关只管「用不用」；开着但这台机器上跑不了（没装、缺 Key）时单独标出来，让用户知道差什么。
     const cls = !w.enabled ? 'is-off' : w.available ? '' : 'is-unavailable';
-    const caps = w.capabilityLabels?.length ? ` · ${w.capabilityLabels.join('、')}` : '';
-    const status = (!w.enabled ? '已停用' : w.detail || (w.available ? '可用' : '不可用')) + caps;
+    const caps = w.capabilityLabels?.length ? w.capabilityLabels.join('、') : '';
+    // 状态只用文字和透明度：用不了 / 停用的整行变淡，第二行写原因；能用的不多标。
+    const reason = !w.enabled ? '已停用' : w.available ? '' : (w.detail || '这台机器上现在用不了');
+    const line = `<small>${esc(reason || [w.detail, caps, abilities].filter(Boolean).join(' · '))}</small>`;
     const id = esc(key);
     return `
       <div class="lrow ${cls}" title="${esc([w.description, w.notes ? `本机补充：${w.notes}` : ''].filter(Boolean).join('\n'))}">
         <span class="glyph">${esc(w.glyph || '工')}</span>
         <div class="lrow-main">
-          <b><span class="wdot"></span>${esc(w.label || key)}<span class="badge">${esc(ORIGIN[w.origin] || 'Worker 插件')}</span></b>
-          <small>${esc(status)}${abilities ? ` · ${esc(abilities)}` : ''}</small>
+          <b>${esc(w.label || key)}<span class="badge">${esc(ORIGIN[w.origin] || 'Worker 插件')}</span></b>
+          ${line}
         </div>
         <div class="lrow-actions">
           <button type="button" class="btn xs" data-worker-config="${id}">配置</button>
@@ -71,6 +170,9 @@ function workerConfigFields(w) {
     if (field.type === 'textarea') {
       return `<label class="field span-2"><span>${esc(field.label)}</span><textarea rows="3" ${attrs}>${esc(value ?? '')}</textarea></label>`;
     }
+    if (field.type === 'folder') {
+      return `<div class="field"><span>${esc(field.label)}</span><input type="text" ${attrs} data-folder value="${esc(value ?? '')}" placeholder="${esc(field.placeholder || '')}" />${field.help ? `<small>${esc(field.help)}</small>` : ''}</div>`;
+    }
     const type = field.type === 'number' ? 'number' : field.type === 'password' ? 'password' : 'text';
     const help = field.help ? `<small>${esc(field.help)}</small>` : '';
     return `<label class="field"><span>${esc(field.label)}</span><input type="${type}" ${attrs} value="${esc(value ?? '')}" placeholder="${esc(field.placeholder || '')}" />${help}</label>`;
@@ -87,8 +189,8 @@ function workerRoutingFields(w) {
       <small>用户这样称呼它时算明确点名；大小写、全半角、标点都不影响。</small>
     </label>
     <div class="field span-2"><span>能用什么</span>
-      <div class="cap-list">${catalog.map((item) => `<label class="cap-item" title="${esc(item.description || '')}"><input type="checkbox" name="cap.${esc(item.id)}" ${chosen.has(item.id) ? 'checked' : ''} /><span>${esc(item.label)}</span></label>`).join('')}</div>
-      <small>只勾这台机器上它真能用的；本机装了 tapd-cli，就在对应的 Worker 上勾「TAPD 命令行」。</small>
+      <div class="cap-list">${catalog.map((item) => `<label class="cap-item" title="${esc(item.description || '')}"><input type="checkbox" name="cap.${esc(item.id)}" ${chosen.has(item.id) ? 'checked' : ''} /><span>${esc(item.label)}</span>${item.custom ? '<small class="cap-custom">自定义</small>' : ''}</label>`).join('')}</div>
+      <small>只勾这台机器上它真能用的；本机装了 tapd-cli，就在对应的 Worker 上勾「TAPD 命令行」。列表里没有的，到「Worker → 本机能力」里添加。</small>
     </div>`;
 }
 

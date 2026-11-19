@@ -8,6 +8,7 @@
  * - 外部状态只展示、只提示，不改任务状态，也不改 tasks.updated_at（不会把任务顶到列表最上面）。
  */
 import { db, now, uid, event } from './db.js';
+import { bus } from './events.js';
 import * as plugins from './plugins.js';
 
 export const STATUS_CATEGORIES = ['open', 'in_progress', 'blocked', 'review', 'done', 'cancelled', 'unknown'];
@@ -79,8 +80,17 @@ export function linkFromItem(provider, providerLabel, item) {
     status: item.status || null,
     // 原样存、同步时原样交回插件（比如项目 id）；核心不解析。
     meta: item.meta && Object.keys(item.meta).length ? item.meta : null,
-    tracking: item.track !== false
+    tracking: item.track !== false,
+    nodeKey: item.nodeKey || null
   };
+}
+
+/**
+ * 绑定变了就发到总线（归类引擎据此重算）。insertLink 常在建卡事务里被调，
+ * 所以推迟到当前同步调用结束（事务提交）之后再发，监听者看到的是已提交的数据。
+ */
+function announce(type, payload) {
+  queueMicrotask(() => bus.emit(type, payload));
 }
 
 /** 写一条绑定（同一任务 + 来源 + 外部 id 只有一条；重复写时只补上更新的信息）。返回绑定 id。 */
@@ -91,6 +101,7 @@ export function insertLink(taskId, link) {
     .get(taskId, link.provider, link.externalId);
   if (existing) {
     if (status) applyToRows([existing.id], status, { url: link.url, title: link.title, meta: link.meta });
+    if (link.nodeKey) db.prepare('UPDATE task_sources SET node_key = ? WHERE id = ? AND node_key IS NULL').run(link.nodeKey, existing.id);
     return existing.id;
   }
   const id = uid('ts_');
@@ -104,7 +115,9 @@ export function insertLink(taskId, link) {
     status?.key || null, status?.label || null, status?.category || 'unknown', status?.detail || null, status?.updatedAt || null,
     metaJson(link.meta), link.tracking === false ? 0 : 1, status ? stamp : null, stamp, stamp
   );
+  if (link.nodeKey) db.prepare('UPDATE task_sources SET node_key = ? WHERE id = ?').run(String(link.nodeKey).slice(0, 400), id);
   event(taskId, 'source/linked', { provider: link.provider, label: link.providerLabel, externalId: link.externalId, status: status?.label || null });
+  announce('source/linked', { taskId, provider: link.provider, externalId: link.externalId });
   return id;
 }
 
@@ -212,6 +225,7 @@ export function unlink(taskId, linkId) {
   if (!row) throw notFound();
   db.prepare('DELETE FROM task_sources WHERE id = ?').run(linkId);
   event(taskId, 'source/unlinked', { provider: row.provider, label: row.provider_label, externalId: row.external_id });
+  announce('source/unlinked', { taskId, provider: row.provider, externalId: row.external_id });
   return { ok: true };
 }
 
@@ -261,6 +275,7 @@ function toDto(row, cache, at) {
       ? { key: row.status_key, label: row.status_label, category: row.status_category || 'unknown', detail: row.status_detail || '', updatedAt: row.status_updated_at }
       : null,
     tracking: Boolean(row.tracking),
+    nodeKey: row.node_key || null,
     canRefresh: info.exists && info.enabled && info.canSync && Boolean(row.tracking),
     syncState: syncStateOf(row, info, at),
     syncError: row.sync_error || null,

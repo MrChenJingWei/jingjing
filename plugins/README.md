@@ -576,7 +576,7 @@ Worker 是执行器：拿到一个任务，跑一轮，返回结果。它和来�
 6. 文本明确需要某种能力（写文件、操作仓库、整理文件夹）而选中的 Worker 不具备时，改派给具备该能力、开销最低的可用 Worker；
 7. 都没有就交给开销最低的 `text` Worker。
 
-完整的信号、冲突裁决和外部来源边界见 [docs/ROUTING.md](../docs/ROUTING.md)。
+完整的信号、冲突裁决和外部来源边界见 [docs/architecture/router.md](../docs/architecture/router.md#选-worker)。
 
 按工作流程派活时，流程步骤附在 `task.prompt` 末尾的 `---` 分隔线之后；Worker 判断「用户要求了什么」时只看分隔线之前的部分。
 

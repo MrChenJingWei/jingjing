@@ -111,6 +111,10 @@ function fieldInput(plugin, field) {
     return `<label class="field span-2"><span>${esc(field.label)}</span>
       <textarea rows="3" ${attrs} placeholder="${esc(field.placeholder || '')}">${esc(value ?? '')}</textarea>${help}</label>`;
   }
+  if (field.type === 'folder') {
+    return `<div class="field ${field.wide ? 'span-2' : ''}"><span>${esc(field.label)}</span>
+      <input type="text" ${attrs} data-folder value="${esc(value ?? '')}" placeholder="${esc(field.placeholder || '')}" />${help}</div>`;
+  }
   const type = field.type === 'number' ? 'number' : field.type === 'password' ? 'password' : 'text';
   return `<label class="field ${field.wide ? 'span-2' : ''}"><span>${esc(field.label)}</span>
     <input type="${type}" ${attrs} value="${esc(value ?? '')}"

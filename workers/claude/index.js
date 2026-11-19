@@ -41,6 +41,8 @@ async function runOnce(bin, task, ctx, { resumeId, prompt }) {
   else args.push('--session-id', sessionId);
   // 静静明确允许改文件的任务（比如在插件草稿目录里写插件）才自动接受编辑；其他任务交给用户自己的权限配置。
   if (ctx.options?.allowEdits) args.push('--permission-mode', 'acceptEdits');
+  // 工作区挂了多个文件夹：都加进 Claude Code 能访问的目录。
+  for (const dir of ctx.extraDirs || []) args.push('--add-dir', dir);
   await ctx.checkpoint({ sessionId });
 
   let final = null;

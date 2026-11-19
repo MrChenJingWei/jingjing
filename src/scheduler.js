@@ -8,6 +8,7 @@ import { namedWorker, handoffWorker } from './worker-routing.js';
 import { ensureWorkerRule, listWorkerRules } from './worker-rules.js';
 import * as channels from './channels.js';
 import * as sourceLinks from './source-links.js';
+import * as classification from './task-classification.js';
 
 // taskId -> { controller, startedAt, worker, runId, report(body) }
 const running = new Map();
@@ -28,7 +29,7 @@ function emitTask(task) {
 
 export function getTask(id) {
   const task = rowTask(db.prepare('SELECT * FROM tasks WHERE id = ?').get(id));
-  if (task) sourceLinks.attach([task]);
+  if (task) classification.attach(sourceLinks.attach([task]));
   return task;
 }
 
@@ -38,6 +39,9 @@ export function touchTask(id) {
   if (task) emitTask(task);
   return task;
 }
+
+// 归属变了（重算、手动归入、移出……）：重新推一次卡片。
+classification.onTasksChanged(touchTask);
 
 export function listTasks({ limit = 60, status, q = '' } = {}) {
   const rows = status
@@ -57,7 +61,7 @@ export function listTasks({ limit = 60, status, q = '' } = {}) {
   const filtered = needle
     ? rows.filter((row) => `${row.title} ${row.prompt}`.toLowerCase().includes(needle))
     : rows;
-  return sourceLinks.attach(filtered.map(rowTask));
+  return classification.attach(sourceLinks.attach(filtered.map(rowTask)));
 }
 
 export function taskEvents(taskId, limit = 50) {
@@ -890,7 +894,8 @@ export function spawnFollowup(parentId, text, { worker = null, cwd = null, title
       title: link.title,
       url: link.url,
       status: link.status,
-      tracking: link.tracking
+      tracking: link.tracking,
+      nodeKey: link.nodeKey || null
     }))
   });
   event(parent.id, 'task/spawned', { taskId: task.id, title: task.title, by });
@@ -920,6 +925,8 @@ export function deleteTask(taskId) {
     db.prepare('DELETE FROM task_runs WHERE task_id = ?').run(taskId);
     // 绑定跟着任务走；source_items 是去重账本，留着，免得同一条外部单子又建一张卡。
     sourceLinks.deleteForTask(taskId);
+    // 归属和卡级抑制是 task 级意图，跟着卡删；分类项本身留着（可能转 dormant）。
+    classification.forgetTask(taskId);
     db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
   });
   bus.emit('task/deleted', { id: taskId, task });

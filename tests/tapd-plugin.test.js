@@ -24,6 +24,7 @@ const kv = Object.fromEntries(args.slice(2).map((a) => [a.slice(0, a.indexOf('='
 const out = (data) => console.log(JSON.stringify({ status: 1, data, info: 'success' }));
 const [entity, verb] = args;
 if (entity === 'user') out({ nick: '小明' });
+else if (entity === 'bug' && verb === 'related-stories') out((db.relations || {})[kv['bug-id']] ? db.relations[kv['bug-id']].map((id) => ({ workspace_id: kv.workspaceid, bug_id: kv['bug-id'], story_id: id })) : []);
 else if (verb === 'fields') out({ status: { options: db.labels[entity] } });
 else if (verb === 'count') out({ count: db[entity].length });
 else if (verb === 'list') {
@@ -35,10 +36,11 @@ else if (verb === 'list') {
 `, { mode: 0o755 });
 
 const bugs = (n, status = 'new') => Array.from({ length: n }, (_, i) => ({ id: `11${1000 + i}`, title: `缺陷 ${i}`, status, modified: '2026-11-17 10:00:00', description: '<p>步骤：<br/>点登录</p>' }));
-function setRemote(bug, story = []) {
+function setRemote(bug, story = [], relations = {}) {
   fs.writeFileSync(fixture, JSON.stringify({
     bug,
     story,
+    relations,
     labels: {
       bug: { new: '未解决', status_4: '已解决未上线', postponed: 'E3-已关闭', status_5: '已上线' },
       story: { developing: 'C2-实现中', status_9: 'F3-已发布线上' }
@@ -134,4 +136,52 @@ test('找不到命令、没有令牌、项目 ID 不对时给出能照着改的�
   } finally {
     if (saved !== undefined) process.env.TAPD_TOKEN = saved;
   }
+});
+
+test('归类：自动归类关着时不查关联、不交 node；开着时缺陷给唯一关联需求当父，多个关联给 null + links，需求给父需求', async () => {
+  const stories = [
+    { id: '500', name: '登录改造', status: 'developing', parent_id: '0', modified: '2026-11-17 10:00:00' },
+    { id: '501', name: '支付回调', status: 'developing', parent_id: '0', modified: '2026-11-17 10:00:00' },
+    { id: '502', name: '登录改造 · 验证码', status: 'developing', parent_id: '500', modified: '2026-11-17 10:00:00' }
+  ];
+  const list = [
+    { id: '9001', title: '登录闪退', status: 'new', modified: '2026-11-17 10:00:00' },
+    { id: '9002', title: '回调超时又登录失败', status: 'new', modified: '2026-11-17 10:00:00' },
+    { id: '9003', title: '孤儿缺陷', status: 'new', modified: '2026-11-17 10:00:00' }
+  ];
+  setRemote(list, stories, { 9001: ['500'], 9002: ['500', '501'] });
+  const config = { ...base, entities: 'both', startFresh: false };
+
+  fs.writeFileSync(calls, '');
+  const off = await tapd.poll(config, { ...memory(), classify: 'off' });
+  assert.ok(off.items.every((item) => !item.node && item.parent === undefined));
+  assert.ok(!fs.readFileSync(calls, 'utf8').includes('related-stories'), '关着时不多调接口');
+
+  const ctx = { ...memory(), classify: 'observing' };
+  const { items } = await tapd.poll(config, ctx);
+  const byId = Object.fromEntries(items.map((item) => [item.externalId, item]));
+  assert.deepEqual(byId['9001'].node, { workspace: '123', type: 'bug', id: '9001', title: '登录闪退', url: 'https://www.tapd.cn/123/bugtrace/bugs/view?bug_id=9001' });
+  assert.equal(byId['9001'].parent.id, '500');
+  assert.equal(byId['9001'].parent.title, '登录改造', '父需求带标题');
+  assert.equal(byId['9002'].parent, null, '多个关联不挑一个凑数');
+  assert.deepEqual(byId['9002'].links.map((link) => link.to.id), ['500', '501']);
+  assert.equal(byId['9003'].parent, null, '没有关联需求');
+  assert.equal(byId['500'].parent, null, '没有父需求的需求是树根');
+  assert.equal(byId['502'].parent.id, '500', '子需求的父是父需求');
+  assert.equal(byId['502'].parent.title, '登录改造');
+
+  // 第二次走缓存：不再查关联。
+  fs.writeFileSync(calls, '');
+  await tapd.syncStatus(config, [{ externalId: '9001', meta: { workspaceId: '123', entity: 'bug' } }], ctx);
+  assert.ok(!fs.readFileSync(calls, 'utf8').includes('related-stories'), '关联 12 小时内走缓存');
+});
+
+test('归类：syncStatus 顺带交父节点（壳节点回填 / 父指针变化）', async () => {
+  setRemote([{ id: '9100', title: '白屏', status: 'new', modified: '2026-11-17 10:00:00' }], [{ id: '600', name: '首页改版', status: 'developing', parent_id: '0' }], { 9100: ['600'] });
+  const out = await tapd.syncStatus({ ...base }, [{ externalId: '9100', meta: { workspaceId: '123', entity: 'bug' } }], { ...memory(), classify: 'on' });
+  assert.equal(out[0].node.id, '9100');
+  assert.equal(out[0].parent.title, '首页改版');
+  const missing = await tapd.syncStatus({ ...base }, [{ externalId: '404', meta: { workspaceId: '123', entity: 'bug' } }], { ...memory(), classify: 'on' });
+  assert.equal(missing[0].missing, true);
+  assert.equal(missing[0].node, undefined, '找不到的不交 node');
 });

@@ -37,7 +37,7 @@
 
 `type`：`poll`（定时调用 `poll`）、`webhook`（外部 POST 进来，调用 `webhook`）、`stream`（长连接，调用 `start`）、`manual`（只在用户点「立即扫描」时调用 `poll`）。
 
-`config[].type` 可选：`text` / `url` / `password` / `number` / `checkbox` / `textarea` / `select`（`select` 要带 `options: [{ value, label }]`）。字段还可以写 `label`、`default`、`placeholder`、`help`、`required`、`min`、`max`。
+`config[].type` 可选：`text` / `url` / `password` / `number` / `checkbox` / `textarea` / `select` / `folder`（`select` 要带 `options: [{ value, label }]`；`folder` 是本机文件夹路径，界面上是文件夹选择器）。字段还可以写 `label`、`default`、`placeholder`、`help`、`required`、`min`、`max`。
 
 入口导出：
 
@@ -88,6 +88,41 @@ export async function start(config, ctx) {
 ```
 
 消息类来源想让静静把任务结果发回原会话：条目带 `replyTo`（比如 `{ chatId }`），并导出 `reply(config, { to, text, task }, ctx)` 去发，`to` 就是那个 `replyTo`，发不出去就抛错。什么时候发由静静和用户决定，插件不要自己发。想让回执、状态播报、拍板卡片也回到渠道里，改为导出 `deliver(config, payload, ctx)`，渠道里的按钮和回复用 `ctx.interact()` 转给静静，见 README.md「消息类来源」。
+
+### 归类（可选）：交外部对象树
+
+外部系统里有「上级」概念（需求下挂缺陷、Epic 下挂 Story）的来源，可以让静静把卡自动归到上级下面、并按上级积累知识。完整说明见 `docs/architecture/external.md`「插件怎么接」。插件只交事实，切哪层、怎么显示都由静静决定。
+
+1. manifest 里声明：
+
+```json
+"classification": {
+  "tree": true,
+  "nodeTypes": ["story", "bug"],
+  "nodeLabels": { "story": "需求", "bug": "缺陷" },
+  "defaultGroupAt": { "type": "story" }
+}
+```
+
+`nodeTypes` 不能有项目 / 空间级类型（`project`、`workspace`……），项目由 `node.workspace` 表达。`defaultGroupAt` 是 `{ type }`（从卡自己开始找第一个这个类型的）或 `{ levels, anchor? }`。**声明不等于启用**：每个实例默认关，用户在设置 → 归类与知识里打开。
+
+2. 条目（和 `syncStatus` 的返回项）多交三个字段：
+
+```js
+{
+  node:   { workspace: '33349361', type: 'bug', id: '123', title: '登录闪退', url: 'https://…' }, // 必填
+  parent: { type: 'story', id: '456', title: '登录改造' } | null,  // 唯一主父；null = 没有上级 / 不知道
+  links:  [{ kind: 'related', to: { type: 'story', id: '789' } }]   // 可选，最多 8 条
+}
+```
+
+- 只有一个上级：给 `parent`；
+- 多个上级但来源有「主」的概念：给主的那个，其余进 `links`；
+- 多个上级且没有主：`parent: null` + `links`，静静会请用户选一个。**不要自己挑一个凑数**；
+- 这次没查到父（接口失败、预算用完）：不写 `parent` 字段（`undefined`），静静保留已知的父；
+- `ctx.classify` 是这个实例的归类状态（`off` / `observing` / `on`），为 `off` 时可以跳过查上级的额外调用。
+
+这些字段只影响归类，不影响派给哪个 Worker、在哪个工作区、要不要执行。参考实现：`plugins/tapd/index.js` 的 `attachTrees`。
 
 ## 二、Worker 插件（kind: "worker"）
 

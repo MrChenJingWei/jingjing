@@ -287,6 +287,26 @@ document.addEventListener('click', async (event) => {
 
 /* ------------------------------- 消息 -------------------------------- */
 
+// 隔了半小时以上、或者换了一天：插一条时间分隔，让一段段对话分得开。
+const GAP_MS = 30 * 60 * 1000;
+function dayLabel(date) {
+  const today = new Date();
+  const yesterday = new Date(Date.now() - 86400000);
+  const same = (a, b) => a.toDateString() === b.toDateString();
+  if (same(date, today)) return '今天';
+  if (same(date, yesterday)) return '昨天';
+  return date.getFullYear() === today.getFullYear()
+    ? `${date.getMonth() + 1} 月 ${date.getDate()} 日`
+    : `${date.getFullYear()} 年 ${date.getMonth() + 1} 月 ${date.getDate()} 日`;
+}
+function separatorHtml(msg, prev) {
+  const at = new Date(msg.created_at);
+  if (Number.isNaN(at.getTime())) return '';
+  const before = prev ? new Date(prev.created_at) : null;
+  if (before && at.toDateString() === before.toDateString() && at - before < GAP_MS) return '';
+  return `<div class="msg-sep" role="separator"><span>${esc(dayLabel(at))} ${esc(clock(msg.created_at))}</span></div>`;
+}
+
 function messageHtml(msg, index, list) {
   const isUser = msg.role === 'user';
   const task = msg.task_id ? taskById(msg.task_id) : null;
@@ -296,8 +316,8 @@ function messageHtml(msg, index, list) {
     && new Date(msg.created_at) - new Date(prev.created_at) < 5 * 60 * 1000;
   const text = String(msg.text || '');
   const body = isUser ? `<p>${esc(text).replace(/\n/g, '<br>')}</p>` : md(text);
-  return `
-    <div class="msg ${isUser ? 'is-user' : 'is-assistant'} ${grouped ? 'is-grouped' : ''} ${msg.pending ? 'is-pending' : ''}" data-msg="${esc(msg.id)}">
+  return `${separatorHtml(msg, prev)}
+    <div class="msg ${!grouped && prev && prev.role !== msg.role ? 'is-turn' : ''} ${isUser ? 'is-user' : 'is-assistant'} ${grouped ? 'is-grouped' : ''} ${msg.pending ? 'is-pending' : ''}" data-msg="${esc(msg.id)}">
       ${isUser ? '' : '<div class="msg-avatar" aria-hidden="true">静</div>'}
       <div class="msg-body" title="${esc(clock(msg.created_at))}">
         ${!isUser && !grouped ? `<div class="msg-head"><b>静静</b><time>${clock(msg.created_at)}</time></div>` : ''}

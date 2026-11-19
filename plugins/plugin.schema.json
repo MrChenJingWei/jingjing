@@ -89,6 +89,23 @@
       "default": false,
       "description": "为 true 时，同一个插件可以创建多份独立配置实例"
     },
+    "classification": {
+      "type": "object",
+      "description": "声明这个来源能交外部对象树（节点 + 唯一父指针），静静据此自动归类。声明不等于启用：每个实例默认关。见 docs/architecture/external.md「插件怎么接」",
+      "additionalProperties": false,
+      "required": ["tree", "nodeTypes"],
+      "properties": {
+        "tree": { "const": true },
+        "nodeTypes": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,23}$" }, "minItems": 1, "maxItems": 12 },
+        "nodeLabels": { "type": "object", "additionalProperties": { "type": "string", "maxLength": 12 } },
+        "defaultGroupAt": {
+          "oneOf": [
+            { "type": "object", "required": ["type"], "properties": { "type": { "type": "string" } }, "additionalProperties": false },
+            { "type": "object", "required": ["levels"], "properties": { "levels": { "type": "integer", "minimum": 1, "maximum": 8 }, "anchor": { "type": "string" } }, "additionalProperties": false }
+          ]
+        }
+      }
+    },
     "capabilities": {
       "type": "object",
       "additionalProperties": false,
@@ -238,7 +255,8 @@
             "number",
             "checkbox",
             "textarea",
-            "select"
+            "select",
+            "folder"
           ]
         },
         "default": {},

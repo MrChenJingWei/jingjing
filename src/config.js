@@ -37,6 +37,23 @@ export const DEFAULT_SETTINGS = {
   workflowDirs: [],
   // 已结束超过 afterDays 天的任务和旧消息，打包到 <data>/archive 后从数据库清理。
   archive: { enabled: true, afterDays: 90 },
+  // 任务归类（docs/architecture/external.md）：总开关开着时手动归类可用；自动归类按来源实例单独开，默认全关。
+  classification: {
+    enabled: true,
+    maxGroupSize: 30,
+    emptyAutoCategoryTtlDays: 30,
+    shadow: { minHours: 24, minCards: 10 },
+    notify: true
+  },
+  // 分类域上的知识：只进 prompt，不进路由。B 档（从结果里抽的）默认要人确认才会注入。
+  knowledge: {
+    enabled: true,
+    extract: 'rules',
+    autoConfirm: false,
+    inject: { limit: 8, chars: 1200 },
+    includeAncestors: true,
+    promoteAt: 3
+  },
   queuePaused: false,
   persona: '平静、具体、不奉承，像一个可靠的同事。',
   // 静静的心智：记住聊过的事、有心情、认得人、每天反思一次。
@@ -82,7 +99,12 @@ export function normalizeWorkspaces(settings) {
     const aliases = Array.isArray(item.aliases)
       ? [...new Set(item.aliases.map((alias) => String(alias || '').trim().slice(0, 40)).filter(Boolean))].slice(0, 8)
       : [];
-    cleaned.push({ id, name: name.slice(0, 60), path: dir, ...(aliases.length ? { aliases } : {}) });
+    // extraPaths：同一个工作区还要用到的其他文件夹（比如前后端分在两个仓库）。任务在 path（主目录）里执行，
+    // 能访问额外目录的 Worker（Claude Code 的 --add-dir）一并放开，其他 Worker 在指令里知道它们在哪。
+    const extraPaths = Array.isArray(item.extraPaths)
+      ? [...new Set(item.extraPaths.map((p) => String(p || '').trim()).filter((p) => p && p !== dir))].slice(0, 12)
+      : [];
+    cleaned.push({ id, name: name.slice(0, 60), path: dir, ...(extraPaths.length ? { extraPaths } : {}), ...(aliases.length ? { aliases } : {}) });
   }
   if (!cleaned.length) {
     cleaned.push({

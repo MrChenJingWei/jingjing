@@ -54,7 +54,7 @@ test('只归档已结束且超期的任务；挂在保留任务上的旧消息�
   db.prepare("INSERT INTO source_items(id, source, external_id, title, status, created_at) VALUES('s1', 'email', 'mail-1', '旧邮件', 'task', ?)").run(daysAgo(300));
 
   const pending = archive.collect({ days: 90 }).counts;
-  assert.deepEqual(pending, { tasks: 2, task_events: 4, approvals: 1, task_runs: 2, task_sources: 0, messages: 2 });
+  assert.deepEqual(pending, { tasks: 2, task_events: 4, approvals: 1, task_runs: 2, task_sources: 0, task_assignments: 0, task_class_suppressions: 0, messages: 2 });
 
   const result = archive.archiveOld({ days: 90 });
   assert.equal(result.archived, 11);
@@ -87,7 +87,7 @@ test('在归档里按 id 或标题查任务，并能恢复回数据库', () => {
   assert.deepEqual(archive.searchArchives('不存在的东西'), []);
 
   const restored = archive.restoreTask(byId.archive, 'old_done');
-  assert.deepEqual(restored, { tasks: 1, task_events: 2, approvals: 1, task_runs: 1, task_sources: 0 });
+  assert.deepEqual(restored, { tasks: 1, task_events: 2, approvals: 1, task_runs: 1, task_sources: 0, task_assignments: 0, task_class_suppressions: 0 });
   assert.equal(count('tasks', "id = 'old_done'"), 1);
   assert.deepEqual(
     db.prepare("SELECT type FROM task_events WHERE task_id = 'old_done' ORDER BY id").all().map((e) => e.type),

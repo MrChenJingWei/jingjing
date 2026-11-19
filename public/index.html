@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <title>静静</title>
   <meta name="description" content="静静是一个本地优先的个人 AI 工作站：Router 做前台，调度器负责挂起与恢复，Worker 负责执行，记忆落在本机。" />
-  <meta name="theme-color" content="#F6F4EF" />
+  <meta name="theme-color" content="#F4F3F8" />
   <meta name="color-scheme" content="light dark" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon-192.png" />
-  <link rel="stylesheet" href="/style.css?v=20261118-4" />
+  <link rel="stylesheet" href="/style.css?v=20261118-v11" />
   <script>
     // 首帧前定好深浅色，避免先白后黑闪一下。
     try {
@@ -37,25 +37,26 @@
   <div id="app" class="app">
     <!-- 桌面：左侧栏 -->
     <aside class="sidebar" aria-label="侧边栏">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">静</div>
-        <div class="brand-text"><b>静静</b><small>个人 AI 工作站</small></div>
+      <div class="brand brand-wordmark">
+        <img class="wordmark wordmark-light" src="/logo-wordmark.svg" alt="静静 · 事办完，你静静" />
+        <img class="wordmark wordmark-dark" src="/logo-wordmark-dark.svg" alt="" aria-hidden="true" />
+        <div class="brand-text"><small hidden></small></div>
       </div>
       <nav class="nav" aria-label="主导航">
         <button type="button" class="nav-item is-active" data-nav="chat" title="对话（⌘1）">
-          <svg class="i" viewBox="0 0 24 24"><path d="M20 14.5a2 2 0 0 1-2 2H8.5L4 20V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/></svg>
+          <svg class="i" viewBox="0 0 24 24"><path class="duo" d="M5 4.5h14A2.5 2.5 0 0 1 21.5 7v8a2.5 2.5 0 0 1-2.5 2.5h-6.2L8 21v-3.5H5A2.5 2.5 0 0 1 2.5 15V7A2.5 2.5 0 0 1 5 4.5z"/><path d="M5 4.5h14A2.5 2.5 0 0 1 21.5 7v8a2.5 2.5 0 0 1-2.5 2.5h-6.2L8 21v-3.5H5A2.5 2.5 0 0 1 2.5 15V7A2.5 2.5 0 0 1 5 4.5z"/><path d="M8.8 10.6q.9 1.1 1.8 0M13.4 10.6q.9 1.1 1.8 0"/></svg>
           <span>对话</span><i class="nav-dot" data-dot="chat" hidden></i>
         </button>
         <button type="button" class="nav-item" data-nav="tasks" title="任务（⌘2）">
-          <svg class="i" viewBox="0 0 24 24"><path d="m3.5 7 2 2 3.5-3.5"/><path d="m3.5 16 2 2 3.5-3.5"/><path d="M13 7.5h7.5M13 16.5h7.5"/></svg>
+          <svg class="i" viewBox="0 0 24 24"><rect class="duo" x="4.5" y="4.5" width="15" height="17" rx="3"/><rect x="4.5" y="4.5" width="15" height="17" rx="3"/><path d="M9 3h6v3.2H9z"/><path d="m8.8 13.4 2.3 2.3 4.3-4.6"/></svg>
           <span>任务</span><i class="nav-badge" data-badge="tasks" hidden>0</i>
         </button>
         <button type="button" class="nav-item" data-nav="memory" title="记忆（⌘3）">
-          <svg class="i" viewBox="0 0 24 24"><path d="M12 4c-3 0-5 1.8-5 4.2 0 1 .3 1.8.9 2.5-.7.6-1.2 1.5-1.2 2.6C6.7 15.9 8.6 18 12 18s5.3-2.1 5.3-4.7c0-1.1-.5-2-1.2-2.6.6-.7.9-1.5.9-2.5C17 5.8 15 4 12 4z"/><path d="M12 4v14M12 21v-1"/></svg>
+          <svg class="i" viewBox="0 0 24 24"><path class="duo" d="M7 3.5h10A1.5 1.5 0 0 1 18.5 5v15.5L12 17l-6.5 3.5V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M7 3.5h10A1.5 1.5 0 0 1 18.5 5v15.5L12 17l-6.5 3.5V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M12 7.2l.9 2 2 .9-2 .9-.9 2-.9-2-2-.9 2-.9z"/></svg>
           <span>记忆</span>
         </button>
         <button type="button" class="nav-item" data-nav="settings" title="设置（⌘4）">
-          <svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4L5.1 11a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.6h5l.4-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5c.1-.3.1-.7.1-1z"/></svg>
+          <svg class="i" viewBox="0 0 24 24"><path d="M3.5 7h9.5M17.5 7h3M3.5 17h3M11 17h9.5"/><circle class="duo" cx="15" cy="7" r="2.6"/><circle cx="15" cy="7" r="2.6"/><circle class="duo" cx="8.5" cy="17" r="2.6"/><circle cx="8.5" cy="17" r="2.6"/></svg>
           <span>设置</span><i class="nav-dot warn" data-dot="settings" hidden></i>
         </button>
       </nav>
@@ -63,14 +64,22 @@
       <section class="activity" id="activity" aria-label="正在发生"></section>
 
       <footer class="sidebar-foot">
-        <button type="button" class="status-chip" data-conn title="点击刷新并重新连接">
-          <span class="conn-dot"></span><span data-conn-label>连接中</span>
+        <!-- 一个合并的状态：连没连上、调度在不在跑、手上有几件，一句话说完；点开可以暂停调度或重新连接 -->
+        <!-- 状态只用品牌那只猫表示：睡着 = 待命，睁眼甩尾巴 = 在干活，静止 = 暂停，灰 = 断开。文字在 title / aria-label 里 -->
+        <button type="button" class="live-cat" id="live-status" data-mode="connecting" aria-haspopup="menu" title="连接中…" aria-label="连接中…">
+          <svg viewBox="90 120 380 300" aria-hidden="true">
+            <g class="lc-body">
+              <path class="lc-fill" d="M112 350 C112 254 184 196 270 196 C356 196 408 252 408 316 C408 366 370 392 316 392 H170 C136 392 112 376 112 350Z M150 268 L156 196 L206 236 Z M228 214 L254 156 L282 218 Z"/>
+              <path class="lc-line" d="M206 236 L156 196 L150 268 M112 350 C112 254 184 196 270 196 C356 196 408 252 408 316 C408 366 370 392 316 392 H170 C136 392 112 376 112 350Z M228 214 L254 156 L282 218"/>
+              <path class="lc-line lc-tail" d="M396 340 C440 330 444 404 380 402 H300"/>
+              <path class="lc-eyes-closed" d="M162 300 Q177 316 192 300 M212 300 Q227 316 242 300"/>
+              <g class="lc-eyes-open"><circle cx="177" cy="300" r="13"/><circle cx="227" cy="300" r="13"/></g>
+            </g>
+            <path class="lc-z" d="M330 150 H356 L330 178 H356"/>
+            <path class="lc-z lc-z2" d="M374 118 H390 L374 136 H390"/>
+          </svg>
         </button>
-        <button type="button" class="status-chip" id="queue-state" title="去任务页暂停或恢复调度">调度运行中</button>
         <span class="grow"></span>
-        <button type="button" class="icon-btn" data-install-btn hidden title="安装到这台设备" aria-label="安装到这台设备">
-          <svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M8 11l4 4 4-4M5 19h14"/></svg>
-        </button>
         <button type="button" class="icon-btn" data-theme-toggle title="切换深浅色" aria-label="切换深浅色"></button>
       </footer>
     </aside>
@@ -145,16 +154,18 @@
         <div class="split">
           <div class="split-list">
             <div class="list-tools">
-              <label class="search">
-                <svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>
-                <input id="task-search" type="search" placeholder="搜索标题或指令" autocomplete="off" />
-              </label>
-              <div class="filter-chips" id="task-filters" role="tablist" aria-label="按状态筛选"></div>
-              <div class="task-filter-selects">
-                <select id="task-source-filter" aria-label="按来源筛选"></select>
-                <select id="task-source-status" aria-label="按来源状态筛选"></select>
-                <select id="task-outcome-filter" aria-label="按完成情况筛选"></select>
+              <div class="list-row">
+                <label class="search">
+                  <svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>
+                  <input id="task-search" type="search" placeholder="搜索标题或指令" autocomplete="off" />
+                </label>
+                <button type="button" class="tool-btn" id="task-filter-btn" aria-haspopup="dialog" aria-expanded="false" title="按来源、外部状态、结论筛选">
+                  <svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span>筛选</span><em id="task-filter-count" hidden></em>
+                </button>
+                <div id="task-view-toggle"></div>
               </div>
+              <div class="status-tabs" id="task-filters" role="tablist" aria-label="按状态筛选"></div>
+              <div class="active-filters" id="task-active-filters" hidden></div>
             </div>
             <div class="task-list" id="task-list"></div>
           </div>
@@ -188,7 +199,7 @@
               </label>
             </div>
             <div class="mind-panel" id="mind-panel" hidden></div>
-            <div class="filter-chips" id="mem-layers" aria-label="按层级筛选"></div>
+            <div class="status-tabs mem-layers" id="mem-layers" aria-label="按层级筛选"></div>
             <div class="memory-list" id="memory-list"></div>
           </div>
         </div>
@@ -311,7 +322,7 @@
                     </label>
                     <label class="field span-2">
                       <span>默认工作目录</span>
-                      <input name="defaultCwd" />
+                      <input name="defaultCwd" data-folder placeholder="新任务默认在这里干活" />
                     </label>
                   </div>
                 </section>
@@ -342,6 +353,13 @@
                   <div class="row-list" id="worker-grid"></div>
                 </section>
                 <section class="card">
+                  <div class="card-head row">
+                    <div><h3>本机能力</h3><p>这台电脑上装了什么工具、能做哪类事。在下面每个 Worker 的「配置」里勾上它能用哪些，派活时静静会按能力挑人。内置的不能改；列表里没有的（比如公司内部的命令行工具），在这里加。</p></div>
+                    <div class="card-actions"><button type="button" class="btn sm" id="add-capability">添加能力</button></div>
+                  </div>
+                  <div id="capability-list" class="cap-manage"></div>
+                </section>
+                <section class="card">
                   <div class="card-head"><h3>兜底 Worker</h3><p>没有流程、分配规则，也没点名 Worker 时交给它；它不可用时自动退回最便宜的文本 Worker。外部来源（企微、邮件……）的消息也一样：选能执行命令的 Worker（比如 Claude Code），别人发来的消息也可能让它在这台电脑上动手。</p></div>
                   <label class="field narrow"><select id="fallback-worker" aria-label="兜底 Worker"></select></label>
                 </section>
@@ -370,7 +388,7 @@
                 </section>
                 <section class="card">
                   <div class="card-head"><h3>读取的文件夹</h3><p>每行一个文件夹，静静会读取里面（最多 3 层）的 .md 文件；请指向专门放流程文档的文件夹，不要指向整个笔记库。静静只读不改这些文件，停用只记在本机。<span id="workflow-root" class="mono"></span> 总会被读取，学到的习惯放在它的 learned/ 子目录。</p></div>
-                  <label class="field"><textarea id="workflow-dirs" rows="3" placeholder="~/Documents/工作流程"></textarea></label>
+                  <div class="field"><textarea id="workflow-dirs" rows="3" data-folder-list placeholder="~/Documents/工作流程"></textarea></div>
                   <div class="inline-actions"><button type="button" class="btn" id="save-workflow-dirs">保存文件夹</button></div>
                 </section>
               </div>
@@ -383,6 +401,46 @@
                     <div class="card-actions"><button type="button" class="btn sm primary" id="add-rule">新建自动化</button></div>
                   </div>
                   <div id="rules-list" class="row-list"></div>
+                </section>
+              </div>
+
+              <!-- 归类与知识 -->
+              <div class="spage" data-settings-panel="classify" hidden>
+                <section class="card">
+                  <label class="switch-row">
+                    <span><b>启用归类</b><small>关掉后隐藏所有分类入口（任务页的「按归类」、卡片上的「属于」），已有的分类和知识都保留。</small></span>
+                    <input type="checkbox" name="classification.enabled" class="switch" />
+                  </label>
+                </section>
+                <section class="card">
+                  <div class="card-head row">
+                    <div><h3>自动归类</h3><p>来源插件声明了能力才会出现在这里，默认全部关闭。建议先「试运行」：只在后台算归属，任务列表不变，看效果再开启。</p></div>
+                    <div class="card-actions"><button type="button" class="btn sm" id="classify-reconcile">重新归类</button></div>
+                  </div>
+                  <div id="classify-plugins" class="cls-plugins"></div>
+                </section>
+                <section class="card">
+                  <div class="card-head"><h3>分类</h3><p>一个分类太大说明切得太浅；空的自动分类过一段时间会被回收（连带它自动积累的知识，手动记的保留）。</p></div>
+                  <div class="grid-2">
+                    <label class="field"><span>单个分类最多几张卡</span><input name="classification.maxGroupSize" type="number" min="2" max="500" /></label>
+                    <label class="field"><span>空的自动分类几天后回收</span><input name="classification.emptyAutoCategoryTtlDays" type="number" min="1" max="3650" /></label>
+                  </div>
+                </section>
+                <section class="card">
+                  <div class="card-head"><h3>知识</h3><p>每个分类是一个知识域：修完一张卡，静静记下关系、状态和结论；分配同一分类下的新任务时，把确认过的知识附进指令。知识只用来判断，不影响交给谁做。</p></div>
+                  <div class="grid-2">
+                    <label class="field"><span>从结果里抽根因 / 修复</span>
+                      <select name="knowledge.extract">
+                        <option value="rules">按规则抽（只认 Worker 结论里的「根因：」「修复：」）</option>
+                        <option value="relation">不抽，只记关系和结论</option>
+                        <option value="off">都不记</option>
+                      </select></label>
+                    <label class="field"><span>每次最多附几条</span><input name="knowledge.inject.limit" type="number" min="1" max="20" /></label>
+                  </div>
+                  <label class="switch-row">
+                    <span><b>抽出来的知识自动确认</b><small>默认关：抽出来的先「待确认」，你在分类详情里点确认后才会参考。打开后外部内容可能借此长期影响任务，不建议。</small></span>
+                    <input type="checkbox" name="knowledge.autoConfirm" class="switch" />
+                  </label>
                 </section>
               </div>
 
@@ -566,19 +624,19 @@
     <!-- 窄屏：底部标签栏 -->
     <nav class="tabbar" aria-label="主导航">
       <button type="button" class="tab is-active" data-nav="chat">
-        <svg class="i" viewBox="0 0 24 24"><path d="M20 14.5a2 2 0 0 1-2 2H8.5L4 20V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/></svg>
+        <svg class="i" viewBox="0 0 24 24"><path class="duo" d="M5 4.5h14A2.5 2.5 0 0 1 21.5 7v8a2.5 2.5 0 0 1-2.5 2.5h-6.2L8 21v-3.5H5A2.5 2.5 0 0 1 2.5 15V7A2.5 2.5 0 0 1 5 4.5z"/><path d="M5 4.5h14A2.5 2.5 0 0 1 21.5 7v8a2.5 2.5 0 0 1-2.5 2.5h-6.2L8 21v-3.5H5A2.5 2.5 0 0 1 2.5 15V7A2.5 2.5 0 0 1 5 4.5z"/><path d="M8.8 10.6q.9 1.1 1.8 0M13.4 10.6q.9 1.1 1.8 0"/></svg>
         <span>对话</span><i class="nav-dot" data-dot="chat" hidden></i>
       </button>
       <button type="button" class="tab" data-nav="tasks">
-        <svg class="i" viewBox="0 0 24 24"><path d="m3.5 7 2 2 3.5-3.5"/><path d="m3.5 16 2 2 3.5-3.5"/><path d="M13 7.5h7.5M13 16.5h7.5"/></svg>
+        <svg class="i" viewBox="0 0 24 24"><rect class="duo" x="4.5" y="4.5" width="15" height="17" rx="3"/><rect x="4.5" y="4.5" width="15" height="17" rx="3"/><path d="M9 3h6v3.2H9z"/><path d="m8.8 13.4 2.3 2.3 4.3-4.6"/></svg>
         <span>任务</span><i class="nav-badge" data-badge="tasks" hidden>0</i>
       </button>
       <button type="button" class="tab" data-nav="memory">
-        <svg class="i" viewBox="0 0 24 24"><path d="M12 4c-3 0-5 1.8-5 4.2 0 1 .3 1.8.9 2.5-.7.6-1.2 1.5-1.2 2.6C6.7 15.9 8.6 18 12 18s5.3-2.1 5.3-4.7c0-1.1-.5-2-1.2-2.6.6-.7.9-1.5.9-2.5C17 5.8 15 4 12 4z"/><path d="M12 4v14M12 21v-1"/></svg>
+        <svg class="i" viewBox="0 0 24 24"><path class="duo" d="M7 3.5h10A1.5 1.5 0 0 1 18.5 5v15.5L12 17l-6.5 3.5V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M7 3.5h10A1.5 1.5 0 0 1 18.5 5v15.5L12 17l-6.5 3.5V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M12 7.2l.9 2 2 .9-2 .9-.9 2-.9-2-2-.9 2-.9z"/></svg>
         <span>记忆</span>
       </button>
       <button type="button" class="tab" data-nav="settings">
-        <svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4L5.1 11a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.6h5l.4-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5c.1-.3.1-.7.1-1z"/></svg>
+        <svg class="i" viewBox="0 0 24 24"><path d="M3.5 7h9.5M17.5 7h3M3.5 17h3M11 17h9.5"/><circle class="duo" cx="15" cy="7" r="2.6"/><circle cx="15" cy="7" r="2.6"/><circle class="duo" cx="8.5" cy="17" r="2.6"/><circle cx="8.5" cy="17" r="2.6"/></svg>
         <span>设置</span><i class="nav-dot warn" data-dot="settings" hidden></i>
       </button>
     </nav>
@@ -628,6 +686,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/app.js?v=20261118-4"></script>
+  <script type="module" src="/app.js?v=20261118-v11"></script>
 </body>
 </html>

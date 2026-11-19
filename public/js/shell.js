@@ -1,8 +1,8 @@
 // 外壳：导航、侧栏「正在发生」、深浅色、连接状态、安装、登录、快捷键。
 import { $, $$, state, on, esc, api, toast, isTyping, approvalFor, timeAgo } from './core.js';
-import { icon, anyDialogOpen } from './ui.js';
+import { icon, anyDialogOpen, catMark, openMenu } from './ui.js';
 import { renderChat } from './chat.js';
-import { enterTasks, openTask, closeDrawer } from './tasks.js';
+import { enterTasks, openTask, closeDrawer, toggleQueue } from './tasks.js';
 import { enterMemory } from './memory.js';
 import { enterSettings, leaveSettingsOk, settingsHasAttention } from './settings.js';
 
@@ -114,21 +114,46 @@ export function renderActivity() {
   const hidden = waiting.length + running.length + queued.length - Math.min(waiting.length, ACTIVITY_LIMIT) - Math.min(running.length + queued.length, ACTIVITY_LIMIT);
   box.innerHTML = groups.length
     ? groups.join('') + (hidden > 0 ? `<button type="button" class="act-more" data-act-all>还有 ${hidden} 件，查看全部</button>` : '')
-    : `<div class="act-group"><div class="act-head"><b>正在发生</b></div><p class="act-empty">没有在跑的事。${lastDoneText()}</p></div>`;
+    : idleHtml();
   renderQueueChip();
 }
 
-function lastDoneText() {
+/** 没有在跑的事：品牌那句「事办完，你静静」，下面带上一件做完的事（点了能打开）。 */
+function idleHtml() {
   const last = state.tasks.find((t) => t.status === 'done');
-  return last ? `上一件「${last.title.slice(0, 14)}」${timeAgo(last.finished_at || last.updated_at || last.created_at)}完成。` : '';
+  return `
+    <div class="act-idle">
+      ${catMark()}
+      <b>事都办完了</b>
+      <small>没有在跑的事，你静静。</small>
+      ${last ? `<button type="button" class="act-last" data-act-task="${esc(last.id)}" title="${esc(last.title)}">
+        <span class="sdot" data-s="done"></span><span class="act-main"><b>${esc(last.title)}</b><small>${esc(timeAgo(last.finished_at || last.updated_at || last.created_at))}完成</small></span>
+      </button>` : ''}
+    </div>`;
+}
+
+/** 侧栏底部的状态：连接 + 调度 + 手上有几件，合成一句话，竖条跟着状态动。 */
+export function renderLiveStatus() {
+  const chip = $('#live-status');
+  if (!chip) return;
+  const paused = Boolean(state.stats?.paused ?? state.settings?.queuePaused);
+  const running = state.tasks.filter((t) => t.status === 'running').length;
+  const queued = state.tasks.filter((t) => t.status === 'queued').length;
+  let mode;
+  let text;
+  if (state.connected === false) { mode = 'offline'; text = '重连中…'; }
+  else if (state.connected !== true) { mode = 'connecting'; text = '连接中…'; }
+  else if (paused) { mode = 'paused'; text = queued ? `调度已暂停 · ${queued} 件在等` : '调度已暂停'; }
+  else if (running) { mode = 'busy'; text = `正在做 ${running} 件${queued ? ` · 排队 ${queued}` : ''}`; }
+  else if (queued) { mode = 'busy'; text = `马上开始 · 排队 ${queued}`; }
+  else { mode = 'idle'; text = '在线 · 待命'; }
+  chip.dataset.mode = mode;
+  chip.title = text;
+  chip.setAttribute('aria-label', `静静：${text}`);
 }
 
 function renderQueueChip() {
-  const chip = $('#queue-state');
-  if (!chip) return;
-  const paused = Boolean(state.stats?.paused ?? state.settings?.queuePaused);
-  chip.textContent = paused ? '调度已暂停' : '调度运行中';
-  chip.classList.toggle('is-paused', paused);
+  renderLiveStatus();
 }
 
 $('#activity')?.addEventListener('click', (event) => {
@@ -136,7 +161,18 @@ $('#activity')?.addEventListener('click', (event) => {
   if (item) { openTask(item.dataset.actTask, { reveal: true }); return; }
   if (event.target.closest('[data-act-all]')) switchView('tasks');
 });
-$('#queue-state')?.addEventListener('click', () => switchView('tasks'));
+$('#live-status')?.addEventListener('click', (event) => {
+  const paused = Boolean(state.stats?.paused ?? state.settings?.queuePaused);
+  const running = state.tasks.filter((t) => t.status === 'running').length;
+  openMenu(event.currentTarget, [
+    { heading: state.connected ? '已连上主机' : '和主机断开了' },
+    running ? { label: `看看正在做的 ${running} 件`, icon: 'activity', onSelect: () => switchView('tasks') } : null,
+    { label: paused ? '恢复调度' : '暂停调度（新任务只排队）', icon: paused ? 'play' : 'pause', onSelect: () => toggleQueue() },
+    { label: '重新连接', icon: 'refresh', onSelect: () => location.reload() },
+    canInstall() ? 'divider' : null,
+    canInstall() ? { label: '安装到这台设备', icon: 'download', onSelect: () => promptInstall() } : null
+  ], { align: 'start' });
+});
 
 on('tasks', renderActivity);
 on('approvals', () => { renderActivity(); updateBadges(); });
@@ -149,7 +185,9 @@ on('mind', () => {
   const mood = state.mind?.mood;
   if (!sub) return;
   const moody = mood?.enabled !== false && mood?.label && mood.label !== '平静';
-  sub.textContent = moody ? `此刻${mood.label}` : '个人 AI 工作站';
+  sub.textContent = moody ? `此刻${mood.label}` : '';
+  // 字标里已经有品牌语，平静时不再多写一行。
+  sub.hidden = !moody;
   sub.title = moody && mood.cause ? mood.cause : '';
 });
 on('plugins', updateBadges);
@@ -159,7 +197,7 @@ on('plugins', updateBadges);
 function applyTheme(theme, { save = true } = {}) {
   document.documentElement.dataset.theme = theme;
   const meta = $('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', theme === 'dark' ? '#161815' : '#F6F4EF');
+  if (meta) meta.setAttribute('content', theme === 'dark' ? '#0E0C1C' : '#F4F3F8');
   if (save) {
     try { localStorage.setItem('jingjing-theme', theme); } catch { /* 存不了就只对本次生效 */ }
   }
@@ -195,6 +233,7 @@ export function setConnectionLive(live) {
     el.classList.toggle('is-off', !live);
   });
   $$('[data-conn-label]').forEach((el) => { el.textContent = live ? '已连接' : '重连中'; });
+  renderLiveStatus();
 }
 
 $$('[data-conn]').forEach((el) => el.addEventListener('click', () => location.reload()));
@@ -219,10 +258,15 @@ export function updateInstallStatus() {
             ? 'iPhone / iPad 请用 Safari 的分享按钮 → 添加到主屏幕。'
             : '当前浏览器没有提供一键安装，请按上面的步骤手动添加。';
   }
-  const hideButton = nativeApp || standalone || (!deferredInstallPrompt && !isIOS);
+  const hideButton = !canInstall();
   $$('[data-install-btn]').forEach((btn) => { btn.hidden = hideButton; });
   const installApp = $('#install-app');
   if (installApp) installApp.hidden = nativeApp || standalone;
+}
+
+/** 这台设备能不能装：原生 App / 已安装 / 浏览器不支持时都不提。 */
+function canInstall() {
+  return !(nativeApp || standalone || (!deferredInstallPrompt && !isIOS));
 }
 
 async function promptInstall() {

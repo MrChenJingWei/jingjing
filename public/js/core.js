@@ -5,13 +5,14 @@ export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 /* ------------------------------- 文案 -------------------------------- */
 
+// 状态的说法口语一点：像同事在说「这件事现在怎么样了」。
 export const STATUS_LABEL = {
-  queued: '排队中',
-  running: '执行中',
+  queued: '排着队',
+  running: '正在做',
   waiting_approval: '等你拍板',
-  done: '已完成',
-  failed: '失败了',
-  cancelled: '已取消'
+  done: '做完了',
+  failed: '没做成',
+  cancelled: '停下了'
 };
 export const PLUGIN_TYPE_LABEL = { poll: '轮询', webhook: 'Webhook 推送', stream: '长连接', manual: '手动', watch: '文件监听' };
 export const ABILITY_LABEL = { text: '文本', 'write-file': '写文件', 'manage-files': '整理文件', code: '代码' };
@@ -49,7 +50,8 @@ export const EVENT_LABEL = {
   'task/relayed': '已在原会话里说',
   'task/relay_failed': '原会话里没说出去',
   'task/remote_action': '在原会话里操作',
-  'task/remote_denied': '原会话里有人想操作（不在名单）'
+  'task/remote_denied': '原会话里有人想操作（不在名单）',
+  'knowledge/injected': '附上了分类里的历史知识'
 };
 export const ACTIVE_STATUSES = ['queued', 'running', 'waiting_approval'];
 

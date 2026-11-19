@@ -269,6 +269,112 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_task_sources_task ON task_sources(task_id);
   CREATE INDEX IF NOT EXISTS idx_task_sources_provider ON task_sources(provider, external_id);
 `);
+// node_key：这条绑定对应的外部对象树节点（插件声明了归类能力才有），见 task-classification.js。
+ensureColumn('task_sources', 'node_key', 'TEXT');
+
+// 任务归类（docs/architecture/external.md）：外部对象树、分类项、归属意图、卡级抑制、按域积累的知识。
+// 外部对象树是全局事实，不跟任务走；归属和抑制是 task 级，跟着任务删除 / 归档 / 恢复。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS external_nodes (
+    key            TEXT PRIMARY KEY,
+    provider_family TEXT NOT NULL,
+    workspace      TEXT NOT NULL,
+    type           TEXT NOT NULL,
+    external_id    TEXT NOT NULL,
+    parent_key     TEXT,
+    title          TEXT,
+    url            TEXT,
+    ref            TEXT,
+    resolved       INTEGER NOT NULL DEFAULT 0,
+    observed_by    TEXT NOT NULL DEFAULT '[]',
+    last_observer  TEXT,
+    stale          INTEGER NOT NULL DEFAULT 0,
+    observed_at    TEXT NOT NULL,
+    UNIQUE(provider_family, workspace, type, external_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_external_nodes_parent ON external_nodes(parent_key);
+
+  CREATE TABLE IF NOT EXISTS external_node_links (
+    from_key    TEXT NOT NULL,
+    to_key      TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(from_key, to_key, kind)
+  );
+
+  CREATE TABLE IF NOT EXISTS task_categories (
+    id              TEXT PRIMARY KEY,
+    axis            TEXT NOT NULL,
+    key             TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    ref             TEXT,
+    provider_family TEXT,
+    workspace       TEXT,
+    origin          TEXT NOT NULL,
+    state           TEXT NOT NULL DEFAULT 'active',
+    merged_into     TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE(axis, key)
+  );
+
+  CREATE TABLE IF NOT EXISTS task_assignments (
+    id          TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL,
+    axis        TEXT NOT NULL,
+    category_id TEXT,
+    state       TEXT NOT NULL DEFAULT 'member',
+    candidates  TEXT,
+    who         TEXT NOT NULL,
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    reason      TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(task_id, axis)
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_assignments_category ON task_assignments(category_id);
+
+  CREATE TABLE IF NOT EXISTS task_class_suppressions (
+    id         TEXT PRIMARY KEY,
+    task_id    TEXT NOT NULL,
+    axis       TEXT NOT NULL,
+    key        TEXT,
+    reason     TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_class_suppressions_task ON task_class_suppressions(task_id, axis);
+
+  CREATE TABLE IF NOT EXISTS task_knowledge (
+    id           TEXT PRIMARY KEY,
+    scope_key    TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    subject      TEXT NOT NULL DEFAULT '',
+    value        TEXT,
+    text         TEXT NOT NULL,
+    hash         TEXT NOT NULL,
+    evidence     TEXT,
+    source       TEXT NOT NULL,
+    pinned       INTEGER NOT NULL DEFAULT 0,
+    hidden       INTEGER NOT NULL DEFAULT 0,
+    confirmed    INTEGER NOT NULL DEFAULT 1,
+    seen_count   INTEGER NOT NULL DEFAULT 1,
+    used_count   INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT,
+    conflict     INTEGER NOT NULL DEFAULT 0,
+    stale        INTEGER NOT NULL DEFAULT 0,
+    promoted     INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    UNIQUE(scope_key, kind, subject, hash)
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_knowledge_scope ON task_knowledge(scope_key, kind);
+`);
+// 每个来源实例的自动归类状态：off（默认）/ observing（试运行）/ on；group_at 是用户改过的切层策略（JSON）。
+ensureColumn('source_plugins', 'classify_state', 'TEXT');
+ensureColumn('source_plugins', 'classify_since', 'TEXT');
+ensureColumn('source_plugins', 'classify_group_at', 'TEXT');
+ensureColumn('source_plugins', 'classify_prompts', 'INTEGER');
+
 // auto_reply：任务完成后自动把结果发回原会话。会往外发消息，默认关闭。
 ensureColumn('source_plugins', 'auto_reply', 'INTEGER');
 // auto_chat：闲聊自动回（不建任务、由静静按人格回）。和任务结果的自动发回分开；

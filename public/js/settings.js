@@ -8,6 +8,7 @@ import { renderWorkerPage } from './workers.js';
 import { renderPlugins, resetPluginPage } from './plugins.js';
 import { renderWorkflows, renderRules } from './automation.js';
 import { loadStatus, loadArchives } from './system.js';
+import { renderClassifySettings } from './classify.js';
 
 export const SETTINGS_PAGES = [
   { id: 'model', group: '助手', icon: 'sparkle', title: '模型与人设', desc: '运行模式、模型和 Key，静静怎么称呼你、她的性格，以及她怎么记事、有没有心情、会不会自己成长。', needsSave: true },
@@ -16,6 +17,7 @@ export const SETTINGS_PAGES = [
   { id: 'workflows', group: '助手', icon: 'flow', title: '工作流程', desc: '读取你写好的流程文档，确认静静学到的习惯，按流程派活。', needsSave: false },
   { id: 'rules', group: '助手', icon: 'clock', title: '自动化', desc: '按时间自己跑：建任务，或扫一遍来源并按流程处理。', needsSave: false },
   { id: 'workspaces', group: '助手', icon: 'folder', title: '工作区', desc: '任务在哪个目录里干活；每个来源可以单独绑定。', needsSave: false },
+  { id: 'classify', group: '助手', icon: 'layers', title: '归类与知识', desc: '把卡按外部关系归到父卡下，并在同一个分类里积累知识。自动归类按来源单独开，默认全关。', needsSave: true },
   { id: 'plugins', group: '来源与通知', icon: 'plug', title: '任务来源', desc: '邮箱、日历、企微等发现来源，单独启用和配置。', needsSave: false },
   { id: 'channels', group: '来源与通知', icon: 'bell', title: '通知通道', desc: 'Telegram、飞书和通用 Webhook。', needsSave: true },
   { id: 'pairing', group: '来源与通知', icon: 'phone', title: '手机与配对', desc: '配对码、手机访问地址，以及把静静装到手机上。', needsSave: false },
@@ -103,6 +105,12 @@ function pageMeta(id) {
       const list = s.workspaces || [];
       const current = list.find((item) => item.id === s.defaultWorkspaceId);
       return { meta: String(list.length), sum: `${list.length} 个 · 默认 ${current?.name || '—'}` };
+    }
+    case 'classify': {
+      const on = (state.plugins || []).filter((p) => p.classification?.state === 'on').length;
+      const trial = (state.plugins || []).filter((p) => p.classification?.state === 'observing').length;
+      if (s.classification?.enabled === false) return { meta: '关', sum: '已关闭' };
+      return { meta: on ? `${on} 开启` : trial ? '试运行' : '', sum: on || trial ? `${on} 个来源开启${trial ? ` · ${trial} 个试运行` : ''}` : '只有手动归类', tone: trial ? 'warn' : '' };
     }
     case 'plugins': {
       const errors = (state.pluginErrors || []).length + plugins.filter((p) => p.enabled && p.status?.lastStatus === 'error').length;
@@ -195,6 +203,7 @@ function renderPage(id = state.settingsPage, { entering = false } = {}) {
   if (id === 'rules') renderRules();
   if (id === 'workspaces' && entering) renderWorkspaces();
   if (id === 'plugins') renderPlugins();
+  if (id === 'classify' && entering) renderClassifySettings();
   if (id === 'channels') renderChannelBadges();
   if (id === 'pairing' && entering) { loadPairing(); updateInstallStatus(); }
   if (id === 'status' && entering) loadStatus();
@@ -643,8 +652,8 @@ function renderWorkspaces() {
   container.innerHTML = list.map((ws) => `
     <div class="workspace-row" data-ws-row="${esc(ws.id)}">
       <label class="field"><span>名称</span><input data-ws-name value="${esc(ws.name)}" /></label>
-      <label class="field"><span>目录</span><input data-ws-path value="${esc(ws.path)}" placeholder="/Users/you/code/project" /></label>
-      <button type="button" class="btn" data-ws-pick title="用 Finder 选择文件夹">${icon('folder', 'sm')}选择</button>
+      <div class="field"><span>文件夹 <small class="field-help">第一个是主目录（任务在这里执行），其余的一起放给 Worker 用</small></span>
+        <textarea data-ws-path data-folder-list data-folder-primary rows="2">${esc([ws.path, ...(ws.extraPaths || [])].filter(Boolean).join('\n'))}</textarea></div>
       <button type="button" class="icon-btn danger" data-ws-remove title="删除" ${list.length <= 1 ? 'disabled' : ''}>${icon('trash')}</button>
     </div>`).join('') || '<p class="note">还没有工作区。</p>';
   const select = $('#default-workspace');
@@ -658,7 +667,10 @@ function readWorkspaceRows() {
   return $$('#workspace-list .workspace-row').map((row) => ({
     id: row.dataset.wsRow,
     name: row.querySelector('[data-ws-name]')?.value.trim() || '',
-    path: row.querySelector('[data-ws-path]')?.value.trim() || ''
+    ...(() => {
+      const dirs = (row.querySelector('[data-ws-path]')?.value || '').split('\n').map((line) => line.trim()).filter(Boolean);
+      return { path: dirs[0] || '', extraPaths: dirs.slice(1) };
+    })()
   }));
 }
 
@@ -667,7 +679,7 @@ async function saveWorkspaces() {
     const list = [];
     const ids = new Set();
     for (const ws of readWorkspaceRows()) {
-      if (!ws.name || !ws.path) throw new Error('工作区的名称和目录都要填');
+      if (!ws.name || !ws.path) throw new Error('每个工作区都要有名称，并且至少选一个文件夹');
       if (ids.has(ws.id)) continue;
       ids.add(ws.id);
       list.push(ws);

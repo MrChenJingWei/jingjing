@@ -1,6 +1,12 @@
-// TAPD 来源插件：调本机的 tapd-cli（只读：list / count / fields / user info），
+// TAPD 来源插件：调本机的 tapd-cli（只读：list / count / fields / user info / related-stories），
 // 发现分给你、还没结束的缺陷 / 需求交给静静判断建卡；任务卡上跟踪它在 TAPD 里的状态（syncStatus）。
 // 状态映射全在这里（status.js），静静核心不认识 TAPD。
+//
+// 归类（docs/architecture/external.md「插件怎么接」）：只交事实，不挑分类。
+// - 需求：node = 需求；parent = 父需求（parent_id），没有就是树根（parent: null）；
+// - 缺陷：node = 缺陷；parent = 唯一关联的需求；关联了多个需求时 TAPD 没有「主」的概念，
+//   按协议给 parent: null + links，让静静提示主人选一个，绝不自己挑一个凑数。
+// 自动归类关着（ctx.classify === 'off'）时不查关联，不多调一次接口。
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,6 +23,10 @@ const LABEL_TTL_MS = 12 * 60 * 60 * 1000;
 const CALL_TIMEOUT_MS = 25 * 1000;
 const MAX_ITEMS = 10;
 const REMEMBER = 3000;
+const TREE_TTL_MS = 12 * 60 * 60 * 1000;
+// 一次 poll / sync 里最多查多少个缺陷的关联需求（每个缺陷一次调用），其余用缓存或下次再补。
+const MAX_RELATION_CALLS = 20;
+const MAX_LINKS = 8;
 
 /* ------------------------------ 调用 tapd-cli ------------------------------ */
 
@@ -156,6 +166,132 @@ function statusOf(row, labels, overrides) {
   };
 }
 
+/* --------------------------------- 归类 --------------------------------- */
+
+const classifying = (ctx) => Boolean(ctx?.classify) && ctx.classify !== 'off';
+
+function cachedOr(ctx, key) {
+  const hit = ctx.state?.get(key);
+  return hit && Date.now() - hit.at < TREE_TTL_MS ? hit : null;
+}
+
+/** 缺陷关联的需求 id（TAPD 的 get_related_stories），缓存 12 小时。budget 用完返回 null（这次不说父）。 */
+async function relatedStories(config, ctx, ws, bugId, budget) {
+  const key = `rel:${ws}:${bugId}`;
+  const cached = cachedOr(ctx, key);
+  if (cached) return cached.ids;
+  if (budget.calls <= 0) return null;
+  budget.calls -= 1;
+  try {
+    const data = await runCli(config, ['bug', 'related-stories', `workspaceid=${ws}`, `bug-id=${bugId}`], ctx);
+    const list = Array.isArray(data) ? data : Array.isArray(data?.list) ? data.list : data ? [data] : [];
+    const ids = [...new Set(list
+      .map((entry) => entry?.story_id ?? entry?.StoryBugRelation?.story_id ?? entry?.Story?.id ?? entry?.id)
+      .filter((id) => id !== undefined && id !== null && String(id) !== '0')
+      .map(String))];
+    ctx.state?.set(key, { at: Date.now(), ids });
+    return ids;
+  } catch (err) {
+    ctx.log?.(`查缺陷 ${bugId} 关联的需求失败：${err.message}`);
+    return null;
+  }
+}
+
+/** 需求的标题 / 状态 / 父需求，按项目批量查、缓存 12 小时。 */
+async function storyInfo(config, ctx, ws, ids, overrides) {
+  const out = new Map();
+  const missing = [];
+  for (const id of new Set(ids)) {
+    const cached = cachedOr(ctx, `story:${ws}:${id}`);
+    if (cached) out.set(id, cached.info);
+    else missing.push(id);
+  }
+  if (!missing.length) return out;
+  const labels = await statusLabels(config, ctx, ws, 'story');
+  for (let i = 0; i < missing.length; i += SYNC_CHUNK) {
+    const part = missing.slice(i, i + SYNC_CHUNK);
+    try {
+      const rows = await runCli(config, ['story', 'list', `workspaceid=${ws}`, `id=${part.join(',')}`, `limit=${SYNC_CHUNK}`, 'fields=id,name,status,parent_id,modified'], ctx);
+      for (const wrapped of Array.isArray(rows) ? rows : []) {
+        const row = wrapped?.Story || wrapped;
+        if (!row?.id) continue;
+        const info = { title: String(row.name || '').slice(0, 200), parentId: normalizeParent(row.parent_id), status: statusOf(row, labels, overrides) };
+        out.set(String(row.id), info);
+        ctx.state?.set(`story:${ws}:${row.id}`, { at: Date.now(), info });
+      }
+    } catch (err) {
+      ctx.log?.(`查需求标题失败（${ws}）：${err.message}`);
+    }
+  }
+  return out;
+}
+
+function normalizeParent(value) {
+  const id = String(value ?? '').trim();
+  return id && id !== '0' ? id : null;
+}
+
+function storyRef(config, ws, id, info) {
+  return {
+    type: 'story',
+    id,
+    // 标题拿不到也照样建结构（壳节点），静静之后会回填。
+    ...(info?.title ? { title: info.title } : {}),
+    url: `${webBase(config)}/${ENTITIES.story.view(ws, id)}`,
+    ...(info?.status ? { status: { label: info.status.label, category: info.status.category } } : {})
+  };
+}
+
+/**
+ * 给一批条目补上外部对象树（node / parent / links）。rows：externalId → { ws, kind, row }。
+ * 查不到（预算用完、接口失败）就不写 parent，表示「这次没说」，静静保留已知的父。
+ */
+async function attachTrees(config, ctx, entries, overrides) {
+  if (!classifying(ctx) || !entries.length) return;
+  const budget = { calls: MAX_RELATION_CALLS };
+  // 先确定每个条目直接的父需求 id（缺陷要查关联，需求看 parent_id），再按项目批量拿父需求的标题。
+  const plans = [];
+  for (const entry of entries) {
+    const { ws, kind, row } = entry;
+    if (kind === 'story') {
+      plans.push({ entry, parents: row.parent_id === undefined ? null : [normalizeParent(row.parent_id)].filter(Boolean) });
+    } else {
+      plans.push({ entry, parents: await relatedStories(config, ctx, ws, String(row.id), budget) });
+    }
+  }
+  const wanted = new Map();
+  for (const { entry, parents } of plans) {
+    for (const id of parents || []) {
+      if (!wanted.has(entry.ws)) wanted.set(entry.ws, new Set());
+      wanted.get(entry.ws).add(id);
+    }
+  }
+  const infos = new Map();
+  for (const [ws, ids] of wanted) infos.set(ws, await storyInfo(config, ctx, ws, [...ids], overrides));
+  for (const { entry, parents } of plans) {
+    const { ws, kind, row, target } = entry;
+    const entity = ENTITIES[kind];
+    target.node = {
+      workspace: ws,
+      type: kind,
+      id: String(row.id),
+      title: String(row[entity.title] || '').slice(0, 200) || undefined,
+      url: `${webBase(config)}/${entity.view(ws, row.id)}`
+    };
+    if (parents === null) continue;
+    const info = infos.get(ws) || new Map();
+    if (parents.length === 1) {
+      target.parent = storyRef(config, ws, parents[0], info.get(parents[0]));
+    } else {
+      // 没有上级（树根），或者关联了多个需求、TAPD 也没有「主」：parent 置空，多的进 links。
+      target.parent = null;
+      if (parents.length > 1) {
+        target.links = parents.slice(0, MAX_LINKS).map((id) => ({ kind: 'related', to: storyRef(config, ws, id, info.get(id)) }));
+      }
+    }
+  }
+}
+
 function toItem(config, kind, ws, row, status) {
   const entity = ENTITIES[kind];
   const title = String(row[entity.title] || `${entity.label} ${row.id}`).trim();
@@ -184,7 +320,7 @@ function toItem(config, kind, ws, row, status) {
 
 async function listOpen(config, ctx, ws, kind, owner, overrides) {
   const entity = ENTITIES[kind];
-  const fields = ['id', entity.title, 'status', 'modified', 'resolution', 'priority_label', 'iteration_id', 'description', ...(kind === 'bug' ? ['severity'] : [])];
+  const fields = ['id', entity.title, 'status', 'modified', 'resolution', 'priority_label', 'iteration_id', 'description', ...(kind === 'bug' ? ['severity'] : ['parent_id'])];
   const [labels, rows] = await Promise.all([
     statusLabels(config, ctx, ws, kind),
     runCli(config, [entity.cmd, 'list', `workspaceid=${ws}`, `${entity.owner}=${owner}`, `limit=${LIST_LIMIT}`, 'order=modified desc', `fields=${fields.join(',')}`], ctx)
@@ -194,7 +330,12 @@ async function listOpen(config, ctx, ws, kind, owner, overrides) {
     .filter((row) => row?.id)
     .map((row) => ({ row, status: statusOf(row, labels, overrides) }))
     .filter(({ status }) => !isFinished(status.category))
-    .map(({ row, status }) => toItem(config, kind, ws, row, status));
+    .map(({ row, status }) => {
+      const item = toItem(config, kind, ws, row, status);
+      // 原始行只留在内存里，补归类关系时用；不交给静静。
+      Object.defineProperty(item, '_tapd', { value: { ws, kind, row }, enumerable: false });
+      return item;
+    });
 }
 
 /* --------------------------------- 入口 --------------------------------- */
@@ -248,6 +389,7 @@ export async function poll(config, ctx = {}) {
   const ordered = [...items.filter((item) => !handed.has(item.externalId)), ...items.filter((item) => handed.has(item.externalId))].slice(0, MAX_ITEMS);
   for (const item of ordered) handed.add(item.externalId);
   state?.set('handed', [...handed].slice(-REMEMBER));
+  await attachTrees(config, ctx, ordered.map((item) => ({ ...item._tapd, target: item })), overrides);
   ctx.log?.(`没结束的 ${items.length} 条，这次交 ${ordered.length} 条`);
   return { items: ordered };
 }
@@ -265,20 +407,26 @@ export async function syncStatus(config, links, ctx = {}) {
     groups.get(key).ids.push(String(link.externalId));
   }
   const out = [];
+  const trees = [];
   for (const { ws, kind, ids } of groups.values()) {
     const entity = ENTITIES[kind];
     const labels = await statusLabels(config, ctx, ws, kind);
     for (let i = 0; i < ids.length; i += SYNC_CHUNK) {
       const part = ids.slice(i, i + SYNC_CHUNK);
-      const rows = await runCli(config, [entity.cmd, 'list', `workspaceid=${ws}`, `id=${part.join(',')}`, `limit=${SYNC_CHUNK}`, `fields=id,${entity.title},status,modified,resolution`], ctx);
+      const fields = `fields=id,${entity.title},status,modified,resolution${kind === 'story' ? ',parent_id' : ''}`;
+      const rows = await runCli(config, [entity.cmd, 'list', `workspaceid=${ws}`, `id=${part.join(',')}`, `limit=${SYNC_CHUNK}`, fields], ctx);
       const found = new Map((Array.isArray(rows) ? rows : []).map((wrapped) => wrapped?.[entity.wrap] || wrapped).filter((row) => row?.id).map((row) => [String(row.id), row]));
       for (const id of part) {
         const row = found.get(id);
-        out.push(row
+        const entry = row
           ? { externalId: id, status: statusOf(row, labels, overrides), title: row[entity.title] || undefined }
-          : { externalId: id, missing: true });
+          : { externalId: id, missing: true };
+        if (row) trees.push({ ws, kind, row, target: entry });
+        out.push(entry);
       }
     }
   }
+  // 同步时顺带交父节点：壳节点回填标题、父指针变了静静会重算归属。
+  await attachTrees(config, ctx, trees, overrides);
   return out;
 }

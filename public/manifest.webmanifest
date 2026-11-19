@@ -10,8 +10,8 @@
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui"],
   "orientation": "portrait-primary",
-  "background_color": "#F4F1EA",
-  "theme_color": "#F4F1EA",
+  "background_color": "#0A0820",
+  "theme_color": "#16132B",
   "categories": ["productivity", "utilities"],
   "prefer_related_applications": false,
   "icons": [
@@ -19,22 +19,6 @@
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
     { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
-  ],
-  "screenshots": [
-    {
-      "src": "/screenshots/chat.png",
-      "sizes": "780x1688",
-      "type": "image/png",
-      "form_factor": "narrow",
-      "label": "和静静对话、审批任务"
-    },
-    {
-      "src": "/screenshots/tasks.png",
-      "sizes": "780x1688",
-      "type": "image/png",
-      "form_factor": "narrow",
-      "label": "任务板与等待拍板"
-    }
   ],
   "shortcuts": [
     { "name": "任务板", "short_name": "任务", "url": "/#tasks", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
