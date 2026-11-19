@@ -179,6 +179,17 @@ function workspaceFor(plugin) {
   };
 }
 
+/**
+ * 条目指定的工作区：只认主人在设置里建好的工作区 id，找不到就当没指定（插件带路径也指不到任意目录）。
+ * 条目字段由插件给；插件应该只映射主人自己的配置（比如 TAPD 每个项目选一个），不要把不可信的外部字段直接透传进来。
+ */
+function workspaceById(id) {
+  if (!id) return null;
+  const found = (getSettings().workspaces || []).find((ws) => ws.id === id);
+  if (!found) console.warn(`[discovery] 条目指定的工作区不存在：${id}，改用来源的工作区`);
+  return found || null;
+}
+
 function recordItem(source, item, status, taskId = null, reason = null) {
   db.prepare(`
     INSERT INTO source_items(id, source, external_id, title, summary, status, task_id, url, occurred_at, decision_reason, event_type, hops, created_at)
@@ -240,7 +251,9 @@ export function normalizeItem(raw) {
     track: raw.track !== false,
     // 声明了归类能力的来源交的外部对象树：node（必填）/ parent（唯一主父，null = 不知道）/ links（≤ 8）。
     tree: raw.node ? classification.normalizeTree(raw) : null,
-    nodeKey: null
+    nodeKey: null,
+    // 这条落到哪个工作区（静静设置里的工作区 id）：来源按项目配了工作区时由插件带上，不带就用来源的。
+    workspace: String(raw.workspace || '').trim().slice(0, 64)
   };
 }
 
@@ -514,7 +527,9 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
       || null;
     const forcedWorker = forced?.worker ? catalog.find((w) => w.id === forced.worker && w.available) : null;
     const flowWorker = forcedWorker || (flow?.worker ? catalog.find((w) => w.id === flow.worker && w.available) : null);
-    const taskWorkspace = workflows.resolveWorkspace(flow) || workspace;
+    // 工作区：工作流程指定的 > 条目自己带的（来源里按项目配的，比如 TAPD 每个项目落到各自的代码目录）> 来源的 > 默认。
+    const itemWorkspace = workspaceById(item.workspace);
+    const taskWorkspace = workflows.resolveWorkspace(flow) || itemWorkspace || workspace;
     // 关键点可能早就进了静静的本地记忆（项目背景、历史任务结论、用户习惯），
     // 直接带上最相关的几条，比让 Worker 自己去翻数据库更准、也更省时间。
     let recalled = [];
@@ -564,7 +579,7 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
       text: rawText,
       source: `plugin:${id}`,
       eventType: item.eventType,
-      workspaceId: workspace.id
+      workspaceId: (itemWorkspace || workspace).id
     });
     const fallback = defaultWorker();
     const routing = forced || flowWorker || matchedRule

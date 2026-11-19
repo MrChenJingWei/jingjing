@@ -33,7 +33,7 @@
 2. `plugin-spec.js` 校验 manifest（字段白名单、类型、`worker` 段范围、配置字段定义），不合格的记进 `pluginErrors()`，不影响其他插件；
 3. `plugin-loader.js` 加载入口：URL 带上**整个插件目录的版本号**，再用模块钩子传给入口相对引用的每个子文件——多文件插件重装后不用重启就能拿到新代码；
 4. `kind: worker` 的注册进 Worker 注册表（`registerWorkerPlugin`，默认在隔离线程执行）；
-5. 来源插件按 `source_plugins` 里的实例生成可用列表；支持 `multiInstance` 的插件可以建多个实例（比如两个邮箱、每个 TAPD 项目一条）。每个实例的配置独立；一个实例里要配好几份同样结构的设置时用 `group` 类型（比如 TAPD 的多个项目，每个项目一张卡片）。配了 `filters` 字段的插件还能导出 `filterFields()`，让每个实例（或分组里的每一项）从自己实际有的字段里选筛选条件（接口 `POST /api/plugins/:id/filter-fields`，用表单里当前的配置去问插件，30 秒内要返回）。
+5. 来源插件按 `source_plugins` 里的实例生成可用列表；支持 `multiInstance` 的插件可以建多个实例（比如两个邮箱、每个 TAPD 项目一条）。每个实例的配置独立；一个实例里要配好几份同样结构的设置时用 `group` 类型（比如 TAPD 的多个项目，每个项目一张卡片，可以各自选工作区）。配了 `filters` 字段的插件还能导出 `filterFields()`，让每个实例（或分组里的每一项）从自己实际有的字段里选筛选条件（接口 `POST /api/plugins/:id/filter-fields`，用表单里当前的配置去问插件，30 秒内要返回）。
 
 重新加载时先 `discovery.stopLifecycles()`，加载完再 `startLifecycles()`，长连接跟着换新代码。
 
@@ -66,6 +66,7 @@ export function migrateConfig(config) {}                  // 老配置转新结�
 | `direct` | 有人直接找静静（可以闲聊回复） | 发现核心 |
 | `replyTo` | 回传地址，能发回原会话 | relay |
 | `status` `track` | 外部状态、要不要跟踪 | source-links |
+| `workspace` | 这条任务在哪个工作区里做（只认设置里的工作区 id） | 发现核心 |
 | `node` `parent` `links` | 外部对象和上级（归类） | task-classification |
 | `eventType` | 事件类型，给分配规则匹配 | worker-rules |
 
@@ -81,7 +82,7 @@ export function migrateConfig(config) {}                  // 老配置转新结�
 | `deliver` / `reply` | 15 秒 |
 | 草稿检查 | 10 秒（隔离线程） |
 
-来源插件在**主线程**运行：超时由宿主强制，但同步死循环仍会卡住整个服务。只安装可信插件。插件拿到的设置里没有模型 Key 和通知通道凭据；manifest 里的 `capabilities` 只是声明，不做强制。
+来源插件在**主线程**运行：超时由宿主强制，但同步死循环仍会卡住整个服务。只安装可信插件。插件拿到的设置里没有模型 Key 和通知通道凭据；manifest 里的 `capabilities` 只是声明，不做强制。条目里的 `workspace` 也只认设置里已有的工作区 id，不是路径，插件不能借它指到任意目录。
 
 ## 安装与管理
 

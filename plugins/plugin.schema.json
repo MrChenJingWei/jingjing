@@ -258,7 +258,8 @@
             "select",
             "folder",
             "filters",
-            "group"
+            "group",
+            "workspace"
           ]
         },
         "default": {},

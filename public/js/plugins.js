@@ -117,6 +117,17 @@ function fieldInput(plugin, field, scope = null) {
       <textarea rows="3" ${attrs} placeholder="${esc(field.placeholder || '')}">${esc(value ?? '')}</textarea>${help}</label>`;
   }
   if (field.type === 'filters') return filtersField(plugin, field, scope);
+  if (field.type === 'workspace') {
+    // 从「设置 → 工作区」里建好的工作区里选；留空跟随这个来源的工作区（来源也没绑就跟随默认）。
+    const sourceWs = (state.settings?.workspaces || []).find((ws) => ws.id === plugin.workspaceId);
+    const follow = sourceWs ? `跟随来源（${sourceWs.name}）` : `跟随默认（${defaultWorkspaceName()}）`;
+    return `<label class="field ${field.wide ? 'span-2' : ''}"><span>${esc(field.label)}</span>
+      <select ${attrs}>
+        <option value="">${esc(follow)}</option>
+        ${(state.settings?.workspaces || []).map((ws) => `<option value="${esc(ws.id)}" ${ws.id === value ? 'selected' : ''}>${esc(ws.name)} · ${esc(ws.path)}</option>`).join('')}
+        ${value && !(state.settings?.workspaces || []).some((ws) => ws.id === value) ? `<option value="${esc(value)}" selected>已删除的工作区（会跟随来源）</option>` : ''}
+      </select>${help}</label>`;
+  }
   if (field.type === 'folder') {
     return `<div class="field ${field.wide ? 'span-2' : ''}"><span>${esc(field.label)}</span>
       <input type="text" ${attrs} data-folder value="${esc(value ?? '')}" placeholder="${esc(field.placeholder || '')}" />${help}</div>`;
@@ -396,6 +407,11 @@ function mountFilterEditor(plugin, box) {
   if (plugin.filterFields && (rows.length || fields.length)) load();
 }
 
+/** 插件配置里有没有单独选工作区的字段（顶层或分组里）。 */
+function hasWorkspaceField(plugin) {
+  return (plugin.configSchema || []).some((field) => field.type === 'workspace' || (field.fields || []).some((sub) => sub.type === 'workspace'));
+}
+
 function renderPluginDetail(id) {
   const plugin = (state.plugins || []).find((item) => item.id === id);
   const body = $('#plugin-detail-body');
@@ -445,6 +461,7 @@ function renderPluginDetail(id) {
               ${(state.settings?.workspaces || []).map((ws) => `<option value="${esc(ws.id)}" ${plugin.workspaceId === ws.id ? 'selected' : ''}>${esc(ws.name)} · ${esc(ws.path)}</option>`).join('')}
               <option value="__custom__">选择其他文件夹…</option>
             </select>
+            ${hasWorkspaceField(plugin) ? '<small class="field-help">下面配置里单独选了工作区的（比如某个项目），按那里的来；没选的用这个。</small>' : ''}
           </label>
         </div>
         ${plugin.canReply ? `

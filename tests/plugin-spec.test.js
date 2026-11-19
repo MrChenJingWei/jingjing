@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { validateManifest, validateConfig, validateWorkerLimits, PluginSpecError, WORKER_DEFAULTS } from '../src/plugin-spec.js';
+import { validateManifest, validateConfig, validateWorkerLimits, PluginSpecError, WORKER_DEFAULTS, FIELD_TYPES } from '../src/plugin-spec.js';
 
 function tempPlugin(manifest = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-plugin-'));
@@ -226,4 +226,32 @@ test('分组（group）：每一项按子字段校验、补默认值，报错说
     const bad = tempPlugin({ config: [{ ...projects, fields: [...projects.fields, sub] }] });
     assert.throws(() => validateManifest(bad.raw, { dir: bad.dir, dirName: 'demo' }), /不能再放/);
   }
+});
+
+test('workspace 类型：值是工作区 id，留空跟随来源；分组子字段也能用', () => {
+  const projects = {
+    key: 'projects', label: '项目', type: 'group', itemLabel: '项目',
+    fields: [
+      { key: 'workspaceId', label: '项目 ID', type: 'text' },
+      { key: 'workspace', label: '工作区', type: 'workspace' }
+    ]
+  };
+  const { dir, raw } = tempPlugin({ config: [{ key: 'workspace', label: '工作区', type: 'workspace' }, projects] });
+  const manifest = validateManifest(raw, { dir, dirName: 'demo' });
+  assert.equal(manifest.config[0].type, 'workspace');
+  assert.equal(manifest.config[0].default, '');
+  assert.deepEqual(validateConfig(manifest, {}), { workspace: '', projects: [] });
+  assert.deepEqual(validateConfig(manifest, {
+    workspace: ' ws_a ',
+    projects: [{ workspaceId: '1', workspace: ' ws_b ' }]
+  }), {
+    workspace: 'ws_a',
+    projects: [{ workspaceId: '1', workspace: 'ws_b' }]
+  });
+  assert.throws(() => validateConfig(manifest, { workspace: 'w'.repeat(65) }), /工作区 id 太长/);
+});
+
+test('plugin.schema.json 的字段类型和 FIELD_TYPES 保持一致', () => {
+  const schema = JSON.parse(fs.readFileSync(new URL('../plugins/plugin.schema.json', import.meta.url), 'utf8'));
+  assert.deepEqual(schema.$defs.field.properties.type.enum, FIELD_TYPES);
 });

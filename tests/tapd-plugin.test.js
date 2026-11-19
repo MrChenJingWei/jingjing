@@ -217,7 +217,10 @@ test('评论提醒：第一次只记游标、认出参与过的单子，不回�
   const history = [comment('c1', '小明', 'stories', '8001', '2026-11-10 10:00:00', '<p>我先看看</p>')];
   setRemote(mine, story, {}, history);
   const ctx = memory();
-  const config = { ...base, startFresh: false };
+  const config = {
+    bin, token: 'tok', startFresh: false,
+    projects: [{ workspaceId: '123', entities: 'bug', scope: 'mine', filters: [], workspace: 'ws_comment' }]
+  };
   const first = await tapd.poll(config, ctx);
   assert.ok(first.items.every((item) => item.externalType !== '评论'), '第一次不回补历史评论');
   assert.ok(ctx.state.get('comments:cursor:123'), '记下游标');
@@ -241,6 +244,7 @@ test('评论提醒：第一次只记游标、认出参与过的单子，不回�
   assert.match(reopen.content, /场景：流转状态从 \[已解决\] 到 \[重新打开\] 添加/);
   assert.equal(reopen.groupKey, 'tapd:123:bug:7001');
   assert.equal(reopen.track, false, '评论不绑状态跟踪');
+  assert.equal(reopen.workspace, 'ws_comment', '评论也落到它所在项目的工作区');
   assert.deepEqual(reopen.node, { workspace: '123', type: 'bug', id: '7001' });
   assert.equal(reopen.url, 'https://www.tapd.cn/123/bugtrace/bugs/view?bug_id=7001');
   assert.match(talked.title, /我参与讨论的需求/, '不是分给我的单子，标题另查');
@@ -279,8 +283,8 @@ test('老配置迁移：一串项目 ID + 共用设置 → 每个项目一套设
   const migrated = tapd.migrateConfig({ workspaceIds: '123, 456', entities: 'both', statusMap: '已验证 = done', token: 't' });
   assert.equal(migrated.token, 't');
   assert.deepEqual(migrated.projects, [
-    { workspaceId: '123', name: '', entities: 'both', scope: 'mine', filters: [], statusMap: '已验证 = done' },
-    { workspaceId: '456', name: '', entities: 'both', scope: 'mine', filters: [], statusMap: '已验证 = done' }
+    { workspaceId: '123', name: '', entities: 'both', scope: 'mine', filters: [], statusMap: '已验证 = done', workspace: '' },
+    { workspaceId: '456', name: '', entities: 'both', scope: 'mine', filters: [], statusMap: '已验证 = done', workspace: '' }
   ]);
   const single = tapd.migrateConfig({ workspaceIds: '123', scope: 'any', filters: [{ field: 'bug.status', values: ['new'] }] });
   assert.equal(single.projects[0].scope, 'any', '只有一个项目时，老的范围和条件跟过去');
@@ -304,8 +308,8 @@ test('多个项目各用各的设置：类型、范围、条件、状态分类�
   const config = {
     bin, token: 'tok', startFresh: false, comments: false,
     projects: [
-      { workspaceId: '123', name: '项目A', entities: 'bug', scope: 'mine', filters: [], statusMap: '' },
-      { workspaceId: '456', name: '项目B', entities: 'story', scope: 'any', filters: [{ field: 'story.developer', values: ['我'] }], statusMap: 'C2-实现中 = review' }
+      { workspaceId: '123', name: '项目A', entities: 'bug', scope: 'mine', filters: [], statusMap: '', workspace: 'ws_a' },
+      { workspaceId: '456', name: '项目B', entities: 'story', scope: 'any', filters: [{ field: 'story.developer', values: ['我'] }], statusMap: 'C2-实现中 = review', workspace: 'ws_b' }
     ]
   };
   const { items } = await tapd.poll(config, memory());
@@ -313,6 +317,8 @@ test('多个项目各用各的设置：类型、范围、条件、状态分类�
   assert.deepEqual(Object.keys(byId).sort(), ['1001', '2101']);
   assert.equal(byId['2101'].status.category, 'review', '项目 B 用自己的状态分类');
   assert.match(byId['2101'].content, /项目：项目B/);
+  assert.equal(byId['1001'].workspace, 'ws_a', '项目 A 的条目落到自己的工作区');
+  assert.equal(byId['2101'].workspace, 'ws_b', '项目 B 的条目落到自己的工作区');
   assert.deepEqual(byId['1001'].meta, { workspaceId: '123', entity: 'bug' });
 
   const tested = await tapd.test(config, memory());

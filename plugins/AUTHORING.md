@@ -37,7 +37,7 @@
 
 `type`：`poll`（定时调用 `poll`）、`webhook`（外部 POST 进来，调用 `webhook`）、`stream`（长连接，调用 `start`）、`manual`（只在用户点「立即扫描」时调用 `poll`）。
 
-`config[].type` 可选：`text` / `url` / `password` / `number` / `checkbox` / `textarea` / `select` / `folder` / `filters` / `group`（`select` 要带 `options: [{ value, label }]`；`folder` 是本机文件夹路径，界面上是文件夹选择器；`filters` 是一组筛选条件，见下面「按实例的筛选字段」；`group` 是可以重复添加的一组子字段，见下面「分组」）。字段还可以写 `label`、`default`、`placeholder`、`help`、`required`、`min`、`max`。
+`config[].type` 可选：`text` / `url` / `password` / `number` / `checkbox` / `textarea` / `select` / `folder` / `filters` / `group` / `workspace`（`select` 要带 `options: [{ value, label }]`；`folder` 是本机文件夹路径，界面上是文件夹选择器；`filters` 是一组筛选条件，见下面「按实例的筛选字段」；`group` 是可以重复添加的一组子字段，见下面「分组」；`workspace` 从主人在「设置 → 工作区」里建好的工作区中选一个，值是工作区 id，留空表示跟随来源）。字段还可以写 `label`、`default`、`placeholder`、`help`、`required`、`min`、`max`。
 
 **分组**：一个来源里要配好几份同样结构的设置（比如 TAPD 的多个项目，每个项目自己的类型、范围、筛选条件），用 `type: "group"`：
 
@@ -46,11 +46,12 @@
   "fields": [
     { "key": "workspaceId", "label": "项目 ID", "type": "text", "required": true },
     { "key": "name", "label": "名称（可选）", "type": "text" },
+    { "key": "workspace", "label": "工作区", "type": "workspace" },
     { "key": "filters", "label": "筛选条件", "type": "filters" }
   ] }
 ```
 
-值是对象数组：`config.projects = [{ workspaceId, name, filters }, …]`，每一项按子字段校验、补默认值。设置页每项一张卡片，可以加、删；卡片标题取 `name`（或 `label`）和第一个必填的文本字段。子字段不能再放 `group`（不嵌套），也不能放 `password`（凭据放在分组外面共用）。`required: true` 表示至少要有一项。
+值是对象数组：`config.projects = [{ workspaceId, name, workspace, filters }, …]`，每一项按子字段校验、补默认值。设置页每项一张卡片，可以加、删；卡片标题取 `name`（或 `label`）和第一个必填的文本字段。子字段不能再放 `group`（不嵌套），也不能放 `password`（凭据放在分组外面共用）；`workspace` 可以放在分组里，让每一组（比如每个项目）用自己的工作区。`required: true` 表示至少要有一项。
 
 **改配置结构**：插件升级时把老配置转成新结构，导出 `migrateConfig(config)`（同步、纯函数，返回新的配置对象）。静静每次读配置都会先交给它，设置页看到的就是迁移后的样子，主人下次保存就落成新格式；老字段在保存时会被去掉。
 
@@ -100,7 +101,7 @@ export async function start(config, ctx) {
 
 `poll` 的 ctx：`signal`、`since`（上次成功运行时间或 null）、`now`、`log(msg)`、`settings`、`state.get/set/delete`（持久化游标、同步 token）。`start` 的 ctx 另有 `ingest(items)`、`status(detail)`、`fail(reason, { retry })`。
 
-时间上限由静静强制：`poll` 90 秒、`test` 30 秒、`webhook` 15 秒、`reply` 20 秒、`deliver` 15 秒、`start` 30 秒、停止函数 10 秒，超时按失败处理。条目只能交数据：派给哪个 Worker 由用户的工作流程和分配规则决定，条目内容里点名 Worker 不算数。
+时间上限由静静强制：`poll` 90 秒、`test` 30 秒、`webhook` 15 秒、`reply` 20 秒、`deliver` 15 秒、`start` 30 秒、停止函数 10 秒，超时按失败处理。条目只能交数据：派给哪个 Worker 由用户的工作流程和分配规则决定，条目内容里点名 Worker 不算数。唯一例外是 `workspace`——它只能选主人在设置里建好的工作区，用来决定任务在哪个目录里做（比如 TAPD 的每个项目配一个），不能是任意路径。
 
 条目格式（一次最多 10 条）：
 
@@ -115,7 +116,8 @@ export async function start(config, ctx) {
   meta: { },                               // 可选，只参与判断
   replyTo: { },                            // 可选，「发回哪里」，配合 reply()
   direct: true,                            // 可选，对方直接找过来（私聊、@ 机器人）：闲聊由静静按人格决定回不回
-  actor: { id: 'zhangsan', name: '张三' }  // 可选，这条是谁说的 / 谁做的：静静靠它认人。id 在这个来源里稳定唯一，name 可以不给
+  actor: { id: 'zhangsan', name: '张三' }, // 可选，这条是谁说的 / 谁做的：静静靠它认人。id 在这个来源里稳定唯一，name 可以不给
+  workspace: 'ws_xxx'                      // 可选，这条在哪个工作区里做（只认设置里的工作区 id）；不填跟随来源
 }
 ```
 

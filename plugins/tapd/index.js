@@ -108,7 +108,8 @@ export function migrateConfig(config) {
       scope: config.scope === 'any' && ids.length === 1 ? 'any' : 'mine',
       // 老版本只有一个项目时才可能配过筛选条件。
       filters: ids.length === 1 && Array.isArray(config.filters) ? config.filters : [],
-      statusMap: String(config.statusMap || '')
+      statusMap: String(config.statusMap || ''),
+      workspace: ''
     }))
   };
 }
@@ -127,7 +128,9 @@ function projectOf(raw, index = 0) {
     kinds: kindsOf(raw?.entities),
     scope: raw?.scope === 'any' ? 'any' : 'mine',
     filters: Array.isArray(raw?.filters) ? raw.filters : [],
-    overrides: parseOverrides(raw?.statusMap)
+    overrides: parseOverrides(raw?.statusMap),
+    // 这个项目的任务落到静静的哪个工作区（工作区 id）；空 = 跟随来源。
+    workspace: String(raw?.workspace || '').trim()
   };
 }
 
@@ -373,7 +376,8 @@ function toItem(config, kind, project, row, status) {
     url: `${webBase(config)}/${entity.view(ws, row.id)}`,
     occurredAt: isoTime(row.modified),
     status,
-    meta: { workspaceId: ws, entity: kind }
+    meta: { workspaceId: ws, entity: kind },
+    ...(project.workspace ? { workspace: project.workspace } : {})
   };
 }
 
@@ -495,7 +499,7 @@ async function entryTitles(config, ctx, ws, kind, ids) {
   return out;
 }
 
-function commentItem(config, ws, comment, { title, mention }) {
+function commentItem(config, ws, comment, { title, mention, workspace = '' }) {
   const entry = COMMENT_ENTRIES[comment.entry_type];
   const entryId = String(comment.entry_id);
   const name = title || `${entry.label} #${entryId.slice(-7)}`;
@@ -526,7 +530,9 @@ function commentItem(config, ws, comment, { title, mention }) {
     ...(ENTITIES[entry.kind] ? { node: { workspace: ws, type: entry.kind, id: entryId } } : {}),
     // 评论人：TAPD 里用昵称当身份。
     ...(comment.author ? { actor: { id: comment.author, name: comment.author } } : {}),
-    meta: { workspaceId: ws, entity: entry.kind, entryId, commentId: String(comment.id), author: comment.author, mention }
+    meta: { workspaceId: ws, entity: entry.kind, entryId, commentId: String(comment.id), author: comment.author, mention },
+    // 评论落到它所在项目的工作区。
+    ...(workspace ? { workspace } : {})
   };
 }
 
@@ -534,7 +540,7 @@ function commentItem(config, ws, comment, { title, mention }) {
  * 拉新评论，和我有关的放进待交队列（state.commentQueue）。第一次只记游标、认一下参与过的单子，不回补历史。
  * mine：这次拉到的、分给我且没结束的单子 id。
  */
-async function collectComments(config, ctx, ws, nick, mine) {
+async function collectComments(config, ctx, ws, nick, mine, workspace = '') {
   const state = ctx.state;
   const cursorKey = `comments:cursor:${ws}`;
   const talkedKey = `comments:talked:${ws}`;
@@ -580,7 +586,7 @@ async function collectComments(config, ctx, ws, nick, mine) {
     if (ids.length) for (const [id, title] of await entryTitles(config, ctx, ws, kind, ids)) titles.set(id, title);
   }
   const queue = state?.get('commentQueue') || [];
-  for (const { c, mention } of relevant) queue.push(commentItem(config, ws, c, { title: titles.get(String(c.entry_id)), mention }));
+  for (const { c, mention } of relevant) queue.push(commentItem(config, ws, c, { title: titles.get(String(c.entry_id)), mention, workspace }));
   state?.set('commentQueue', queue.slice(-COMMENT_QUEUE_MAX));
   return relevant.length;
 }
@@ -696,7 +702,7 @@ export async function poll(config, ctx = {}) {
     if (config.comments !== false) {
       const mine = new Map(found.map((item) => [item.externalId, item.title]));
       try {
-        const added = await collectComments(config, ctx, project.ws, owner, mine);
+        const added = await collectComments(config, ctx, project.ws, owner, mine, project.workspace);
         if (added) ctx.log?.(`${project.label} 有 ${added} 条和你有关的新评论`);
       } catch (err) {
         ctx.log?.(`拉评论失败（${project.label}）：${err.message}`);

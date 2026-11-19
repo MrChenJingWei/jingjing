@@ -3,9 +3,9 @@
   "id": "tapd",
   "apiVersion": 1,
   "name": "TAPD",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "icon": "T",
-  "description": "通过本机的 tapd-cli 发现 TAPD 里的缺陷 / 需求并建任务。可以配多个项目，每个项目按自己的字段和状态决定哪些单子交给静静（默认是分给你的）；任务卡上跟踪它在 TAPD 里的状态，和你有关的新评论也会告诉你。只读，不会改 TAPD。",
+  "description": "通过本机的 tapd-cli 发现 TAPD 里的缺陷 / 需求并建任务。可以配多个项目，每个项目按自己的字段和状态决定哪些单子交给静静（默认是分给你的），也可以各自指定任务工作区；任务卡上跟踪它在 TAPD 里的状态，和你有关的新评论也会告诉你。只读，不会改 TAPD。",
   "entry": "index.js",
   "type": "poll",
   "intervalMinutes": 15,
@@ -38,6 +38,12 @@
           "type": "text",
           "placeholder": "比如：蓝马",
           "help": "只用来显示，任务卡和测试结果里会用它"
+        },
+        {
+          "key": "workspace",
+          "label": "工作区",
+          "type": "workspace",
+          "help": "这个项目的任务在哪个工作区里做（比如它的代码目录）；不选就跟随上面来源的工作区，来源也没绑就跟随默认。工作区在「设置 → 工作区」里添加"
         },
         {
           "key": "entities",

@@ -7,7 +7,8 @@ export const PLUGIN_API_VERSION = 1;
 // 所以每个实例（比如每个 TAPD 项目）可以有自己的一套字段。
 // group：可以重复添加的一组子字段（fields），值是对象数组，比如一个 TAPD 来源里配多个项目、每个项目一套设置。
 // 子字段支持除 group / password 以外的所有类型；不能嵌套。
-export const FIELD_TYPES = ['text', 'url', 'password', 'number', 'checkbox', 'textarea', 'select', 'folder', 'filters', 'group'];
+// workspace：从主人在「设置 → 工作区」里建的工作区里选一个（值是工作区 id，留空 = 跟随来源）。
+export const FIELD_TYPES = ['text', 'url', 'password', 'number', 'checkbox', 'textarea', 'select', 'folder', 'filters', 'group', 'workspace'];
 export const FILTER_LIMITS = Object.freeze({ rows: 12, values: 50, field: 64, value: 120 });
 export const GROUP_LIMITS = Object.freeze({ fields: 12, items: 50 });
 export const PLUGIN_TYPES = ['poll', 'webhook', 'stream', 'manual', 'watch'];
@@ -420,6 +421,12 @@ function coerceValue(field, value) {
       bad(`config.${field.key} 不是可选值：${text}`);
     }
     return text;
+  }
+
+  if (field.type === 'workspace') {
+    const id = String(value ?? '').trim();
+    if (id.length > 64) bad(`config.${field.key} 的工作区 id 太长（最多 64 字符）`);
+    return id;
   }
 
   const text = String(value ?? '');
