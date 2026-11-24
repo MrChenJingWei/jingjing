@@ -60,12 +60,22 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(left, right);
 }
 
+// Cookie 按主机共享、不分端口：同一台机器上别的程序写进来的 Cookie 也会带到这里。
+// 遇到不合法的 % 编码就原样保留，不能因为一个无关的 Cookie 让配对校验抛异常。
+function decodeCookieValue(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function parseCookies(header) {
   const out = {};
   for (const part of String(header || '').split(';')) {
     const index = part.indexOf('=');
     if (index < 0) continue;
-    out[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
+    out[part.slice(0, index).trim()] = decodeCookieValue(part.slice(index + 1).trim());
   }
   return out;
 }
