@@ -167,7 +167,10 @@ test('合并：来往、聊天、记忆、派过的活都并到一起；以后�
   assert.equal(people.requestedTasks(keep).length, 1, '派过的活跟过来了');
   assert.equal(conversation.recentMessages(`ext:${keep}`).length, 1, '聊天搬过来了');
   assert.equal(db.prepare('SELECT COUNT(*) AS c FROM memories WHERE subject = ?').get(keep).c, 1, '记忆跟过来了');
-  assert.deepEqual(people.list().find((p) => p.id === keep).aliases, [other]);
+  const listed = people.list().find((p) => p.id === keep);
+  assert.deepEqual(listed.aliases, [other]);
+  assert.deepEqual(listed.identities.map((x) => [x.id, x.primary, x.sourceId, x.externalId]), [[keep, true, 'dir-src', 'zhangsan'], [other, false, 'plain-src', 'zhangsan']], '身份带来源和来源里的 id');
+  assert.equal(listed.identities[1].name, '张三', '绑定时记下那边的称呼');
   assert.equal(db.prepare('SELECT COUNT(*) AS c FROM people_distinct').get().c, 0, '「不是同一个人」的记录随旧身份清掉');
 
   // 旧来源再来：算到主身份上，不新建人。
@@ -175,6 +178,52 @@ test('合并：来往、聊天、记忆、派过的活都并到一起；以后�
   await discovery.ingestItems('plain-src', [item(30, { actor: { id: 'zhangsan', name: '张三' } })]);
   assert.equal(db.prepare('SELECT COUNT(*) AS c FROM people').get().c, count);
   assert.equal(people.get(keep).interactions, before + 1);
+});
+
+test('解绑：拆回成单独的一个人，以后从那个来源来的算 ta，不再提示合并', async () => {
+  const keep = 'dir-src:lisi';
+  const other = 'plain-src:lisi';
+  people.ensure(keep, { name: '李四', source: '通讯录源', sourceId: 'dir-src', externalId: 'lisi' });
+  people.ensure(other, { name: '李四', source: '普通源', sourceId: 'plain-src', externalId: 'lisi' });
+  people.touch(other, { valence: 0 });
+  people.merge(keep, other);
+  assert.equal(people.get(other).id, keep);
+  assert.equal(people.get(keep).source, '通讯录源 · 普通源');
+
+  assert.throws(() => people.unbind(keep, 'nobody:x'), /没绑/);
+  const { person, restored } = people.unbind(keep, other);
+  assert.equal(person.id, keep);
+  assert.equal(person.source, '通讯录源', '来源名回到自己的');
+  assert.equal(restored.id, other);
+  assert.equal(restored.name, '李四');
+  assert.equal(restored.source, '普通源');
+  assert.equal(restored.interactions, 0, '来往已经算在主身份上，拆出来的从头开始');
+  assert.equal(people.get(other).id, other, '旧身份不再解析到主身份');
+  assert.deepEqual(people.list().find((p) => p.id === keep).identities.map((x) => x.id), [keep]);
+  assert.ok(!people.suggestions().some((s) => [s.keep.id, s.other.id].includes(other)), '记成不是同一个人');
+
+  await discovery.ingestItems('plain-src', [item(40, { actor: { id: 'lisi', name: '李四' } })]);
+  assert.equal(people.get(other).interactions, 1, '从那个来源来的算拆出来的人');
+  people.remove(other);
+  people.remove(keep);
+});
+
+test('改称呼：主人改的锁定；交还给自动后来源给的称呼又能覆盖', () => {
+  const id = 'plain-src:wangwu';
+  people.ensure(id, { name: '王五', sourceId: 'plain-src', externalId: 'wangwu' });
+  people.update(id, { name: '老王' });
+  assert.equal(people.get(id).name_from, 'manual');
+  people.touch(id, { name: '王五' });
+  assert.equal(people.get(id).name, '老王', '来源盖不过主人改的');
+  people.update(id, { name: '老王', auto: true });
+  assert.notEqual(people.get(id).name_from, 'manual');
+  assert.equal(people.get(id).looked_up_at, null, '让通讯录尽快重查');
+  people.touch(id, { name: '王五' });
+  assert.equal(people.get(id).name, '王五');
+  people.ensure('owner');
+  people.update('owner', { name: '别人' });
+  assert.notEqual(people.get('owner').name, '别人', '主人的称呼跟设置走');
+  people.remove(id);
 });
 
 test('主人提到认识的人：提示词里带上 ta 是谁和最近派过的活', () => {

@@ -176,7 +176,7 @@ function renderMindPanel() {
       <div class="card-head"><h3>认识的人</h3><p>来往越多越熟，久不联系会慢慢变淡；印象每天反思时更新，来源有通讯录的每天查一次姓名和部门。外人看不到你的任何事。</p></div>
       ${suggestions.map((s) => `
         <div class="person-merge-hint">
-          <span>「${esc(s.keep.name)}」（${esc(s.keep.source || '外部')}）和「${esc(s.other.name)}」（${esc(s.other.source || '外部')}）可能是同一个人</span>
+          <span>「${esc(s.keep.name)}」（${esc(sourceTag(s.keep))}）和「${esc(s.other.name)}」（${esc(sourceTag(s.other))}）可能是同一个人</span>
           <span class="actions">
             <button type="button" class="btn xs" data-person-merge-pair="${esc(s.keep.id)}" data-from="${esc(s.other.id)}">合并</button>
             <button type="button" class="btn xs ghost" data-person-distinct="${esc(s.keep.id)}" data-other="${esc(s.other.id)}">不是</button>
@@ -189,7 +189,8 @@ function renderMindPanel() {
             <div class="person-main">
               <b>${esc(p.name)}${p.id === 'owner' ? '<span class="badge on">主人</span>' : ''}</b>
               ${p.profile && (p.profile.department || p.profile.title) ? `<small>${esc([p.profile.department, p.profile.title].filter(Boolean).join(' · '))}</small>` : ''}
-              ${p.requested || p.aliases?.length ? `<small>${[p.requested ? `派过 ${p.requested} 个活` : '', p.aliases?.length ? `合并了 ${p.aliases.length + 1} 个身份` : ''].filter(Boolean).join(' · ')}</small>` : ''}
+              ${p.requested ? `<small>派过 ${p.requested} 个活</small>` : ''}
+              ${identitiesHtml(p, { compact: true })}
               <small>${esc(p.source || (p.id === 'owner' ? '对话' : ''))}${p.source || p.id === 'owner' ? ' · ' : ''}来往 ${p.interactions} 次 · ${timeAgo(p.last_seen)} · ${familiarityText(p.familiarity)} · ${affinityText(p.affinity)}</small>
               <div class="fam"><i style="width:${Math.round(p.familiarity * 100)}%"></i></div>
               ${p.impression ? `<p class="impression">${esc(p.impression)}</p>` : ''}
@@ -221,23 +222,113 @@ export async function reflectNow(button) {
   }
 }
 
+/* ------------------------------ 身份与绑定 ------------------------------ */
+
+// 称呼是从哪来的：后面的盖前面的，主人改的谁都盖不过。
+const NAME_FROM_LABEL = { id: '来源里的 id', source: '来源给的', chat: '聊天里 ta 自己说的', directory: '通讯录', manual: '你改的' };
+
+/** 「企微 · zhangsan」：来源名 + 来源里的 id，同名的人靠它分清。 */
+function sourceTag(x) {
+  const ext = x.externalId ?? x.id?.split(':').slice(1).join(':');
+  return [x.source || '外部', ext].filter(Boolean).join(' · ');
+}
+
+const boundNote = (x) => [x.boundAt ? `${timeAgo(x.boundAt)}绑定` : '已绑定', x.name ? `那边叫「${x.name}」` : ''].filter(Boolean).join(' · ');
+const identityTitle = (x) => (x.primary ? x.id : `${x.id}\n${boundNote(x)}`);
+
+const findPerson = (id) => (state.mind?.people || []).find((p) => p.id === id);
+
+/**
+ * 这个人的身份：自己那个 + 绑进来的，每个都带来源和来源里的 id；绑进来的可以解绑。
+ * compact：列表里的一行小标签；否则是编辑框里的一张小表。
+ */
+function identitiesHtml(p, { compact = false } = {}) {
+  const ids = p.identities || [];
+  if (!ids.length) return '';
+  const unbind = (x) => `<button type="button" class="pid-unbind" data-person-unbind="${esc(p.id)}" data-alias="${esc(x.id)}" title="解绑：拆回成单独的一个人" aria-label="解绑 ${esc(sourceTag(x))}">${icon('x', 'sm')}</button>`;
+  if (compact) {
+    return `<div class="pids">${ids.map((x) => `
+      <span class="pid${x.primary ? '' : ' bound'}" title="${esc(identityTitle(x))}">
+        ${x.primary ? '' : icon('link', 'sm')}<em>${esc(x.source || '外部')}</em><code>${esc(x.externalId)}</code>${x.primary || ids.length < 2 ? '' : unbind(x)}
+      </span>`).join('')}</div>`;
+  }
+  return `<div class="pid-table" data-identities>
+    ${ids.map((x) => `
+      <div class="pid-row">
+        <span class="pid-src">${esc(x.source || '外部')}</span>
+        <code title="${esc(x.id)}">${esc(x.externalId)}</code>
+        <span class="pid-note">${x.primary ? (ids.length > 1 ? '主身份' : '') : esc(boundNote(x))}</span>
+        ${x.primary ? '' : `<button type="button" class="btn xs ghost" data-person-unbind="${esc(p.id)}" data-alias="${esc(x.id)}">解绑</button>`}
+      </div>`).join('')}
+  </div>`;
+}
+
+function nameHint(person) {
+  if (person.id === 'owner') return '主人的称呼跟着设置里的「你的称呼」走，要改去设置里改。';
+  if (person.name_from === 'manual') return '这是你改的称呼，来源和通讯录不会再覆盖它。';
+  const from = NAME_FROM_LABEL[person.name_from || 'id'] || '来源';
+  return `现在的称呼来自：${from}。改了之后以你的为准，来源和通讯录不会再覆盖。`;
+}
+
 function editPerson(id) {
-  const person = (state.mind?.people || []).find((p) => p.id === id);
+  const person = findPerson(id);
   if (!person) return;
+  const owner = person.id === 'owner';
+  const bound = (person.identities || []).length > 1;
   openDialog({
     title: `改改「${person.name}」`,
     desc: '称呼和印象都会写进她和这个人说话时的上下文。印象每天反思时也会被她自己更新。',
     body: `
-      <label class="field"><span>称呼</span><input name="name" maxlength="40" value="${esc(person.name)}" /></label>
+      ${owner ? '' : `<div class="field"><span>${bound ? `身份（绑定了 ${person.identities.length} 个，都算这一个人）` : '身份'}</span>${identitiesHtml(person)}
+        <small>${bound ? '从这些来源来的都认成 ta。绑错了点「解绑」，那个身份会拆回成单独的一个人。' : '来源名 · ta 在那个来源里的 id。同一个人在别的来源也出现时，可以用「合并」绑到一起。'}</small></div>`}
+      <label class="field"><span>称呼</span><input name="name" maxlength="40" value="${esc(person.name)}" ${owner ? 'readonly' : ''} />
+        <small data-name-hint>${esc(nameHint(person))}</small></label>
+      ${!owner && person.name_from === 'manual' ? `<label class="switch-row"><span><b>交还给自动</b><small>不再锁定你改的称呼，下次来源或通讯录给出称呼时用它们的（称呼框没改时才生效）。</small></span><input type="checkbox" class="switch" name="auto" /></label>` : ''}
       <label class="field"><span>印象</span><textarea name="impression" rows="3" maxlength="200" placeholder="一句话，比如：爱开玩笑的产品经理">${esc(person.impression || '')}</textarea></label>`,
     okText: '保存',
     onSubmit: async (values) => {
-      const data = await api(`/api/people/${encodeURIComponent(id)}`, { method: 'PATCH', body: values });
+      const body = { impression: values.impression };
+      if (!owner) body.name = values.name;
+      if (values.auto) body.auto = true;
+      const nameChanged = !owner && values.name.trim() && values.name.trim() !== person.name;
+      const data = await api(`/api/people/${encodeURIComponent(id)}`, { method: 'PATCH', body });
       state.mind = data.mind;
       changed('mind');
-      toast('改好了。');
+      toast(nameChanged ? `改好了：以后叫 ta「${data.person.name}」。` : values.auto ? '称呼交还给自动了，下次通讯录或来源更新时会换上。' : '改好了。');
     }
   });
+  // 打字时提示一下会发生什么。
+  const input = $('#dialog-body input[name="name"]');
+  input?.addEventListener('input', () => {
+    const hint = $('#dialog-body [data-name-hint]');
+    const next = input.value.trim();
+    if (!hint || owner) return;
+    hint.textContent = !next ? '称呼不能是空的，留空就不改。' : next === person.name ? nameHint(person) : `保存后叫 ta「${next}」，来源和通讯录不会再覆盖。`;
+  });
+}
+
+async function unbindIdentity(personId, aliasId) {
+  const person = findPerson(personId);
+  const alias = person?.identities?.find((x) => x.id === aliasId);
+  if (!person || !alias) return;
+  const ok = await ask({
+    title: `把「${sourceTag(alias)}」从「${person.name}」身上解绑？`,
+    message: `解绑后这个身份变回单独的一个人${alias.name ? `（叫「${alias.name}」）` : ''}，以后从${alias.source || '那个来源'}来的不再算到「${person.name}」头上，也不会再提示把他们合并。已经并到一起的聊天、记忆和派过的活分不清是哪边的，都留在「${person.name}」这里。`,
+    okText: '解绑'
+  });
+  if (!ok) return;
+  try {
+    const data = await api(`/api/people/${encodeURIComponent(personId)}/unbind`, { method: 'POST', body: { alias: aliasId } });
+    state.mind = data.mind;
+    changed('mind');
+    // 编辑框开着时就地刷新身份那一块。
+    const table = $('#dialog-body [data-identities]');
+    const fresh = findPerson(personId);
+    if (table && fresh) table.outerHTML = identitiesHtml(fresh);
+    toast(`解绑了：「${data.restored?.name || sourceTag(alias)}」现在是单独的一个人。`);
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 async function forgetPerson(id) {
@@ -262,8 +353,9 @@ function mergePerson(id) {
     desc: '同一个人在不同来源（企微、TAPD、邮件……）会被当成几个人。合并后来往、聊天、记忆、派过的活都算到一起，以后从那个来源来的也认成 ta。',
     body: `
       <label class="field"><span>并进来的人</span>
-        <select name="from">${others.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}（${esc(p.source || '外部')}）</option>`).join('')}</select>
-      </label>`,
+        <select name="from">${others.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}（${esc((p.identities || [{ id: p.id, source: p.source }]).map(sourceTag).join('，'))}）</option>`).join('')}</select>
+      </label>
+      ${(person.identities || []).length > 1 ? `<div class="field"><span>「${esc(person.name)}」已经绑定的身份</span>${identitiesHtml(person)}</div>` : ''}`,
     okText: '合并',
     onSubmit: async (values) => {
       await doMerge(id, values.from);
@@ -425,6 +517,8 @@ $('#mind-panel')?.addEventListener('click', async (event) => {
   if (forget) { forgetPerson(forget.dataset.personForget); return; }
   const merge = event.target.closest('[data-person-merge]');
   if (merge) { mergePerson(merge.dataset.personMerge); return; }
+  const unbind = event.target.closest('[data-person-unbind]');
+  if (unbind) { unbindIdentity(unbind.dataset.personUnbind, unbind.dataset.alias); return; }
   const pair = event.target.closest('[data-person-merge-pair]');
   if (pair) {
     pair.disabled = true;
@@ -437,6 +531,12 @@ $('#mind-panel')?.addEventListener('click', async (event) => {
       .then((mind) => { state.mind = mind; changed('mind'); })
       .catch((err) => toast(err.message));
   }
+});
+
+// 编辑 / 合并框里的「解绑」。
+$('#dialog-body')?.addEventListener('click', (event) => {
+  const unbind = event.target.closest('[data-person-unbind]');
+  if (unbind) unbindIdentity(unbind.dataset.personUnbind, unbind.dataset.alias);
 });
 
 let memTimer = null;

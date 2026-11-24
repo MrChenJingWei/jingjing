@@ -39,15 +39,48 @@ export function get(id) {
   return hydrate(db.prepare('SELECT * FROM people WHERE id = ?').get(resolve(id)));
 }
 
+/** 身份 id 是「来源实例:来源里的 id」；拆不开的（老数据、主人）整个当来源里的 id。 */
+export function splitId(id) {
+  const text = String(id || '');
+  const at = text.indexOf(':');
+  return at > 0 ? { sourceId: text.slice(0, at), externalId: text.slice(at + 1) } : { sourceId: null, externalId: text };
+}
+
+function aliasRows(personId) {
+  return db.prepare('SELECT * FROM people_aliases WHERE person_id = ? ORDER BY created_at').all(personId);
+}
+
+/** 这个人自己那个身份的来源名：记过就用记的；没合并过的就是 source；老数据合并过又没记的，退回来源实例 id。 */
+function originOf(person, aliases) {
+  if (person.origin) return person.origin;
+  if (!aliases.length) return person.source || '';
+  return splitId(person.id).sourceId || '';
+}
+
+/**
+ * 这个人的所有身份：自己那个在前（primary），绑进来的按绑定先后。
+ * 每个身份带来源名、来源里的 id，绑进来的还带绑定时它叫什么、什么时候绑的。
+ */
+function identitiesOf(person, aliases = aliasRows(person.id)) {
+  if (person.id === OWNER) return [];
+  const own = splitId(person.id);
+  return [
+    { id: person.id, primary: true, source: originOf(person, aliases), sourceId: own.sourceId, externalId: own.externalId },
+    ...aliases.map((a) => {
+      const parts = splitId(a.alias_id);
+      return { id: a.alias_id, primary: false, source: a.source || parts.sourceId || '', sourceId: parts.sourceId, externalId: parts.externalId, name: a.name || null, boundAt: a.created_at };
+    })
+  ];
+}
+
 export function list({ limit = 100 } = {}) {
   return db.prepare(`
-    SELECT p.*,
-      (SELECT COUNT(*) FROM tasks t WHERE t.requester = p.id) AS requested,
-      (SELECT json_group_array(alias_id) FROM people_aliases a WHERE a.person_id = p.id) AS aliases_json
+    SELECT p.*, (SELECT COUNT(*) FROM tasks t WHERE t.requester = p.id) AS requested
     FROM people p ORDER BY (p.id = ?) DESC, p.last_seen DESC LIMIT ?
   `).all(OWNER, limit).map((row) => {
-    const { aliases_json: aliasesJson, ...rest } = row;
-    return { ...hydrate(rest), aliases: JSON.parse(aliasesJson || '[]') };
+    const person = hydrate(row);
+    const aliases = aliasRows(person.id);
+    return { ...person, aliases: aliases.map((a) => a.alias_id), identities: identitiesOf(person, aliases) };
   });
 }
 
@@ -76,9 +109,9 @@ export function ensure(id, { name = '', source = '', sourceId = null, externalId
   const given = String(name || '').trim();
   const display = id === OWNER ? ownerName() : (given || id.split(':').pop());
   db.prepare(`
-    INSERT INTO people(id, name, name_from, source, source_id, external_id, first_seen, last_seen, interactions, familiarity, affinity, impression, updated_at)
-    VALUES(?,?,?,?,?,?,?,?,0,?,?,NULL,?)
-  `).run(id, display.slice(0, 40), given ? 'source' : 'id', source, sourceId, externalId, stamp, stamp,
+    INSERT INTO people(id, name, name_from, source, origin, source_id, external_id, first_seen, last_seen, interactions, familiarity, affinity, impression, updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,0,?,?,NULL,?)
+  `).run(id, display.slice(0, 40), given ? 'source' : 'id', source, source || null, sourceId, externalId, stamp, stamp,
     id === OWNER ? 0.6 : 0, id === OWNER ? 0.3 : 0, stamp);
   return get(id);
 }
@@ -138,16 +171,22 @@ export function dueForLookup({ maxAgeMs = DAY, at = Date.now(), limit = 200 } = 
   `).all(OWNER, before, limit).map(hydrate);
 }
 
+/**
+ * 主人改这个人：称呼、印象。
+ * - 改了称呼：以主人的为准（manual），之后通讯录和聊天都不再覆盖。主人的称呼跟设置走，这里不改。
+ * - auto: true 且称呼没改：把称呼交还给自动——下次来源或通讯录给的称呼就能盖过它，并让通讯录尽快重查。
+ */
 export function update(id, patch = {}) {
   const person = get(id);
   if (!person) return null;
-  const nextName = patch.name === undefined ? '' : String(patch.name || '').trim().slice(0, 40);
-  // 主人手动改的称呼最大，之后通讯录和聊天都不再覆盖。
-  const manual = nextName && nextName !== person.name;
+  const nextName = patch.name === undefined || person.id === OWNER ? '' : String(patch.name || '').trim().slice(0, 40);
+  const manual = Boolean(nextName) && nextName !== person.name;
+  const auto = !manual && patch.auto === true && person.name_from === 'manual';
   const name = manual ? nextName : person.name;
+  const nameFrom = manual ? 'manual' : auto ? 'id' : person.name_from;
   const impression = patch.impression === undefined ? person.impression : String(patch.impression || '').trim().slice(0, 200) || null;
-  db.prepare(`UPDATE people SET name = ?, name_from = ${manual ? "'manual'" : 'name_from'}, impression = ?, updated_at = ? WHERE id = ?`)
-    .run(name, impression, now(), person.id);
+  db.prepare(`UPDATE people SET name = ?, name_from = ?, impression = ?, updated_at = ?${auto ? ', looked_up_at = NULL' : ''} WHERE id = ?`)
+    .run(name, nameFrom, impression, now(), person.id);
   return get(person.id);
 }
 
@@ -193,16 +232,19 @@ export function merge(keepId, otherId) {
   const affinity = total ? (keep.affinity * keep.interactions + other.affinity * other.interactions) / total : (keep.affinity + other.affinity) / 2;
   const byName = rankOf(other.name_from) > rankOf(keep.name_from) ? other : keep;
   const lookup = !keep.profile && other.profile ? other : keep;
+  const keepAliases = aliasRows(keep.id);
+  const keepOrigin = originOf(keep, keepAliases) || null;
+  const otherOrigin = originOf(other, aliasRows(other.id)) || null;
   const stamp = now();
   const keepSession = `ext:${keep.id}`;
   const otherSession = `ext:${other.id}`;
   transaction(() => {
     db.prepare(`
-      UPDATE people SET name = ?, name_from = ?, source = ?, source_id = ?, external_id = ?, profile = ?, looked_up_at = ?,
+      UPDATE people SET name = ?, name_from = ?, source = ?, origin = ?, source_id = ?, external_id = ?, profile = ?, looked_up_at = ?,
         first_seen = ?, last_seen = ?, interactions = ?, familiarity = ?, affinity = ?, impression = ?, updated_at = ?
       WHERE id = ?
     `).run(
-      byName.name, byName.name_from || 'id', sourceLabels(keep.source, other.source),
+      byName.name, byName.name_from || 'id', sourceLabels(keep.source, other.source), keepOrigin,
       lookup.source_id, lookup.external_id, lookup.profile ? JSON.stringify(lookup.profile) : null, lookup.looked_up_at,
       keep.first_seen < other.first_seen ? keep.first_seen : other.first_seen,
       keep.last_seen > other.last_seen ? keep.last_seen : other.last_seen,
@@ -224,11 +266,47 @@ export function merge(keepId, otherId) {
     db.prepare('UPDATE memories SET subject = ? WHERE subject = ?').run(keep.id, other.id);
     db.prepare('UPDATE tasks SET requester = ? WHERE requester = ?').run(keep.id, other.id);
     db.prepare('UPDATE people_aliases SET person_id = ? WHERE person_id = ?').run(keep.id, other.id);
-    db.prepare('INSERT OR REPLACE INTO people_aliases(alias_id, person_id, created_at) VALUES(?,?,?)').run(other.id, keep.id, stamp);
+    db.prepare('INSERT OR REPLACE INTO people_aliases(alias_id, person_id, created_at, name, name_from, source) VALUES(?,?,?,?,?,?)')
+      .run(other.id, keep.id, stamp, other.name, other.name_from || 'id', otherOrigin);
     db.prepare('DELETE FROM people_distinct WHERE a = ? OR b = ?').run(other.id, other.id);
     db.prepare('DELETE FROM people WHERE id = ?').run(other.id);
   });
   return get(keep.id);
+}
+
+/**
+ * 解绑：把绑进 personId 的 aliasId 拆出来，照绑定时记下的样子（称呼、来源）重新当成一个人，
+ * 以后从那个来源来的就算 ta，不再算到 personId 头上；这一对记成「不是同一个人」，不再提示合并。
+ * 合并时已经搬到一起的聊天、记忆、派过的活分不清是哪个身份的，都留在 personId 名下。
+ * 查通讯录用的正是这个身份时，改回 personId 自己的身份，资料清掉重查。
+ */
+export function unbind(personId, aliasId) {
+  const person = get(personId);
+  if (!person) throw new Error('没有这个人');
+  const row = db.prepare('SELECT * FROM people_aliases WHERE alias_id = ? AND person_id = ?').get(String(aliasId || ''), person.id);
+  if (!row) throw new Error('这个身份没绑在 ta 身上');
+  const parts = splitId(row.alias_id);
+  const stamp = now();
+  transaction(() => {
+    db.prepare('DELETE FROM people_aliases WHERE alias_id = ?').run(row.alias_id);
+    const given = String(row.name || '').trim();
+    db.prepare(`
+      INSERT INTO people(id, name, name_from, source, origin, source_id, external_id, first_seen, last_seen, interactions, familiarity, affinity, impression, updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,0,0,0,NULL,?)
+    `).run(row.alias_id, (given || parts.externalId).slice(0, 40), given ? (row.name_from || 'source') : 'id', row.source || '', row.source || null,
+      parts.sourceId, parts.externalId, row.created_at, row.created_at, stamp);
+    const rest = aliasRows(person.id);
+    const origin = originOf(person, [row, ...rest]) || null;
+    const usedAlias = person.source_id && `${person.source_id}:${person.external_id}` === row.alias_id;
+    const own = splitId(person.id);
+    db.prepare(`
+      UPDATE people SET source = ?, origin = ?, updated_at = ?${usedAlias ? ', source_id = ?, external_id = ?, profile = NULL, looked_up_at = NULL' : ''} WHERE id = ?
+    `).run(sourceLabels(origin, ...rest.map((a) => a.source || splitId(a.alias_id).sourceId)), origin, stamp,
+      ...(usedAlias ? [own.sourceId, own.sourceId ? own.externalId : null] : []), person.id);
+    const [x, y] = pairKey(person.id, row.alias_id);
+    db.prepare('INSERT OR IGNORE INTO people_distinct(a, b, created_at) VALUES(?,?,?)').run(x, y, stamp);
+  });
+  return { person: get(person.id), restored: get(row.alias_id) };
 }
 
 /** 主人说这两个不是同一个人：以后不再提示。 */
@@ -272,7 +350,8 @@ export function suggestions({ limit = 10 } = {}) {
         // 留下有通讯录资料、来往多的那个当主身份。
         const keep = (q.profile && !p.profile) || (!!q.profile === !!p.profile && q.interactions > p.interactions) ? q : p;
         const other = keep === p ? q : p;
-        out.push({ keep: { id: keep.id, name: keep.name, source: keep.source }, other: { id: other.id, name: other.name, source: other.source }, name: keep.name });
+        const brief = (x) => ({ id: x.id, name: x.name, source: x.source, externalId: splitId(x.id).externalId });
+        out.push({ keep: brief(keep), other: brief(other), name: keep.name });
         if (out.length >= limit) return out;
       }
     }

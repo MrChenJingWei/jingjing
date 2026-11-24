@@ -696,6 +696,18 @@ async function handleRequest(req, res) {
         return fail(res, 400, err.message);
       }
     }
+    // 解绑：把绑进 :id 的身份 alias 拆出来，重新当成一个人。
+    const unbindMatch = pathname.match(/^\/api\/people\/([^/]+)\/unbind$/);
+    if (unbindMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      try {
+        const result = people.unbind(decodeURIComponent(unbindMatch[1]), String(body.alias || ''));
+        bus.emit('mind/updated', { people: true });
+        return json(res, 200, { ...result, mind: mind.overview() });
+      } catch (err) {
+        return fail(res, 400, err.message);
+      }
+    }
     // 主人说这两个不是同一个人：不再提示合并。
     if (req.method === 'POST' && pathname === '/api/people/distinct') {
       const body = await readBody(req);
