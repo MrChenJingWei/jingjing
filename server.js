@@ -200,7 +200,12 @@ function revealCommand(dir) {
 }
 
 async function serveStatic(req, res, pathname) {
-  let rel = decodeURIComponent(pathname);
+  let rel;
+  try {
+    rel = decodeURIComponent(pathname);
+  } catch {
+    return fail(res, 400, '请求地址不合法');
+  }
   if (rel === '/') rel = '/index.html';
   const full = path.join(PUBLIC_DIR, rel);
   if (!full.startsWith(PUBLIC_DIR + path.sep) && full !== path.join(PUBLIC_DIR, 'index.html')) {
@@ -218,11 +223,13 @@ async function serveStatic(req, res, pathname) {
     'Content-Length': stat.size,
     'Cache-Control': ext === '.html' || ext === '.js' || ext === '.css' ? 'no-cache' : 'public, max-age=3600'
   });
-  fs.createReadStream(file).pipe(res);
+  // 读到一半出错（比如升级时文件被换掉）：断开这个连接就好，没有监听的 error 事件会让整个进程退出。
+  fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
 }
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+async function handleRequest(req, res) {
+  // 只取路径和查询参数，不拿 Host 头拼地址：Host 是客户端随便填的，填个 `[` 就能让 new URL 抛异常。
+  const url = new URL(req.url, 'http://localhost');
   const { pathname } = url;
 
   if (!pathname.startsWith('/api/')) {
@@ -1175,9 +1182,21 @@ const server = http.createServer(async (req, res) => {
     return fail(res, 404, '接口不存在');
   } catch (err) {
     console.error('[api]', req.method, pathname, err.message);
-    const status = Number(err.statusCode) || (err.message === '请求体不是合法 JSON' ? 400 : 500);
+    const badRequest = err instanceof URIError || err.message === '请求体不是合法 JSON';
+    const status = Number(err.statusCode) || (badRequest ? 400 : 500);
     return fail(res, status, err);
   }
+}
+
+// 上面的 try 只包住 /api 的业务逻辑；解析地址、静态文件、配对校验都在它前面，而且不用配对就能走到。
+// 这里兜住所有漏出来的异常：一个畸形请求最多换回一个错误码，不会让整个服务退出。
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch((err) => {
+    console.error('[http]', req.method, req.url, err?.message || err);
+    if (res.headersSent) return res.destroy();
+    const badRequest = err instanceof URIError || err?.code === 'ERR_INVALID_URL';
+    fail(res, badRequest ? 400 : 500, badRequest ? '请求地址不合法' : '服务内部错误');
+  });
 });
 
 seedIfEmpty();
