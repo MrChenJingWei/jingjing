@@ -311,9 +311,17 @@ async function unbindIdentity(personId, aliasId) {
   const person = findPerson(personId);
   const alias = person?.identities?.find((x) => x.id === aliasId);
   if (!person || !alias) return;
+  const carried = (alias.carries || []).map((id) => person.identities.find((x) => x.id === id)).filter(Boolean);
+  const who = alias.name ? `「${alias.name}」` : 'ta';
   const ok = await ask({
     title: `把「${sourceTag(alias)}」从「${person.name}」身上解绑？`,
-    message: `解绑后这个身份变回单独的一个人${alias.name ? `（叫「${alias.name}」）` : ''}，以后从${alias.source || '那个来源'}来的不再算到「${person.name}」头上，也不会再提示把他们合并。已经并到一起的聊天、记忆和派过的活分不清是哪边的，都留在「${person.name}」这里。`,
+    message: [
+      `解绑后这个身份变回单独的一个人${alias.name ? `（叫「${alias.name}」）` : ''}，以后从${alias.source || '那个来源'}来的不再算到「${person.name}」头上，也不会再提示把他们合并。`,
+      alias.restorable
+        ? `合并前${who}的来往、熟悉度、印象、认识的时间，和当时并过来的聊天、记忆、派过的活都会还给${who}；合并之后新来的分不清是谁的，留在「${person.name}」这里。`
+        : `这个身份是在旧版本里绑定的，当时没记下合并前的情况：${who}会从头开始，已经并到一起的聊天、记忆和派过的活都留在「${person.name}」这里。`,
+      carried.length ? `跟着${who}一起绑进来的 ${carried.map((x) => `「${sourceTag(x)}」`).join('、')} 也会一起解绑。` : ''
+    ].filter(Boolean).join('\n\n'),
     okText: '解绑'
   });
   if (!ok) return;
@@ -325,7 +333,7 @@ async function unbindIdentity(personId, aliasId) {
     const table = $('#dialog-body [data-identities]');
     const fresh = findPerson(personId);
     if (table && fresh) table.outerHTML = identitiesHtml(fresh);
-    toast(`解绑了：「${data.restored?.name || sourceTag(alias)}」现在是单独的一个人。`);
+    toast(`解绑了：「${data.restored?.name || sourceTag(alias)}」现在是单独的一个人${data.full ? '，合并前的记录都还给 ta 了' : ''}。`);
   } catch (err) {
     toast(err.message);
   }

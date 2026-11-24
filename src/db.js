@@ -486,6 +486,8 @@ ensureColumn('people_aliases', 'name', 'TEXT');
 ensureColumn('people_aliases', 'name_from', 'TEXT');
 ensureColumn('people_aliases', 'source', 'TEXT');
 ensureColumn('people', 'origin', 'TEXT');
+// 合并时的快照（JSON）：两边合并前后的样子、搬过来的聊天 / 记忆 / 活 / 别名，解绑时照着还原。
+ensureColumn('people_aliases', 'snapshot', 'TEXT');
 ensureColumn('tasks', 'requester', 'TEXT');
 
 export const now =() => new Date().toISOString();

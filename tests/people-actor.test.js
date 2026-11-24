@@ -197,13 +197,52 @@ test('解绑：拆回成单独的一个人，以后从那个来源来的算 ta�
   assert.equal(restored.id, other);
   assert.equal(restored.name, '李四');
   assert.equal(restored.source, '普通源');
-  assert.equal(restored.interactions, 0, '来往已经算在主身份上，拆出来的从头开始');
+  assert.equal(restored.interactions, 1, '合并前的来往还给 ta');
   assert.equal(people.get(other).id, other, '旧身份不再解析到主身份');
   assert.deepEqual(people.list().find((p) => p.id === keep).identities.map((x) => x.id), [keep]);
   assert.ok(!people.suggestions().some((s) => [s.keep.id, s.other.id].includes(other)), '记成不是同一个人');
 
   await discovery.ingestItems('plain-src', [item(40, { actor: { id: 'lisi', name: '李四' } })]);
-  assert.equal(people.get(other).interactions, 1, '从那个来源来的算拆出来的人');
+  assert.equal(people.get(other).interactions, 2, '从那个来源来的算拆出来的人');
+  people.remove(other);
+  people.remove(keep);
+});
+
+test('解绑还原合并前的样子：来往、认识的时间、印象、聊天、记忆、派过的活都还给 ta，主身份退回原样', async () => {
+  const keep = 'dir-src:zhaoliu';
+  const other = 'plain-src:zl';
+  people.ensure(keep, { name: '赵六', source: '通讯录源', sourceId: 'dir-src', externalId: 'zhaoliu' });
+  people.touch(keep, { valence: 0.5 });
+  people.update(keep, { impression: '靠谱的后端' });
+  const { details } = await discovery.ingestItems('plain-src', [{ externalId: 'zl-t1', title: '帮我查下支付回调', content: '支付回调失败', actor: { id: 'zl', name: '小赵' } }], { override: { worker: 'fake-text' } });
+  const taskId = details[0].taskId;
+  conversation.ensureSession(`ext:${other}`, { personId: other });
+  conversation.appendMessage({ sessionId: `ext:${other}`, role: 'user', text: '在吗' });
+  memory.remember({ text: '小赵在做支付', layer: 'episodic', domain: 'persona', subject: other });
+  db.prepare("UPDATE people SET first_seen = '2026-01-01T00:00:00.000Z', impression = '新来的' WHERE id = ?").run(other);
+  const keepBefore = people.get(keep);
+  const otherBefore = people.get(other);
+
+  people.merge(keep, other);
+  assert.equal(people.get(keep).interactions, keepBefore.interactions + otherBefore.interactions);
+  assert.equal(people.get(keep).first_seen, '2026-01-01T00:00:00.000Z');
+  const alias = people.list().find((p) => p.id === keep).identities.find((x) => x.id === other);
+  assert.equal(alias.restorable, true);
+
+  const { person, restored, full } = people.unbind(keep, other);
+  assert.ok(full);
+  assert.equal(restored.name, '小赵');
+  assert.equal(restored.source, otherBefore.source, '来源名还在');
+  assert.equal(restored.interactions, otherBefore.interactions);
+  assert.equal(restored.first_seen, '2026-01-01T00:00:00.000Z');
+  assert.equal(restored.impression, '新来的');
+  assert.equal(db.prepare('SELECT requester FROM tasks WHERE id = ?').get(taskId).requester, other, '派过的活还回去');
+  assert.equal(conversation.recentMessages(`ext:${other}`).length, 1, '聊天还回去');
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM memories WHERE subject = ?').get(other).c, 1, '记忆还回去');
+  assert.equal(person.interactions, keepBefore.interactions, '主身份的来往减回去');
+  assert.equal(person.first_seen, keepBefore.first_seen, '主身份认识的时间退回去');
+  assert.equal(person.impression, '靠谱的后端');
+  assert.equal(person.source, '通讯录源');
   people.remove(other);
   people.remove(keep);
 });
