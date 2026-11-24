@@ -480,6 +480,12 @@ db.exec(`
     PRIMARY KEY (a, b)
   );
 `);
+// 绑定时记下被并进来的那个身份当时的样子（称呼、来源、来源里的 id），解绑时照着还原成一个人；
+// people.origin：这个人自己那个身份的来源名（合并后 source 会变成几个来源连在一起）。
+ensureColumn('people_aliases', 'name', 'TEXT');
+ensureColumn('people_aliases', 'name_from', 'TEXT');
+ensureColumn('people_aliases', 'source', 'TEXT');
+ensureColumn('people', 'origin', 'TEXT');
 ensureColumn('tasks', 'requester', 'TEXT');
 
 export const now =() => new Date().toISOString();
