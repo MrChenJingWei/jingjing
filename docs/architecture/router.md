@@ -38,6 +38,7 @@
 2. **先看工作流程**：不是在提问（`？` / `吗` 结尾，或启发式判断为记东西、问进度、写插件）时，`workflows.matchWorkflow(text)` 命中就直接定为 `task`，跳过模型。
 3. **判断意图**（没命中流程时）：
    - 模型支持工具调用：`routeWithTools()` 一次调用完成「判断 + 回答」。工具有 `create_task`、`create_plugin`、`remember`、`show_status`、`recall`；不调工具就是闲聊，回复直接拿来用，不用再调一次模型。
+     `create_task` 必须给 `brief`：交给 Worker 的完整指令。Worker 看不到对话，「你让 deepseek 干」这种接着前文说的话，要由模型把前文要做的事写进 `brief`。派任务时 `buildChatTaskPrompt()` 用 `brief` 当正文、附上主人原话；没有 `brief`（两步判断、演示模式）或者原话很短（≤ 30 字）时，再用单独一行 `---` 隔开，附上两小时内最近 6 条对话（每条 ≤ 500 字，总长 ≤ 2500 字，从最近的往前装）。
    - 不支持或调用失败：退回 `llm.classify()` 两步判断；演示模式用 `heuristicClassify()`。
 4. **校验模型的选择**：
    - `evidence`（模型引用的原话）在原文里找不到 → 丢掉它选的 Worker；

@@ -207,6 +207,50 @@ function chatTurns(history, clean) {
   return conversation.asTurns([...history, { role: 'user', text: clean }], { maxChars: 600 });
 }
 
+/*
+ * 交给 Worker 的指令。Worker 看不到对话：「你让 deepseek 干」这种接着前文说的话原样交过去，它不知道要干什么。
+ * - 模型给了 brief（结合前文写成的完整指令）就用它当正文，后面附上主人的原话；
+ * - 没有 brief（两步判断、演示模式、模型没填），或者这句话很短、多半在指前文时，再附上最近的对话，
+ *   标明只作参考，免得 Worker 把旧话题当成要做的事。
+ */
+const CONTEXT_MESSAGES = 6;
+const CONTEXT_MSG_CHARS = 500;
+const CONTEXT_TOTAL_CHARS = 2500;
+const CONTEXT_WINDOW_MS = 2 * 60 * 60 * 1000;
+const SHORT_REQUEST = 30;
+
+export function buildChatTaskPrompt({ clean, brief = '', history = [], at = Date.now() }) {
+  const said = String(clean || '').trim();
+  const full = String(brief || '').trim().slice(0, 4000);
+  // 模型照抄原话也算给了 brief：说明这句话自己就说清楚了，不用再附对话。
+  const hasBrief = full.length >= 8;
+  const rewritten = hasBrief && full !== said;
+  const parts = [rewritten ? full : said];
+  if (rewritten) parts.push(`主人的原话：${said}`);
+  if (!hasBrief || said.length <= SHORT_REQUEST) {
+    const lines = [];
+    let total = 0;
+    const recent = history
+      .filter((m) => ['user', 'assistant'].includes(m.role) && String(m.text || '').trim())
+      .filter((m) => !m.created_at || at - new Date(m.created_at).getTime() <= CONTEXT_WINDOW_MS)
+      .slice(-CONTEXT_MESSAGES);
+    // 从最近的往前装，超了总长就停：离这句话越近越要紧。
+    for (const m of [...recent].reverse()) {
+      const text = String(m.text).trim();
+      const line = `${m.role === 'user' ? '主人' : '静静'}：${text.length > CONTEXT_MSG_CHARS ? `${text.slice(0, CONTEXT_MSG_CHARS)}…` : text}`;
+      if (total + line.length > CONTEXT_TOTAL_CHARS) break;
+      lines.unshift(line);
+      total += line.length;
+    }
+    // 单独一行 --- 隔开：Worker 认得这条分隔线（问答 Worker 只检查分隔线前的指令），前文不会被当成要做的事。
+    const head = hasBrief
+      ? '派这个任务之前的对话（只作参考，要做的事以上面为准）：'
+      : '主人上面这句话是接着下面这段对话说的，要做的事、范围和已经说定的内容都在这里面：';
+    if (lines.length) parts.push(`---\n${head}\n${lines.join('\n')}`);
+  }
+  return parts.join('\n\n');
+}
+
 function routerTools(workers, flows, capabilities = []) {
   const workerIds = workers.map((w) => w.id);
   const flowIds = flows.map((f) => f.id);
@@ -218,12 +262,13 @@ function routerTools(workers, flows, capabilities = []) {
   return [
     fn('create_task', '用户明确要求你去做一件具体的事（写、做、整理、修复、生成、处理、执行……）时调用，把它变成任务交给 Worker。闲聊和咨询不要调用。', {
       title: { type: 'string', description: '不超过 24 字的任务名，不要带「帮我」之类的客套词' },
+      brief: { type: 'string', description: '交给 Worker 的完整指令。Worker 看不到这段对话：用户这句话在指前文（「这个」「你让 xx 干」「就按刚才说的」）时，把前文里要做的事、范围、约束和已经说定的内容写进来，写成一段单独看也能照着做的话；这句话本身已经说清楚时照抄即可' },
       worker: { type: 'string', description: '最合适、开销最低的 Worker id', ...(workerIds.length ? { enum: workerIds } : {}) },
       ...(flowIds.length ? { workflow: { type: 'string', description: '请求明显属于某个工作流程时填它的 id', enum: flowIds } } : {}),
       ...(capabilityIds.length ? { capability: { type: 'string', description: '这件事需要的具体能力 id（比如 git、docker），不确定就留空', enum: capabilityIds } } : {}),
       evidence: { type: 'string', description: '用户原话里能证明这个选择的片段，必须逐字引用；没有明确依据就留空' },
       confidence: { type: 'number', description: '你对这个选择有多确定，0–1' }
-    }, ['title']),
+    }, ['title', 'brief']),
     fn('create_plugin', '用户要你给静静写一个新的插件时调用：任务来源插件（接收 / 拉取外部消息、事件）或 Worker 插件（执行任务）。', {
       kind: { type: 'string', enum: ['source', 'worker'], description: 'source：来源插件；worker：Worker 插件' }
     }, ['kind']),
@@ -263,6 +308,7 @@ async function routeWithTools(clean, { sessionId, history, settings }) {
         intent: 'task',
         reason: 'model',
         title: args.title ? String(args.title).slice(0, 30) : makeTitle(clean),
+        brief: args.brief ? String(args.brief).slice(0, 4000) : '',
         worker: workers.some((w) => w.id === args.worker) ? args.worker : null,
         workflow: flows.some((f) => f.id === args.workflow) ? args.workflow : null,
         capability: args.capability ? String(args.capability) : null,
@@ -435,7 +481,7 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     const title = decision.title || makeTitle(clean);
     task = scheduler.createTask({
       title,
-      prompt: clean + workflows.promptSection(workflow),
+      prompt: buildChatTaskPrompt({ clean, brief: decision.brief, history }) + workflows.promptSection(workflow),
       worker,
       cwd,
       origin: 'chat',
