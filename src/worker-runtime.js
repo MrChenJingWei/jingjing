@@ -248,6 +248,40 @@ export function runCommand(cmd, args = [], { cwd, signal, onOutput, timeoutMs = 
   });
 }
 
+/*
+ * 任务结论（outcome）：done 只代表这一轮跑完了，不代表事情做完了。
+ * Worker 可以在结果里直接给 outcome，也可以让自己的 Agent 在输出最后单独写一行 [[OUTCOME]] <结论>，
+ * 宿主在 runWorker 里统一认出来、从结果里去掉。没给就留空，由列表从结果的收尾推断要不要主人接着处理。
+ */
+export const TASK_OUTCOMES = ['completed', 'proposed', 'delivered', 'partial', 'blocked'];
+
+export const OUTCOME_GUIDE = [
+  '做完这一轮后，如果还有要主人定的事——方案等确认、列了几个可选的下一步、只做完一部分、卡在外部条件上——',
+  '在最后单独输出一行 [[OUTCOME]] proposed（方案或下一步等主人确认）、partial（只做完一部分）或 blocked（卡住了，等主人决定）；',
+  '事情已经完全做完、不需要主人再做什么，输出 [[OUTCOME]] completed。这一行只放标记，不要加别的字。'
+].join('\n');
+
+const OUTCOME_LINE = /^[ \t]*\[\[OUTCOME\]\][ \t]*([a-z_]+)[ \t]*$/gm;
+
+/** 认出输出里的 [[OUTCOME]] 标记：返回 { outcome, text（去掉标记行） }；没有或不认识的结论返回 null。 */
+export function extractOutcome(text) {
+  const source = String(text || '');
+  const found = [...source.matchAll(OUTCOME_LINE)];
+  if (!found.length) return null;
+  const outcome = found[found.length - 1][1];
+  const cleaned = source.replace(OUTCOME_LINE, '').replace(/\n{3,}/g, '\n\n').trim();
+  return { outcome: TASK_OUTCOMES.includes(outcome) ? outcome : null, text: cleaned };
+}
+
+/** done 的结果：结果对象里的 outcome 优先，其次是输出里的标记；标记行总是从给主人看的结果里去掉。 */
+export function withOutcome(result) {
+  if (!result || result.status !== 'done') return result;
+  const parsed = extractOutcome(result.summary);
+  const declared = TASK_OUTCOMES.includes(result.outcome) ? result.outcome : parsed?.outcome || null;
+  const { outcome: _drop, ...rest } = result;
+  return { ...rest, ...(parsed ? { summary: parsed.text } : {}), ...(declared ? { outcome: declared } : {}) };
+}
+
 /**
  * 交给编码 Agent（Claude Code、Codex……）的「怎么停下来问主人」约定。
  * 不告诉它，它在结果里随口问一句「要我接着改吗？」，任务就直接算完成了。
@@ -256,7 +290,8 @@ export const APPROVAL_GUIDE = [
   '（静静的约定）如果做到一半必须由主人决定才能继续（选方案、确认有风险的操作、缺关键信息），',
   '不要猜，也不要把问题埋在结果里：把已经做完的部分和问题写清楚，最后单独输出一行：',
   '[[APPROVAL]] {"question":"要问的问题","options":["选项A","选项B"]}',
-  '主人回答后会接着这次的上下文继续。不需要主人决定时不要输出这个标记，直接把事情做完。'
+  '主人回答后会接着这次的上下文继续。不需要主人决定时不要输出这个标记，直接把事情做完。',
+  OUTCOME_GUIDE
 ].join('\n');
 
 /** 解析输出末尾的 [[APPROVAL]] {"question":"…","options":[…]} 标记。 */

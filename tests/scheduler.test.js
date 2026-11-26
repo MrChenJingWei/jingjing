@@ -232,3 +232,19 @@ test('等拍板的任务转为只跟踪：审批作废', async () => {
   assert.equal(scheduler.getApproval(approvalId).status, 'expired');
   assert.equal(scheduler.getTask(task.id).approval_id, null);
 });
+
+test('结论：Worker 用 [[OUTCOME]] 标记给出结论，记下并从结果里去掉；接着做时清空', async () => {
+  fakeWorker('outcome-worker', {}, async () => ({ status: 'done', summary: '方案写好了，等你确认。\n[[OUTCOME]] proposed' }));
+  const task = scheduler.createTask({ title: '出方案', prompt: 'x', worker: 'outcome-worker' });
+  await waitFor(() => status(task.id) === 'done', '完成');
+  const done = scheduler.getTask(task.id);
+  assert.equal(done.outcome, 'proposed');
+  assert.equal(done.result, '方案写好了，等你确认。');
+  assert.ok(scheduler.taskEvents(task.id).some((e) => e.type === 'task/outcome' && e.data.by === 'worker'));
+
+  fakeWorker('outcome-worker', {}, async () => ({ status: 'done', summary: '按确认的方案做完了。' }));
+  scheduler.continueTask(task.id, '就按方案一');
+  assert.equal(scheduler.getTask(task.id).outcome, null, '新的一轮开始，上一轮的结论作废');
+  await waitFor(() => status(task.id) === 'done', '第二轮完成');
+  assert.equal(scheduler.getTask(task.id).outcome, null);
+});

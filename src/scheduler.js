@@ -1,4 +1,5 @@
 import { db, now, uid, getSettings, rowTask, rowApproval, event, transaction } from './db.js';
+import { TASK_OUTCOMES as OUTCOMES } from './worker-runtime.js';
 import { bus } from './events.js';
 import * as memory from './memory.js';
 import * as lifecycle from './lifecycle.js';
@@ -479,9 +480,13 @@ async function execute(task) {
     // done
     outcome = 'done';
     const summary = result.summary || '完成';
+    // Worker 给了结论（比如 proposed：方案等你确认）就记下；没给就留空，由列表从结果推断。
+    const declared = result.outcome || null;
+    if (declared) event(task.id, 'task/outcome', { from: task.outcome || null, to: declared, by: 'worker' });
     finalize(task.id, 'done', {
       result: summary,
       error: null,
+      outcome: declared,
       recoveries: 0,
       tokens: task.tokens + (result.tokens || 0),
       cost: (task.cost || 0) + (result.cost || 0),
@@ -719,7 +724,7 @@ export function approve(approvalId, choice, { by = 'user', answer = '' } = {}) {
   return done(getTask(task.id));
 }
 
-export const TASK_OUTCOMES = ['completed', 'proposed', 'delivered', 'partial', 'blocked'];
+export const TASK_OUTCOMES = OUTCOMES;
 
 export function updateTask(taskId, patch = {}) {
   const task = getTask(taskId);
@@ -772,6 +777,7 @@ export function retryTask(taskId) {
       approval_id: null,
       error: null,
       result: null,
+      outcome: null,
       progress: '重新排队…',
       started_at: null,
       finished_at: null,
@@ -930,6 +936,7 @@ export function continueTask(taskId, text, { by = 'user' } = {}) {
       recoveries: 0,
       approval_id: null,
       error: null,
+      outcome: null,
       progress: '收到，接着做…',
       started_at: null,
       finished_at: null,

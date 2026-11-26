@@ -9,7 +9,7 @@ import { icon, openDialog, ask, openPopover, openMenu, closePopover, catMark } f
 import { switchView, renderActivity } from './shell.js';
 import * as classify from './classify.js';
 import {
-  DIMENSIONS, SECTIONS, SOURCE_STATUS_LABEL, dimension, sectionOf, groupKeyOf, endsWithQuestion
+  DIMENSIONS, SECTIONS, SOURCE_STATUS_LABEL, dimension, sectionOf, groupKeyOf, endsWithQuestion, awaitingReply, OUTCOMES_NEEDING_YOU
 } from './task-views.js';
 
 /* ------------------------------ 小部件 -------------------------------- */
@@ -480,12 +480,14 @@ function chip(text, tone) {
 
 /** 行的第二行：尽量是有颜色的小标签和进度条，只有等你回答的问题保留成一句话。 */
 function rowLine(t) {
-  const asks = t.status === 'done' && !t.outcome && endsWithQuestion(t.result);
+  const ask = t.status === 'done' && (!t.outcome || OUTCOMES_NEEDING_YOU.has(t.outcome)) ? awaitingReply(t.result) : '';
   const parts = [srcChip(t)];
   if (t.status === 'waiting_approval') {
     parts.push(`<span class="trow-ask">${esc((approvalFor(t)?.question || '等你拍板').slice(0, 120))}</span>`);
-  } else if (asks) {
-    parts.push(chip('在问你', 'warm'), `<span class="trow-ask">${esc(String(t.result || '').split('\n').map((l) => l.trim()).filter(Boolean).pop().slice(0, 120))}</span>`);
+  } else if (t.status === 'done' && t.outcome && OUTCOMES_NEEDING_YOU.has(t.outcome)) {
+    parts.push(chip(OUTCOME_LABEL[t.outcome], 'warm'), ask ? `<span class="trow-ask">${esc(ask.slice(0, 120))}</span>` : '');
+  } else if (ask) {
+    parts.push(chip('等你定', 'warm'), `<span class="trow-ask">${esc(ask.slice(0, 120))}</span>`);
   } else if (t.status === 'running') {
     parts.push(`<span class="tprog" title="${esc(t.progress || '执行中')}"><i></i></span>`);
   } else if (t.status === 'failed') {

@@ -71,6 +71,7 @@ export async function execute(task, ctx) {
     '需要用户拍板才能继续时，把问题写在最后，并单独输出一行：',
     '[[APPROVAL]] {"question":"要问的问题","options":["选项A","选项B"]}',
     '否则不要输出这个标记。',
+    ctx.outcomeGuide || '',
     '',
     '你可以参考的长期记忆：',
     memBlock,

@@ -1,11 +1,21 @@
 // 任务列表的「分组方式」：同一批任务按状态、来源、外部状态、执行者、时间分成几段。
 // 这里只管怎么分、怎么排、每段叫什么；行和段头怎么画在 tasks.js。按归类分组沿用 classify.js 的渲染。
 import { state, workerLabel, workerGlyph } from './core.js';
+import { awaitingReply, endsWithQuestion } from './reply-detect.js';
 
-/** 结果最后一句是在问人：提示主人可以直接回答。 */
-export function endsWithQuestion(text) {
-  const last = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean).pop() || '';
-  return /[?？]\s*[)）*_`]*$|吗[。.]?$/.test(last);
+export { awaitingReply, endsWithQuestion };
+
+// 这些结论本身就是「等你」：方案待确认、只做完一部分、卡住了等你决定。
+export const OUTCOMES_NEEDING_YOU = new Set(['proposed', 'partial', 'blocked']);
+
+/**
+ * 做完一轮后还要不要主人接着处理：Worker 或主人给了结论就按结论；
+ * 没给结论时看结果的收尾是不是在等回话（问了问题、给了可选的下一步、留了要定的事）。
+ */
+export function needsYou(task) {
+  if (task.status !== 'done') return false;
+  if (task.outcome) return OUTCOMES_NEEDING_YOU.has(task.outcome);
+  return endsWithQuestion(task.result);
 }
 
 export const SOURCE_STATUS_LABEL = {
@@ -42,7 +52,7 @@ export function sourceName(key) {
 export const SECTIONS = [
   {
     id: 'attention', label: '要你处理', tone: 'warm', glyph: 'waiting_approval',
-    test: (t) => t.status === 'waiting_approval' || t.status === 'failed' || (t.status === 'done' && !t.outcome && endsWithQuestion(t.result)),
+    test: (t) => t.status === 'waiting_approval' || t.status === 'failed' || needsYou(t),
     rank: (t) => (t.status === 'waiting_approval' ? 0 : t.status === 'failed' ? 1 : 2)
   },
   { id: 'doing', label: '在做', tone: 'run', glyph: 'running', test: (t) => ['running', 'queued'].includes(t.status), rank: (t) => (t.status === 'running' ? 0 : 1) },

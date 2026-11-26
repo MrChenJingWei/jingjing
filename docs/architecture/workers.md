@@ -90,10 +90,13 @@
 { status: 'done' | 'failed' | 'cancelled' | 'needs_approval',
   summary: '给主人看的结果',
   approval: { question, options, custom },   // needs_approval 时必填 question
+  outcome: 'completed' | 'proposed' | 'partial' | 'blocked' | 'delivered',  // 可选，只对 done 有用
   sessionId, tokens, cost, retryable }
 ```
 
-`normalizeResult()` 校验：未知状态、`needs_approval` 没带问题都会变成失败。插件抛的异常一律转成 `failed`，被 abort 的转成 `cancelled`，不会抛到调度器。
+`normalizeResult()` 校验：未知状态、`needs_approval` 没带问题都会变成失败。
+
+**结论（outcome）**：`done` 只代表这一轮跑完了。事情还要主人接着定时（方案等确认、给了可选的下一步、只做完一部分、卡住了），带上 `outcome`；任务页会把 `proposed / partial / blocked` 放进「要你处理」。交给 Agent 的 Worker 可以不自己判断：`ctx.approvalGuide`（或单独的 `ctx.outcomeGuide`）已经告诉 Agent 在输出最后单独写一行 `[[OUTCOME]] proposed`，宿主在 `normalizeResult()` 里认出来、从 `summary` 里去掉，结果对象里的 `outcome` 优先。都没给时结论留空，任务页从结果的收尾推断（问句、主动提出下一步、请主人定的说法；客套话不算）。新的一轮（重试、接着做）开始时清空上一轮的结论。插件抛的异常一律转成 `failed`，被 abort 的转成 `cancelled`，不会抛到调度器。
 
 ## 执行方式
 

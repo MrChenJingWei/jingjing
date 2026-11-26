@@ -17,7 +17,7 @@ import { chat, demoTaskOutput, llmMode } from './llm.js';
 import { capabilityCatalog, capabilityLabels, normalizeCapabilityIds } from './capabilities.js';
 import { normalizeAliases } from './routing-signals.js';
 import { pickWorker } from './worker-routing.js';
-import { which, clearWhichCache as clearWhich, sleep, runCommand, extractApproval, estimateTokens, terminateChildren, APPROVAL_GUIDE } from './worker-runtime.js';
+import { which, clearWhichCache as clearWhich, sleep, runCommand, extractApproval, estimateTokens, terminateChildren, APPROVAL_GUIDE, OUTCOME_GUIDE, withOutcome } from './worker-runtime.js';
 import { importPluginEntry } from './plugin-loader.js';
 
 export { which, runCommand, extractApproval, terminateChildren };
@@ -420,6 +420,8 @@ function hostContext(descriptor, task, ctx) {
     followup: ctx.followup || null,
     // 需要主人拍板时该怎么停下来问（[[APPROVAL]] 标记）；在提示词里转述给自己的 Agent。
     approvalGuide: APPROVAL_GUIDE,
+    // 做完一轮后怎么说「这件事算不算完」（[[OUTCOME]] 标记）；APPROVAL_GUIDE 里已经带了，单独给不拼 APPROVAL_GUIDE 的 Worker 用。
+    outcomeGuide: OUTCOME_GUIDE,
     sessionId: task.resume_payload?.session_id || null,
     // 任务级运行选项，比如插件草稿任务的 { allowEdits: true }：允许编码 Agent 在工作目录里直接改文件。
     options: parseTaskOptions(task.options),
@@ -519,7 +521,8 @@ function normalizeResult(descriptor, result) {
   if (result.status === 'needs_approval' && !result.approval?.question) {
     throw new Error('needs_approval 必须带 approval.question');
   }
-  return result;
+  // done 时认出 Worker 给的结论（outcome 字段或输出末尾的 [[OUTCOME]] 标记）。
+  return withOutcome(result);
 }
 
 /**

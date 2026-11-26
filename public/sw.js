@@ -12,6 +12,7 @@ const ASSETS = [
   '/js/chat.js',
   '/js/tasks.js',
   '/js/task-views.js',
+  '/js/reply-detect.js',
   '/js/memory.js',
   '/js/settings.js',
   '/js/workers.js',
