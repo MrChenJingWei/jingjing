@@ -34,10 +34,14 @@
 
 | 从 | 可以到 |
 | --- | --- |
-| `queued` | `running` `cancelled` |
+| `queued` | `running` `cancelled` `held` |
 | `running` | `done` `failed` `cancelled` `waiting_approval` `queued`（重试 / 恢复） |
-| `waiting_approval` | `queued` `cancelled` `failed` |
-| `done` `failed` `cancelled` | `queued`（重试 / 接着做） |
+| `waiting_approval` | `queued` `cancelled` `failed` `held` |
+| `held` | `queued`（开始执行） `cancelled` |
+| `done` `failed` `cancelled` | `queued`（重试 / 接着做） `held` |
+
+**只跟踪（`held`）**：留在列表里、绑定的来源状态照常同步、不会被归档，但 `pump()` 只取 `queued`，所以不管调度开没开都不会执行。不算进 `stats.active`。
+
 
 一个任务的完整状态由三样东西还原：
 
@@ -50,7 +54,7 @@
 `createTask(opts)` 在**一个事务**里：
 
 1. 校验 Worker（不传就用兜底 Worker；未知 Worker 报 400）；
-2. 写 `tasks`：普通任务 `status=queued`；带 `hold` 时直接 `waiting_approval`；
+2. 写 `tasks`：普通任务 `status=queued`；带 `hold` 时直接 `waiting_approval`；带 `held` 时 `held`（不 pump）；
 3. 写 `task/created` 事件；
 4. 写来源绑定 `task_sources`（`sourceLink` / `sourceLinksList`）；
 5. 带 `hold` 时同时写一条 `approvals(kind=routing)` 和 `task/waiting_approval` 事件。
@@ -59,7 +63,7 @@
 
 主要参数：`title / prompt / worker / cwd / origin / sessionId / priority / workflowId / options / replyTo / hold / parentId / linkKind / sourceLink / groupKey / hops`。
 
-`mergeTask(id, …)`：只对 `queued` 的任务，把新内容追加到 prompt（总长 3 万字以内），更新回传地址，补一条来源绑定，写 `task/merged`。
+`mergeTask(id, …)`：只对 `queued` / `held` 的任务（同一件事的新消息进只跟踪的卡，照样只跟踪），把新内容追加到 prompt（总长 3 万字以内），更新回传地址，补一条来源绑定，写 `task/merged`。
 
 ## 排队与并发
 
@@ -163,6 +167,9 @@
 | 重试 | `POST /api/tasks/:id/retry` | 清空 `attempts / hops`，作废旧审批，重新排队 |
 | 取消 | `POST /api/tasks/:id/cancel` | 排队中的直接 `cancelled`；在跑的 abort |
 | 编辑 / 删除 | `PATCH` / `DELETE /api/tasks/:id` | 只允许非运行态；删除发 `task/deleted` |
+| 只跟踪 | `POST /api/tasks/:id/hold` | `holdTask()`：非运行态 → `held`，作废未决审批，写 `task/held`；结果、会话都留着 |
+| 全部只跟踪 | `POST /api/tasks/hold-queued` | `holdQueued()`：所有 `queued` 一次转 `held`（开调度前拦下不想跑的） |
+| 开始执行 | `POST /api/tasks/:id/release` | `releaseTask()`：`held` → `queued`，清零 `attempts / hops / recoveries`，写 `task/released`，`pump()` |
 
 ## 重启恢复
 
@@ -196,7 +203,7 @@ task/created → task/started → task/progress* → task/waiting_approval
    → approval/resolved → task/started → task/done
 ```
 
-其他：`task/retry` `task/failed` `task/cancelled` `task/recovered` `task/merged` `task/followup` `task/edited` `task/proactive`；删除发 `task/deleted`。
+其他：`task/held` `task/released` `task/retry` `task/failed` `task/cancelled` `task/recovered` `task/merged` `task/followup` `task/edited` `task/proactive`；删除发 `task/deleted`。
 
 ## 相关文档
 

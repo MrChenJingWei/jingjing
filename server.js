@@ -407,9 +407,16 @@ async function handleRequest(req, res) {
         cwd: body.cwd,
         origin: 'manual',
         sessionId: router.MAIN_SESSION,
-        priority: Number(body.priority || 2)
+        priority: Number(body.priority || 2),
+        held: body.held === true
       });
       return json(res, 200, { task });
+    }
+
+    // 把排队中的任务一次转为只跟踪：开调度前先拦下不想执行的。
+    if (req.method === 'POST' && pathname === '/api/tasks/hold-queued') {
+      const count = scheduler.holdQueued({ by: 'web' });
+      return json(res, 200, { count, stats: scheduler.stats() });
     }
 
     // ---------------------------- 任务归类（docs/architecture/external.md） ----------------------------
@@ -511,7 +518,7 @@ async function handleRequest(req, res) {
       }
     }
 
-    const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(approve|cancel|retry|learn|reply|continue))?$/);
+    const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(approve|cancel|retry|learn|reply|continue|hold|release))?$/);
     if (taskMatch) {
       const [, id, action] = taskMatch;
       if (req.method === 'PATCH' && !action) {
@@ -550,6 +557,13 @@ async function handleRequest(req, res) {
       }
       if (req.method === 'POST' && action === 'cancel') {
         return json(res, 200, { task: scheduler.cancel(id) });
+      }
+      // 只跟踪：不执行，只看状态；release 交回调度器去做。
+      if (req.method === 'POST' && action === 'hold') {
+        return json(res, 200, { task: scheduler.holdTask(id, { by: 'web' }), stats: scheduler.stats() });
+      }
+      if (req.method === 'POST' && action === 'release') {
+        return json(res, 200, { task: scheduler.releaseTask(id, { by: 'web' }), stats: scheduler.stats() });
       }
       if (req.method === 'POST' && action === 'learn') {
         const result = await router.proposeWorkflow(id, { force: true });

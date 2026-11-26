@@ -175,3 +175,60 @@ test('任务结论：done 后可以标完成/待确认，非法值和运行中�
   assert.throws(() => scheduler.updateTask(running.id, { outcome: 'completed' }), /正在执行|还没结束/);
   gated[0].release({ status: 'done', summary: 'ok' });
 });
+
+test('只跟踪：恢复调度后不会执行，点「开始执行」才交给 Worker', async () => {
+  const { saveSettings } = await import('../src/db.js');
+  const calls = gatedWorker('gate-held');
+  saveSettings({ queuePaused: true });
+  let a, b, c;
+  try {
+    a = scheduler.createTask({ title: '不想做的', prompt: 'x', worker: 'gate-held' });
+    b = scheduler.createTask({ title: '也不想做', prompt: 'x', worker: 'gate-held' });
+    c = scheduler.createTask({ title: '建时就只跟踪', prompt: 'x', worker: 'gate-held', held: true });
+    assert.equal(status(c.id), 'held');
+    assert.equal(scheduler.holdQueued(), 2);
+    assert.equal(status(a.id), 'held');
+    assert.equal(status(b.id), 'held');
+    assert.equal(scheduler.stats().counts.held, 3);
+    assert.equal(scheduler.stats().active, 0);
+  } finally {
+    saveSettings({ queuePaused: false });
+  }
+  scheduler.kick();
+  for (let i = 0; i < 20; i += 1) await tick();
+  assert.equal(calls.length, 0, '恢复调度后只跟踪的任务不该被执行');
+
+  // 只跟踪的不能接着做，也不能再次 release 非 held 的任务
+  assert.throws(() => scheduler.continueTask(a.id, '接着'), /只跟踪/);
+
+  scheduler.releaseTask(a.id);
+  await waitFor(() => calls.length === 1, '开始执行后交给 Worker');
+  assert.equal(calls[0].task.id, a.id);
+  assert.throws(() => scheduler.holdTask(a.id), /正在执行/);
+  assert.throws(() => scheduler.releaseTask(a.id), /不是只跟踪/);
+  calls[0].release({ status: 'done', summary: 'ok' });
+  await waitFor(() => status(a.id) === 'done', '完成');
+
+  // 结束的卡也可以转为只跟踪；停掉只跟踪的卡走正常的取消
+  scheduler.holdTask(a.id);
+  assert.equal(status(a.id), 'held');
+  assert.equal(scheduler.getTask(a.id).result, 'ok', '转只跟踪不清结果');
+  scheduler.cancel(b.id);
+  assert.equal(status(b.id), 'cancelled');
+  assert.ok(eventTypes(c.id).includes('task/created'));
+  assert.ok(eventTypes(b.id).includes('task/held'));
+  assert.ok(eventTypes(a.id).includes('task/released'));
+});
+
+test('等拍板的任务转为只跟踪：审批作废', async () => {
+  const calls = gatedWorker('gate-held-approval');
+  const task = scheduler.createTask({ title: '问一下', prompt: 'x', worker: 'gate-held-approval' });
+  await waitFor(() => calls.length === 1, 'Worker 开始执行');
+  calls[0].release({ status: 'needs_approval', approval: { question: '做吗？', options: ['做', '不做'] } });
+  await waitFor(() => status(task.id) === 'waiting_approval', '等拍板');
+  const approvalId = scheduler.getTask(task.id).approval_id;
+  scheduler.holdTask(task.id);
+  assert.equal(status(task.id), 'held');
+  assert.equal(scheduler.getApproval(approvalId).status, 'expired');
+  assert.equal(scheduler.getTask(task.id).approval_id, null);
+});

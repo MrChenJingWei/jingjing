@@ -52,9 +52,10 @@ export function listTasks({ limit = 60, status, q = '' } = {}) {
           WHEN 'waiting_approval' THEN 0
           WHEN 'running' THEN 1
           WHEN 'queued' THEN 2
-          WHEN 'failed' THEN 3
-          WHEN 'done' THEN 4
-          ELSE 5 END, created_at DESC
+          WHEN 'held' THEN 3
+          WHEN 'failed' THEN 4
+          WHEN 'done' THEN 5
+          ELSE 6 END, created_at DESC
         LIMIT ?
       `).all(limit);
   const needle = String(q || '').trim().toLowerCase();
@@ -134,7 +135,9 @@ export function createTask({
   sourceLink = null,
   sourceLinksList = null,
   // 派活的人（people.id）：外部来源里说这件事的人。另起的后续卡不传时沿用上一张的。
-  requester = null
+  requester = null,
+  // 只跟踪、不执行：建成 held，调度器不会去取，等主人点「开始执行」。
+  held = false
 }) {
   const chosen = worker || defaultWorker();
   if (!chosen) {
@@ -159,7 +162,7 @@ export function createTask({
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
     `).run(
       id, cleanTitle, String(prompt || cleanTitle), chosen,
-      cwd || settings.defaultCwd || '', hold ? 'waiting_approval' : 'queued', priority, origin, ruleId, sessionId,
+      cwd || settings.defaultCwd || '', hold ? 'waiting_approval' : held ? 'held' : 'queued', priority, origin, ruleId, sessionId,
       groupKey || null, Math.max(0, Number(hops) || 0), workflowId || null,
       options ? JSON.stringify(options) : null, replyTo ? JSON.stringify(replyTo) : null,
       approvalId, hold ? hold.progress || '等你决定交给谁' : null,
@@ -167,6 +170,7 @@ export function createTask({
     );
     event(id, 'task/created', {
       worker: chosen, origin, title: cleanTitle, source,
+      ...(held && !hold ? { held: true } : {}),
       ...(workflowId ? { workflowId, workflow: workflowName } : {}),
       ...(parentId ? { parentId, linkKind: linkKind || 'followup' } : {})
     });
@@ -185,7 +189,7 @@ export function createTask({
     const approval = getApproval(approvalId);
     bus.emit('approval/created', { approval, task });
     channels.notifyApproval(approval, task).catch((err) => console.warn('[channel]', err.message));
-  } else {
+  } else if (task.status === 'queued') {
     pump();
   }
   return task;
@@ -195,7 +199,7 @@ export function findMergeableTask({ groupKey, worker, cwd }) {
   if (!groupKey) return null;
   const row = db.prepare(`
     SELECT * FROM tasks
-    WHERE status = 'queued' AND group_key = ? AND worker = ? AND COALESCE(cwd, '') = COALESCE(?, '')
+    WHERE status IN ('queued', 'held') AND group_key = ? AND worker = ? AND COALESCE(cwd, '') = COALESCE(?, '')
     ORDER BY created_at ASC LIMIT 1
   `).get(groupKey, worker, cwd || '');
   return row ? rowTask(row) : null;
@@ -203,7 +207,7 @@ export function findMergeableTask({ groupKey, worker, cwd }) {
 
 export function mergeTask(taskId, { text = '', title = '', source = '', replyTo = null, sourceLink = null } = {}) {
   const task = getTask(taskId);
-  if (!task || task.status !== 'queued') return null;
+  if (!task || !['queued', 'held'].includes(task.status)) return null;
   const addition = `\n\n--- 合并的新事件${title ? `：${title}` : ''} ---\n${String(text || '').slice(0, 3000)}`;
   if (task.prompt.length < 30000) {
     db.prepare('UPDATE tasks SET prompt = ?, updated_at = ? WHERE id = ?')
@@ -782,6 +786,82 @@ export function retryTask(taskId) {
   return updated;
 }
 
+/* ----------------------------- 只跟踪 ----------------------------- */
+
+const notFound = () => Object.assign(new Error('任务不存在'), { statusCode: 404 });
+
+/**
+ * 转为只跟踪：留在列表里、来源状态照常同步，但调度器不会执行它。
+ * 正在执行的不行（先停止）；等拍板的会作废那条审批。
+ */
+export function holdTask(taskId, { by = 'user' } = {}) {
+  const task = getTask(taskId);
+  if (!task) throw notFound();
+  if (task.status === 'held') return task;
+  if (task.status === 'running') {
+    throw Object.assign(new Error('任务正在执行，先停止再转为只跟踪'), { statusCode: 409 });
+  }
+  transaction(() => {
+    if (task.approval_id) {
+      db.prepare("UPDATE approvals SET status = 'expired', resolved_at = ? WHERE id = ? AND status = 'pending'")
+        .run(now(), task.approval_id);
+    }
+    setStatus(taskId, { status: 'held', approval_id: null, progress: null });
+    event(taskId, 'task/held', { from: task.status, by });
+  });
+  const updated = getTask(taskId);
+  if (task.approval_id) bus.emit('approval/resolved', { approval: getApproval(task.approval_id), task: updated });
+  emitTask(updated);
+  bus.emit('stats/updated', stats());
+  return updated;
+}
+
+/** 把所有排队中的任务一次转为只跟踪：开调度之前先把不想跑的拦下来。返回转了几个。 */
+export function holdQueued({ by = 'user' } = {}) {
+  const ids = db.prepare("SELECT id FROM tasks WHERE status = 'queued'").all().map((row) => row.id);
+  const held = [];
+  transaction(() => {
+    for (const id of ids) {
+      // 逐个再确认一次：pump 可能刚好占走了某一个。
+      const changed = db.prepare("UPDATE tasks SET status = 'held', progress = NULL, updated_at = ? WHERE id = ? AND status = 'queued'")
+        .run(now(), id).changes;
+      if (!changed) continue;
+      event(id, 'task/held', { from: 'queued', by, bulk: true });
+      held.push(id);
+    }
+  });
+  for (const id of held) emitTask(getTask(id));
+  if (held.length) bus.emit('stats/updated', stats());
+  return held.length;
+}
+
+/** 只跟踪的任务交给 Worker 去做：回到排队，结果、会话这些都留着。 */
+export function releaseTask(taskId, { by = 'user' } = {}) {
+  const task = getTask(taskId);
+  if (!task) throw notFound();
+  if (task.status !== 'held') {
+    throw Object.assign(new Error('这个任务不是只跟踪状态'), { statusCode: 409 });
+  }
+  transaction(() => {
+    setStatus(taskId, {
+      status: 'queued',
+      attempts: 0,
+      hops: 0,
+      recoveries: 0,
+      error: null,
+      progress: '开始执行，排队中…',
+      started_at: null,
+      finished_at: null
+    });
+    event(taskId, 'task/released', { by });
+  });
+  const updated = getTask(taskId);
+  emitTask(updated);
+  pump();
+  bus.emit('stats/updated', stats());
+  return updated;
+}
+
 /* ----------------------------- 接着做 / 另起一张 ----------------------------- */
 
 export const MAX_FOLLOWUP = 4000;
@@ -825,7 +905,8 @@ export function continueTask(taskId, text, { by = 'user' } = {}) {
   const task = getTask(taskId);
   if (!task) throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
   if (!TERMINAL.includes(task.status)) {
-    const why = task.status === 'waiting_approval' ? '它在等你拍板，直接回答它的问题就行' : '它还在做，等它停下再接着说';
+    const why = task.status === 'waiting_approval' ? '它在等你拍板，直接回答它的问题就行'
+      : task.status === 'held' ? '它是只跟踪的，先点「开始执行」' : '它还在做，等它停下再接着说';
     throw Object.assign(new Error(why), { statusCode: 409 });
   }
   const ask = followupText(text);

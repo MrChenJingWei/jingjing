@@ -12,13 +12,15 @@
 import crypto from 'node:crypto';
 import { db, now, uid } from './db.js';
 
+// held：只跟踪、不执行。调度器不会去取它，来源状态照常同步；主人点「开始执行」才回到 queued。
 export const TRANSITIONS = Object.freeze({
-  queued: ['running', 'cancelled'],
+  queued: ['running', 'cancelled', 'held'],
   running: ['done', 'failed', 'cancelled', 'waiting_approval', 'queued'],
-  waiting_approval: ['queued', 'cancelled', 'failed'],
-  done: ['queued'],
-  failed: ['queued'],
-  cancelled: ['queued']
+  waiting_approval: ['queued', 'cancelled', 'failed', 'held'],
+  held: ['queued', 'cancelled'],
+  done: ['queued', 'held'],
+  failed: ['queued', 'held'],
+  cancelled: ['queued', 'held']
 });
 
 export const RUN_STATUSES = ['running', 'done', 'failed', 'cancelled', 'timeout', 'waiting_approval', 'interrupted'];
