@@ -3061,3 +3061,6 @@ html[data-theme="dark"] .live-cat:hover, html[data-theme="dark"] .live-cat.is-op
 @media (hover: none) { .tsec-focus { opacity: 1; } }
 .groupby-label { display: grid; place-items: center; padding: 0 4px 0 6px; }
 .groupby-opt { flex: 1 0 auto; padding: 0 8px; font-size: 12.5px; }
+
+/* 侧栏底部（猫 + 深浅色）始终贴底：任务页上「正在发生」藏起来时，不再有它把底部撑下去。 */
+.sidebar-foot { margin-top: auto; }
