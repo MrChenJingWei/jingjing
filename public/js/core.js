@@ -10,6 +10,7 @@ export const STATUS_LABEL = {
   queued: '排着队',
   running: '正在做',
   waiting_approval: '等你拍板',
+  held: '只跟踪',
   done: '做完了',
   failed: '没做成',
   cancelled: '停下了'
@@ -35,6 +36,8 @@ export const EVENT_LABEL = {
   'task/proactive': '由规则触发',
   'task/edited': '已编辑',
   'task/retried': '重新排队',
+  'task/held': '转为只跟踪',
+  'task/released': '开始执行',
   'workflow/proposed': '总结成工作流程',
   'task/merged': '合并了新事件',
   'workflow/skipped': '没有总结流程',
@@ -86,10 +89,8 @@ export const state = {
   server: {},
   sessionId: 'main',
   view: 'chat',
+  // 别处要求打开任务页时只看某一类（如 waiting_approval），任务页渲染时读一次就清掉。
   taskFilter: 'all',
-  taskSource: 'all',
-  taskSourceStatus: 'all',
-  taskOutcome: 'all',
   taskQuery: '',
   // 任务详情：桌面在任务页右侧面板里看（selected），别的页面从右边滑出（drawer）。
   selectedTaskId: null,

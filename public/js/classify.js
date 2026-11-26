@@ -6,7 +6,7 @@ import { icon, openDialog, ask } from './ui.js';
 
 const VIEW_KEY = 'jingjing-task-view';
 const FOLD_KEY = 'jingjing-folded-groups';
-const STATUS_TONE = { queued: 'queued', running: 'running', waiting_approval: 'waiting', done: 'done', failed: 'failed', cancelled: 'failed' };
+const STATUS_TONE = { queued: 'queued', running: 'running', waiting_approval: 'waiting', held: 'queued', done: 'done', failed: 'failed', cancelled: 'failed' };
 const KIND_ORDER = ['status', 'cause', 'fix', 'symptom', 'decision', 'outcome', 'relation', 'note'];
 const KIND_LABEL = { relation: '关系', status: '状态', outcome: '结论', cause: '因果', fix: '修复', symptom: '现象', decision: '决策', note: '备注' };
 const WHO_LABEL = { auto: '自动', manual: '手动' };

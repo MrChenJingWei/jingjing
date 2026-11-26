@@ -159,13 +159,9 @@
                   <svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>
                   <input id="task-search" type="search" placeholder="搜索标题或指令" autocomplete="off" />
                 </label>
-                <button type="button" class="tool-btn" id="task-filter-btn" aria-haspopup="dialog" aria-expanded="false" title="按来源、外部状态、结论筛选">
-                  <svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span>筛选</span><em id="task-filter-count" hidden></em>
-                </button>
-                <div id="task-view-toggle"></div>
               </div>
-              <div class="status-tabs" id="task-filters" role="tablist" aria-label="按状态筛选"></div>
-              <div class="active-filters" id="task-active-filters" hidden></div>
+              <div class="groupby" id="task-groupby" role="tablist" aria-label="分组方式"></div>
+              <div class="focus-bar" id="task-focus" hidden></div>
             </div>
             <div class="task-list" id="task-list"></div>
           </div>

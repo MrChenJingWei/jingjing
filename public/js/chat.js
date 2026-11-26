@@ -514,9 +514,6 @@ $('#attention')?.addEventListener('click', () => {
     setTimeout(() => card.classList.remove('is-flash'), 1400);
   } else {
     state.taskFilter = 'waiting_approval';
-    state.taskSource = 'all';
-    state.taskSourceStatus = 'all';
-    state.taskOutcome = 'all';
     switchView('tasks');
   }
 });

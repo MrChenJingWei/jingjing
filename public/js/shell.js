@@ -92,6 +92,9 @@ function activityItem(task, sub) {
 export function renderActivity() {
   const box = $('#activity');
   if (!box) return;
+  // 任务页本身就按「要你处理 / 在做 / 已结束」列着同样的卡，侧栏再列一遍只会更乱。
+  box.hidden = state.view === 'tasks';
+  if (box.hidden) return;
   const waiting = state.tasks.filter((t) => t.status === 'waiting_approval');
   const running = state.tasks.filter((t) => t.status === 'running');
   const queued = state.tasks.filter((t) => t.status === 'queued');

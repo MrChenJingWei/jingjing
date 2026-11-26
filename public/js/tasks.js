@@ -8,6 +8,9 @@ import {
 import { icon, openDialog, ask, openPopover, openMenu, closePopover, catMark } from './ui.js';
 import { switchView, renderActivity } from './shell.js';
 import * as classify from './classify.js';
+import {
+  DIMENSIONS, SECTIONS, SOURCE_STATUS_LABEL, dimension, sectionOf, groupKeyOf, endsWithQuestion
+} from './task-views.js';
 
 /* ------------------------------ 小部件 -------------------------------- */
 
@@ -98,11 +101,7 @@ export function approvalBlock(task, approval) {
     </div>`;
 }
 
-/** 结果最后一句是在问人：提示主人可以直接回答。 */
-export function endsWithQuestion(text) {
-  const last = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean).pop() || '';
-  return /[?？]\s*[)）*_`]*$|吗[。.]?$/.test(last);
-}
+export { endsWithQuestion };
 
 const FOLLOWUP_PLACEHOLDER = {
   done: '接着说：比如「再把测试补上」「第二点展开讲讲」',
@@ -124,6 +123,9 @@ export function replyBox(task, approval, { compact = false } = {}) {
   }
   if (task.status === 'running') {
     return compact ? '' : '<p class="reply-note">正在做，现在不能插话；可以等它做完或停下后在这里接着说。</p>';
+  }
+  if (task.status === 'held') {
+    return compact ? '' : '<p class="reply-note">只跟踪：调度器不会执行它，来源状态照常同步。要交给 Worker 做，点上面的「开始执行」。</p>';
   }
   if (!FOLLOWUP_PLACEHOLDER[task.status]) return '';
   const key = `f:${task.id}`;
@@ -289,6 +291,9 @@ function mismatchHint(task, link) {
   if (active && ['done', 'cancelled'].includes(category)) {
     return `${link.providerLabel} 那边已经${category === 'done' ? '完成' : '关闭'}了，这张卡还在${task.status === 'waiting_approval' ? '等你拍板' : '进行'}。不需要了可以点上面的「停止」。`;
   }
+  if (task.status === 'held' && ['done', 'cancelled'].includes(category)) {
+    return `${link.providerLabel} 那边已经${category === 'done' ? '完成' : '关闭'}了。不用再跟踪的话，可以在「更多」里停掉这张卡。`;
+  }
   if (task.status === 'done' && ['open', 'in_progress', 'blocked'].includes(category)) {
     return `这张卡做完了，${link.providerLabel} 那边还是「${link.status.label}」。记得去原单更新状态。`;
   }
@@ -361,218 +366,268 @@ function roundsSection(task, events = []) {
 }
 
 /* ------------------------------- 列表 -------------------------------- */
+// 列表 = 顶上四块状态计数 + 分组方式（状态 / 来源 / 外部状态 / 归类 / 执行者 / 时间）+ 分好的段。
+// 「只看」都是在列表上直接点：点状态块只看这一类，点段头的漏斗只看这一组。
+// 只看的条件跨分组方式保留（只看 TAPD，再换成按外部状态分），在搜索框下面显示成可去掉的标签。
 
-const FILTERS = [
-  { id: 'all', label: '全部', test: () => true },
-  { id: 'waiting_approval', label: '待拍板', test: (t) => t.status === 'waiting_approval', warm: true },
-  { id: 'active', label: '进行中', test: (t) => ['queued', 'running'].includes(t.status) },
-  { id: 'done', label: '已结束', test: (t) => t.status === 'done' },
-  { id: 'failed', label: '失败', test: (t) => ['failed', 'cancelled'].includes(t.status) }
-];
+const GROUP_BY_KEY = 'jj.taskGroupBy';
+const FOLD_KEY = 'jj.taskSections';
+const readStore = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
+const writeStore = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* 存不下就只在这次生效 */ } };
 
-const SOURCE_STATUS_LABEL = {
-  open: '待处理',
-  in_progress: '进行中',
-  blocked: '阻塞',
-  review: '待确认',
-  done: '已完成',
-  cancelled: '已关闭',
-  unknown: '未知'
-};
-const OUTCOME_FILTER_LABEL = {
-  unset: '本轮结束（未确认）',
-  completed: '已完成',
-  proposed: '待确认方案',
-  delivered: '已回复',
-  partial: '部分完成',
-  blocked: '等你决定'
-};
+state.taskGroupBy = readStore(GROUP_BY_KEY, 'status');
+// 维度 -> { key, label }：status 是顶上四块，其他是段头的「只看这一组」。
+state.taskFocus = {};
+let sectionFold = readStore(FOLD_KEY, {});
 
-/** 任务来源：插件 id、对话、手动、自动化。 */
-function sourceKey(task) {
-  const origin = String(task.origin || '');
-  if (origin.startsWith('plugin:')) return origin.slice('plugin:'.length);
-  if (origin.startsWith('rule:') || task.rule_id) return '__automation';
-  if (origin === 'schedule') return '__automation';
-  return origin || 'chat';
+/** 实际生效的分组方式：没开归类时「按归类」退回按状态。 */
+function groupBy() {
+  const by = dimension(state.taskGroupBy).id;
+  return by === 'category' && !classify.groupingAvailable() ? 'status' : by;
 }
 
-function sourceName(key) {
-  if (key === '__automation') return '自动化';
-  const plugin = (state.plugins || []).find((item) => item.id === key);
-  if (plugin) return plugin.label || plugin.name || key;
-  if (key === 'chat') return '对话';
-  if (key === 'manual') return '手动';
-  return key;
+function setGroupBy(by) {
+  state.taskGroupBy = dimension(by).id;
+  writeStore(GROUP_BY_KEY, state.taskGroupBy);
+  renderTaskList();
+  $('#task-list')?.scrollTo({ top: 0 });
 }
 
-/** 一个任务可能绑多个外部单子，状态分类取并集。 */
-function sourceCategories(task) {
-  return new Set((task.sources || []).map((link) => link.status?.category || 'unknown'));
+function foldId(by, key) {
+  return `${by}:${key}`;
 }
 
-function sourceStatusMatch(task, wanted) {
-  if (wanted === 'all') return true;
-  const links = task.sources || [];
-  if (wanted === 'none') return links.length === 0;
-  return [...sourceCategories(task)].includes(wanted);
+/** 收起状态：主人点过就记住；没点过时，卡多的段默认收起。搜索或只看这一组时展开，免得命中的卡藏起来。 */
+function isFolded(by, group) {
+  if ((state.taskQuery || '').trim()) return false;
+  if (state.taskFocus[by]?.key === group.key) return false;
+  const id = foldId(by, group.key);
+  if (id in sectionFold) return sectionFold[id];
+  return Boolean(group.foldAt && group.list.length > group.foldAt);
 }
 
-function outcomeMatch(task, wanted) {
-  if (wanted === 'all') return true;
-  if (wanted === 'unset') return task.status === 'done' && !task.outcome;
-  return task.outcome === wanted;
+function setFold(by, key, folded) {
+  sectionFold = { ...sectionFold, [foldId(by, key)]: folded };
+  writeStore(FOLD_KEY, sectionFold);
 }
 
-function baseFilteredTasks({ ignoreChip = false } = {}) {
+function matchesFocus(task, { except = null } = {}) {
+  return Object.entries(state.taskFocus).every(([by, focus]) => by === except || groupKeyOf(by, task) === focus.key);
+}
+
+function searched() {
   const q = state.taskQuery.trim().toLowerCase();
-  return state.tasks.filter((t) => {
-    if (!ignoreChip) {
-      const filter = FILTERS.find((f) => f.id === state.taskFilter) || FILTERS[0];
-      if (!filter.test(t)) return false;
-    }
-    if (state.taskSource !== 'all' && sourceKey(t) !== state.taskSource) return false;
-    if (!sourceStatusMatch(t, state.taskSourceStatus)) return false;
-    if (!outcomeMatch(t, state.taskOutcome)) return false;
-    return !q || `${t.title} ${t.prompt || ''} ${t.id}`.toLowerCase().includes(q);
-  });
+  return q ? state.tasks.filter((t) => `${t.title} ${t.prompt || ''} ${t.id}`.toLowerCase().includes(q)) : state.tasks;
 }
 
 function filteredTasks() {
-  return baseFilteredTasks();
+  return searched().filter((t) => matchesFocus(t));
 }
 
-/* 来源 / 外部状态 / 结论：收进「筛选」面板，用可点的标签选；选中的条件在状态页签下面显示，点 × 去掉。 */
-function filterGroups() {
-  const sources = [...new Set(state.tasks.map(sourceKey))].sort();
-  const categories = [...new Set(state.tasks.flatMap((t) => [...sourceCategories(t)]))].sort();
-  return [
-    { key: 'taskSource', title: '来源', options: [['all', '全部'], ...sources.map((key) => [key, sourceName(key)])] },
-    { key: 'taskSourceStatus', title: '外部单子的状态', options: [['all', '全部'], ['none', '没关联外部单子'], ...categories.map((c) => [c, SOURCE_STATUS_LABEL[c] || c])] },
-    { key: 'taskOutcome', title: '结论', options: [['all', '全部'], ...Object.entries(OUTCOME_FILTER_LABEL)] }
-  ];
+function setFocus(by, key, label) {
+  const next = { ...state.taskFocus };
+  if (!key || next[by]?.key === key) delete next[by];
+  else next[by] = { key, label };
+  state.taskFocus = next;
+  renderTaskList();
+  if (isWide() && !filteredTasks().some((t) => t.id === state.selectedTaskId)) {
+    state.selectedTaskId = null;
+    ensureSelection();
+  }
 }
 
-function activeFilterCount() {
-  return ['taskSource', 'taskSourceStatus', 'taskOutcome'].filter((key) => state[key] !== 'all').length;
+function clearFocus() {
+  state.taskFocus = {};
 }
 
-function renderActiveFilters() {
-  // 当前任务里已经没有的来源：退回全部，免得筛出一片空。
-  const sources = new Set(state.tasks.map(sourceKey));
-  if (state.taskSource !== 'all' && !sources.has(state.taskSource)) state.taskSource = 'all';
-  const box = $('#task-active-filters');
-  const count = activeFilterCount();
-  const badge = $('#task-filter-count');
-  if (badge) { badge.hidden = !count; badge.textContent = String(count); }
-  $('#task-filter-btn')?.classList.toggle('is-on', count > 0);
-  if (!box) return;
-  const chips = filterGroups().filter((group) => state[group.key] !== 'all').map((group) => {
-    const label = group.options.find(([value]) => value === state[group.key])?.[1] || state[group.key];
-    return `<button type="button" class="afilter" data-clear-filter="${group.key}" title="去掉这个条件">${esc(group.title)}：${esc(label)}${icon('x', 'sm')}</button>`;
-  });
-  box.hidden = !chips.length;
-  box.innerHTML = chips.length ? `${chips.join('')}<button type="button" class="afilter-clear" data-clear-filter="all">清除</button>` : '';
+/** 搜索框下面：分组方式（一排可点的词）+ 正在只看的条件。 */
+function renderToolbar() {
+  const box = $('#task-groupby');
+  if (box) {
+    const by = groupBy();
+    const options = DIMENSIONS.filter((d) => d.id !== 'category' || classify.groupingAvailable());
+    box.innerHTML = `<span class="groupby-label" title="分组方式">${icon('layers', 'sm')}</span>${options.map((d) => `
+      <button type="button" class="groupby-opt ${d.id === by ? 'is-on' : ''}" data-group-by="${d.id}" role="tab" aria-selected="${d.id === by}">${esc(d.label)}</button>`).join('')}`;
+  }
+  const bar = $('#task-focus');
+  if (bar) {
+    const entries = Object.entries(state.taskFocus);
+    bar.hidden = !entries.length;
+    bar.innerHTML = entries.length ? `
+      <span class="focus-label">${icon('filter', 'sm')}只看</span>
+      ${entries.map(([by, focus]) => `<button type="button" class="focus-chip" data-clear-focus="${by}" title="去掉这个条件">${by === 'status' ? '' : `<em>${esc(dimension(by).label)}</em>`}${esc(focus.label)}${icon('x', 'sm')}</button>`).join('')}
+      ${entries.length > 1 ? '<button type="button" class="focus-clear" data-clear-focus="__all">全部清除</button>' : ''}` : '';
+  }
 }
 
-function filterPanelHtml() {
+const firstLine = (text) => String(text || '').split('\n').map((line) => line.trim()).find(Boolean) || '';
+
+/** 外部单子的状态：一个带颜色圆点的小标签，颜色就是状态，字只有两三个。来源用首字母小方块。 */
+function srcChip(task) {
+  const link = (task.sources || [])[0];
+  if (!link) return '';
+  const off = link.providerState !== 'enabled' || !link.tracking;
+  const category = off ? 'off' : link.status?.category || 'unknown';
+  const label = off ? (link.tracking ? '来源停用' : '没在跟踪') : link.status?.label || SOURCE_STATUS_LABEL[category] || '未知';
+  const more = (task.sources || []).length - 1;
+  const title = [`${link.providerLabel}${link.externalId ? ` #${link.externalId}` : ''}`, link.title, link.syncError ? `同步失败：${link.syncError}` : ''].filter(Boolean).join('\n');
+  return `<span class="schip" data-c="${esc(category)}" title="${esc(title)}"><i class="schip-src">${esc((link.providerLabel || '?').slice(0, 1).toUpperCase())}</i><i class="schip-dot"></i>${esc(label)}${more > 0 ? `<em>+${more}</em>` : ''}${link.syncState === 'error' ? icon('alert', 'sm') : ''}</span>`;
+}
+
+function chip(text, tone) {
+  return `<span class="tchip" data-tone="${tone}">${esc(text)}</span>`;
+}
+
+/** 行的第二行：尽量是有颜色的小标签和进度条，只有等你回答的问题保留成一句话。 */
+function rowLine(t) {
+  const asks = t.status === 'done' && !t.outcome && endsWithQuestion(t.result);
+  const parts = [srcChip(t)];
+  if (t.status === 'waiting_approval') {
+    parts.push(`<span class="trow-ask">${esc((approvalFor(t)?.question || '等你拍板').slice(0, 120))}</span>`);
+  } else if (asks) {
+    parts.push(chip('在问你', 'warm'), `<span class="trow-ask">${esc(String(t.result || '').split('\n').map((l) => l.trim()).filter(Boolean).pop().slice(0, 120))}</span>`);
+  } else if (t.status === 'running') {
+    parts.push(`<span class="tprog" title="${esc(t.progress || '执行中')}"><i></i></span>`);
+  } else if (t.status === 'failed') {
+    parts.push(chip('出错', 'danger'));
+  } else if (t.status === 'queued' && Boolean(state.stats?.paused ?? state.settings?.queuePaused)) {
+    parts.push(chip('等调度', 'muted'));
+  } else if (t.status === 'done' && t.outcome) {
+    parts.push(chip(OUTCOME_LABEL[t.outcome] || '本轮结束', ['completed', 'delivered'].includes(t.outcome) ? 'ok' : 'warm'));
+  }
+  const html = parts.filter(Boolean).join('');
+  return html ? `<span class="trow-line">${html}</span>` : '';
+}
+
+/** 左边是有底色的状态方块，扫一眼颜色就知道是什么情况；标题一行；第二行是标签。 */
+function taskRow(t) {
   return `
-    <div class="fpanel">
-      ${filterGroups().map((group) => `
-        <div class="fpanel-group">
-          <div class="fpanel-title">${esc(group.title)}</div>
-          <div class="fpanel-options">
-            ${group.options.map(([value, label]) => `<button type="button" class="fopt ${state[group.key] === value ? 'is-on' : ''}" data-filter-key="${group.key}" data-filter-value="${esc(value)}">${esc(label)}</button>`).join('')}
-          </div>
-        </div>`).join('')}
-      <div class="fpanel-foot">
-        <span>${filteredTasks().length} 张卡符合</span>
-        <button type="button" class="btn xs ghost" data-filter-key="__reset">全部清除</button>
-      </div>
-    </div>`;
-}
-
-function openFilterPanel(anchor) {
-  const handle = openPopover(anchor, {
-    html: filterPanelHtml(),
-    className: 'is-panel',
-    width: 320,
-    onClick: (target) => {
-      const opt = target.closest('[data-filter-key]');
-      if (!opt) return;
-      if (opt.dataset.filterKey === '__reset') {
-        state.taskSource = 'all'; state.taskSourceStatus = 'all'; state.taskOutcome = 'all';
-      } else {
-        state[opt.dataset.filterKey] = opt.dataset.filterValue;
-      }
-      renderTaskList();
-      if (handle?.pop.isConnected) { handle.pop.innerHTML = filterPanelHtml(); handle.place(); }
-    }
-  });
-}
-
-function taskSubtitle(t) {
-  const approval = approvalFor(t);
-  if (t.status === 'waiting_approval' && approval) return approval.question;
-  if (t.status === 'running') return t.progress || '执行中…';
-  if (t.status === 'queued') return '排队中，等空闲的执行槽位';
-  if (t.status === 'failed') return t.error || t.result || '失败了';
-  if (t.status === 'done' && endsWithQuestion(t.result)) return `它在问你：${(t.result || '').split('\n').map((l) => l.trim()).filter(Boolean).pop()}`;
-  return (t.result || t.prompt || '').split('\n').find((line) => line.trim()) || '—';
-}
-
-function renderFilters() {
-  const box = $('#task-filters');
-  if (!box) return;
-  renderActiveFilters();
-  const base = baseFilteredTasks({ ignoreChip: true });
-  box.innerHTML = FILTERS.map((f) => {
-    const count = base.filter(f.test).length;
-    if (f.id !== 'all' && f.id !== state.taskFilter && count === 0 && f.id !== 'active') return '';
-    return `<button type="button" class="stab ${f.id === state.taskFilter ? 'is-active' : ''} ${f.warm && count ? 'is-warm' : ''}" data-task-filter="${f.id}" role="tab" aria-selected="${f.id === state.taskFilter}">${f.label}${count ? `<em>${count}</em>` : ''}</button>`;
-  }).join('');
-}
-
-function taskRow(t, { inGroup = false } = {}) {
-  return `
-    <button type="button" class="trow ${t.id === state.selectedTaskId && isWide() ? 'is-selected' : ''} ${t.status === 'waiting_approval' ? 'is-waiting' : ''}" data-s="${esc(t.status)}" data-select-task="${esc(t.id)}">
-      <span class="sdot" data-s="${esc(t.status)}"></span>
+    <button type="button" class="trow trow-v2 ${t.id === state.selectedTaskId && isWide() ? 'is-selected' : ''} ${t.status === 'waiting_approval' ? 'is-waiting' : ''}" data-s="${esc(t.status)}" data-select-task="${esc(t.id)}" title="${esc(STATUS_LABEL[t.status] || t.status)}">
+      <span class="tbadge" data-s="${esc(t.status)}"><span class="sdot" data-s="${esc(t.status)}"></span></span>
       <span class="trow-main">
-        <span class="trow-top"><b>${esc(t.title)}</b><time>${timeAgo(t.created_at)}</time></span>
-        <span class="trow-sub">${esc(taskSubtitle(t).slice(0, 140))}</span>
-        <span class="trow-meta">${statusPill(t.status, t.outcome)}${sourceTag(t)}${classify.classTag(t, { inGroup })}${t.parent_id ? `<span class="trow-chain">${icon('link', 'sm')}接着上一张</span>` : ''}</span>
+        <span class="trow-top">${t.parent_id ? `<i class="trow-chain" title="接着上一张">${icon('link', 'sm')}</i>` : ''}<b>${esc(t.title)}</b><time>${timeAgo(t.updated_at || t.created_at)}</time></span>
+        ${rowLine(t)}
       </span>
     </button>`;
 }
 
+/** 段头右边（按状态分时）：这一段里外部单子各是什么状态，用彩色圆点 + 数字。 */
+function categoryDots(list) {
+  const counts = new Map();
+  for (const t of list) {
+    const link = (t.sources || [])[0];
+    if (!link || link.providerState !== 'enabled' || !link.tracking) continue;
+    const c = link.status?.category || 'unknown';
+    counts.set(c, (counts.get(c) || 0) + 1);
+  }
+  if (!counts.size) return '';
+  const order = ['blocked', 'open', 'in_progress', 'review', 'done', 'cancelled', 'unknown'];
+  return `<span class="cdots">${[...counts].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
+    .map(([c, n]) => `<span class="cdot" data-c="${esc(c)}" title="外部单子${esc(SOURCE_STATUS_LABEL[c] || c)}：${n} 个"><i></i>${n}</span>`).join('')}</span>`;
+}
+
+/** 段头右边（按其他维度分时）：这一组里各状态几张，用状态图标 + 数字。 */
+function statusDots(list) {
+  const counts = new Map(SECTIONS.map((section) => [section.id, 0]));
+  for (const t of list) counts.set(sectionOf(t).id, counts.get(sectionOf(t).id) + 1);
+  return `<span class="sdots">${SECTIONS.filter((section) => counts.get(section.id)).map((section) => `
+    <span class="sdot-n" data-tone="${section.tone}" title="${esc(section.label)}：${counts.get(section.id)} 张"><span class="sdot" data-s="${section.glyph}"></span>${counts.get(section.id)}</span>`).join('')}</span>`;
+}
+
+/** 列表顶上的四块：每类多少张，一眼看完；点了只看这一类，再点一次取消。 */
+function overviewTiles() {
+  const pool = searched().filter((t) => matchesFocus(t, { except: 'status' }));
+  const focus = state.taskFocus.status?.key;
+  return `
+    <div class="tstats ${focus ? 'has-focus' : ''}">
+      ${SECTIONS.map((section) => {
+        const n = pool.filter((t) => sectionOf(t) === section).length;
+        return `<button type="button" class="tstat ${focus === section.id ? 'is-on' : ''}" data-tone="${section.tone}" data-focus-status="${section.id}" ${n ? '' : 'data-empty'} aria-pressed="${focus === section.id}" title="${focus === section.id ? '再点一次看全部' : `只看${section.label}`}">
+          <span class="tstat-top"><span class="sdot" data-s="${section.glyph}"></span><b>${n}</b></span>
+          <span class="tstat-label">${esc(section.label)}</span>
+        </button>`;
+      }).join('')}
+    </div>`;
+}
+
+function groupHead(by, group, folded) {
+  const lead = group.glyph ? `<span class="sdot" data-s="${esc(group.glyph)}"></span>`
+    : group.badge ? `<i class="tsec-badge">${esc(group.badge)}</i>`
+      : group.dot ? `<i class="tsec-dot" data-c="${esc(group.dot)}"></i>` : '';
+  const queued = by === 'status' && group.key === 'doing' ? (state.tasks || []).filter((t) => t.status === 'queued').length : 0;
+  const focused = state.taskFocus[by]?.key === group.key;
+  return `
+    <div class="tsec-head" data-tone="${esc(group.tone || '')}">
+      <button type="button" class="tsec-toggle" data-fold-section="${esc(group.key)}" aria-expanded="${!folded}">
+        ${icon('chevronRight', 'sm')}${lead}<b>${esc(group.label)}</b><em>${group.list.length}</em>
+        ${group.hint ? `<small>${esc(group.hint)}</small>` : ''}
+      </button>
+      ${by === 'status' ? categoryDots(group.list) : statusDots(group.list)}
+      ${queued ? `<button type="button" class="tsec-act" data-action="hold-all-queued" title="把排队中的 ${queued} 个任务转为只跟踪：不执行，只看状态">排队的都只跟踪</button>` : ''}
+      ${by !== 'status' && !focused ? `<button type="button" class="tsec-focus" data-focus-group="${esc(group.key)}" data-focus-label="${esc(group.label)}" title="只看这一组">${icon('filter', 'sm')}</button>` : ''}
+    </div>`;
+}
+
+function renderGroups(tasks) {
+  const by = groupBy();
+  return dimension(by).bucket(tasks).filter((group) => group.list.length).map((group) => {
+    const folded = isFolded(by, group);
+    return `
+      <section class="tsec ${folded ? 'is-folded' : ''}" data-section="${esc(group.key)}">
+        ${groupHead(by, group, folded)}
+        ${folded ? '' : `<div class="tsec-body">${group.list.map((t) => taskRow(t)).join('')}</div>`}
+      </section>`;
+  }).join('');
+}
+
+/** 从别处跳过来要看某一类（比如手机顶部「有 N 件事等你拍板」）：只看这一类，只生效一次。 */
+function applyRequestedFilter() {
+  const wanted = state.taskFilter;
+  if (!wanted || wanted === 'all') return;
+  state.taskFilter = 'all';
+  const id = wanted === 'waiting_approval' ? 'attention' : wanted;
+  const section = SECTIONS.find((item) => item.id === id);
+  if (section) state.taskFocus = { status: { key: section.id, label: section.label } };
+}
+
 export function renderTaskList() {
-  renderFilters();
+  applyRequestedFilter();
+  // 「按归类」沿用 classify.js 的渲染，它看 state.taskView。
+  state.taskView = groupBy() === 'category' ? 'grouped' : 'flat';
+  renderToolbar();
   renderQueueInfo();
-  const toggle = $('#task-view-toggle');
-  if (toggle) toggle.innerHTML = classify.viewToggleHtml();
   const box = $('#task-list');
   if (!box) return;
   const tasks = filteredTasks();
+  const tiles = state.tasks.length ? overviewTiles() : '';
   if (!tasks.length) {
-    box.innerHTML = `<div class="empty"><div class="empty-mark">${catMark({ sleeping: !state.taskQuery })}</div><p>${state.taskQuery ? '没有搜到相关任务，换个词试试？' : '这里还空着，静静在打盹。回对话里说一句，或者点右上角新建。'}</p></div>`;
+    const narrowed = Boolean(state.taskQuery.trim() || Object.keys(state.taskFocus).length);
+    box.innerHTML = `${tiles}<div class="empty"><div class="empty-mark">${catMark({ sleeping: !narrowed })}</div><p>${narrowed ? '这样筛下来没有卡。换个词，或者去掉上面的「只看」条件。' : '这里还空着，静静在打盹。回对话里说一句，或者点右上角新建。'}</p></div>`;
     return;
   }
   box.classList.toggle('is-grouped', classify.grouped());
-  box.innerHTML = classify.grouped() ? classify.renderGrouped(tasks, taskRow) : tasks.map((t) => taskRow(t)).join('');
+  box.innerHTML = tiles + (classify.grouped() ? classify.renderGrouped(tasks, taskRow) : renderGroups(tasks));
 }
 
 function renderQueueInfo() {
   const counts = state.stats?.counts || {};
   const paused = Boolean(state.stats?.paused ?? state.settings?.queuePaused);
   const parts = [
-    paused ? '调度已暂停，新任务只排队' : '调度运行中',
-    `排队 ${counts.queued ?? 0}`,
-    `执行中 ${counts.running ?? 0}`,
-    `等你拍板 ${counts.waiting_approval ?? 0}`,
-    `今日完成 ${state.stats?.doneToday ?? 0}`
+    paused ? '调度已暂停，排队的任务不会开始' : '调度运行中',
+    ...(counts.running ? [`${counts.running} 个正在做`] : []),
+    ...(state.stats?.doneToday ? [`今天做完 ${state.stats.doneToday} 个`] : [])
   ];
   const info = $('#queue-info');
   if (info) info.textContent = parts.join(' · ');
+  // 状态页的那一行保留完整计数：那里没有分段列表。
+  const full = [
+    paused ? '调度已暂停，新任务只排队' : '调度运行中',
+    `排队 ${counts.queued ?? 0}`,
+    `执行中 ${counts.running ?? 0}`,
+    ...(counts.held ? [`只跟踪 ${counts.held}`] : []),
+    `等你拍板 ${counts.waiting_approval ?? 0}`,
+    `今日完成 ${state.stats?.doneToday ?? 0}`
+  ];
   for (const id of ['#queue-toggle', '#status-queue-toggle']) {
     const btn = $(id);
     if (!btn) continue;
@@ -580,7 +635,7 @@ function renderQueueInfo() {
     btn.classList.toggle('warm', paused);
   }
   const statusInfo = $('#status-queue-info');
-  if (statusInfo) statusInfo.textContent = parts.join(' · ');
+  if (statusInfo) statusInfo.textContent = full.join(' · ');
 }
 
 export async function toggleQueue() {
@@ -656,13 +711,21 @@ export async function openTask(id, { reveal = false } = {}) {
     await switchView('tasks');
   }
   if (state.view === 'tasks' && isWide()) {
+    const target = taskById(id);
+    if (target && !filteredTasks().some((t) => t.id === id)) {
+      // 不在当前只看的范围里：去掉条件再选。
+      clearFocus();
+      state.taskQuery = '';
+      const search = $('#task-search');
+      if (search) search.value = '';
+    }
+    const by = groupBy();
+    const key = target ? groupKeyOf(by, target) : null;
+    if (key && sectionFold[foldId(by, key)]) setFold(by, key, false);
     if (!state.tasks.some((t) => t.id === id)) {
-      // 不在当前筛选结果里：切到「全部」再选。
       state.taskFilter = 'all';
       state.taskQuery = '';
-      state.taskSource = 'all';
-      state.taskSourceStatus = 'all';
-      state.taskOutcome = 'all';
+      clearFocus();
       const search = $('#task-search');
       if (search) search.value = '';
       renderTaskList();
@@ -786,6 +849,7 @@ function statusControl(task) {
 
 function primaryAction(task) {
   const id = esc(task.id);
+  if (task.status === 'held') return `<button type="button" class="btn sm" data-action="release-task" data-id="${id}" title="交回调度器排队执行">${icon('play', 'sm')}开始执行</button>`;
   if (ACTIVE_STATUSES.includes(task.status)) return `<button type="button" class="btn sm ghost danger" data-action="cancel-task" data-id="${id}">${icon('stop', 'sm')}停止</button>`;
   if (['failed', 'cancelled', 'done'].includes(task.status)) return `<button type="button" class="btn sm" data-action="retry-task" data-id="${id}">${icon('retry', 'sm')}${task.status === 'done' ? '重跑' : '重试'}</button>`;
   return '';
@@ -935,6 +999,8 @@ function taskMenu(anchor, task) {
   const items = [
     !running ? { label: '编辑任务', icon: 'edit', onSelect: () => editTask(task.id) } : null,
     !running ? { label: '换 Worker / 工作目录…', icon: 'cpu', onSelect: () => editExec(task.id) } : null,
+    !running && task.status !== 'held' ? { label: '转为只跟踪（不执行）', icon: 'pause', onSelect: () => holdTask(task.id) } : null,
+    task.status === 'held' ? { label: '停掉（不再跟踪）', icon: 'stop', onSelect: () => cancelTask(task.id) } : null,
     task.result ? { label: '复制结果', icon: 'copy', onSelect: () => copyText(task.result, '结果已复制。') } : null,
     replySourceOf(task) ? { label: '发回原会话', icon: 'reply', onSelect: () => openReplyDialog(task.id) } : null,
     task.status === 'done' && !task.workflow_id ? { label: '总结成流程', icon: 'flow', onSelect: () => learnTask({ dataset: { id: task.id }, disabled: false }) } : null
@@ -1056,6 +1122,53 @@ async function retryTask(taskId) {
   }
 }
 
+async function holdTask(taskId) {
+  try {
+    const data = await api(`/api/tasks/${taskId}/hold`, { method: 'POST' });
+    if (data.task) upsertTask(data.task);
+    if (data.stats) state.stats = { ...state.stats, ...data.stats };
+    changed('tasks');
+    refreshTaskDetail(taskId);
+    toast('已转为只跟踪：不会执行，来源状态照常同步。');
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function releaseTask(taskId) {
+  try {
+    const data = await api(`/api/tasks/${taskId}/release`, { method: 'POST' });
+    if (data.task) upsertTask(data.task);
+    if (data.stats) state.stats = { ...state.stats, ...data.stats };
+    changed('tasks');
+    refreshTaskDetail(taskId);
+    const paused = Boolean(state.stats?.paused ?? state.settings?.queuePaused);
+    toast(paused ? '已加入队列；调度暂停中，恢复调度后才会执行。' : '已交给调度器，排队执行。');
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+/** 排队中的一次全转为只跟踪：开调度前先把不想跑的拦下来。 */
+async function holdAllQueued() {
+  const n = state.stats?.counts?.queued ?? 0;
+  const ok = await ask({
+    title: `把排队中的 ${n} 个任务都转为只跟踪？`,
+    message: '它们会留在列表里、来源状态照常同步，但调度器不会执行。之后想做哪个，点那张卡的「开始执行」。',
+    okText: '都转为只跟踪'
+  });
+  if (!ok) return;
+  try {
+    const data = await api('/api/tasks/hold-queued', { method: 'POST' });
+    if (data.stats) state.stats = { ...state.stats, ...data.stats };
+    import('./sync.js').then((m) => m.resync()).catch(() => {});
+    changed('stats');
+    toast(data.count ? `${data.count} 个任务已转为只跟踪。` : '没有排队中的任务。');
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 async function deleteTask(taskId) {
   const task = taskById(taskId);
   const ok = await ask({ title: `删除「${task?.title || '这个任务'}」？`, message: '事件、审批和执行记录会一起清掉，不能恢复。', okText: '删除', danger: true });
@@ -1127,14 +1240,16 @@ function newTask() {
           <select name="worker"><option value="">自动（兜底 Worker）</option>${workerIds().map((worker) => `<option value="${esc(worker)}">${esc(workerLabel(worker))}</option>`).join('')}</select>
         </label>
         ${workspaces.length ? `<label class="field"><span>工作区</span><select name="cwd">${workspaceOptions()}</select></label>` : ''}
-      </div>`,
+      </div>
+      <label class="switch-row"><span><b>只跟踪，不执行</b><small>留在列表里看状态，调度器不会去做；之后想做再点「开始执行」。</small></span><input type="checkbox" class="switch" name="held" /></label>`,
     okText: '加入队列',
-    onSubmit: async ({ title, prompt, worker, cwd }) => {
+    onSubmit: async ({ title, prompt, worker, cwd, held }) => {
       if (!title.trim() || !prompt.trim()) throw new Error('任务名和指令都要填');
-      const data = await api('/api/tasks', { method: 'POST', body: { title, prompt, worker, ...(cwd ? { cwd } : {}) } });
+      const track = held === true;
+      const data = await api('/api/tasks', { method: 'POST', body: { title, prompt, worker, ...(cwd ? { cwd } : {}), held: track } });
       upsertTask(data.task);
       changed('tasks');
-      toast('任务已进队列。');
+      toast(track ? '已加入，只跟踪不执行。' : '任务已进队列。');
       await openTask(data.task.id, { reveal: true });
     }
   });
@@ -1190,6 +1305,7 @@ document.addEventListener('click', async (event) => {
   else if (action === 'reply-source') openReplyDialog(id);
   else if (action === 'cancel-task') { el.disabled = true; await cancelTask(id); }
   else if (action === 'retry-task') { el.disabled = true; await retryTask(id); }
+  else if (action === 'release-task') { el.disabled = true; await releaseTask(id); }
   else if (action === 'edit-task') editTask(id);
   else if (action === 'delete-task') deleteTask(id);
   else if (action === 'edit-exec') editExec(id);
@@ -1233,26 +1349,44 @@ $('#task-list')?.addEventListener('keydown', (event) => {
   }
 });
 
-$('#task-filters')?.addEventListener('click', (event) => {
-  const chip = event.target.closest('[data-task-filter]');
-  if (!chip) return;
-  state.taskFilter = chip.dataset.taskFilter;
-  renderTaskList();
-  if (isWide() && !filteredTasks().some((t) => t.id === state.selectedTaskId)) {
-    state.selectedTaskId = null;
-    ensureSelection();
+$('#task-list')?.addEventListener('click', (event) => {
+  const tile = event.target.closest('[data-focus-status]');
+  if (tile) {
+    const section = SECTIONS.find((item) => item.id === tile.dataset.focusStatus);
+    setFocus('status', section.id, section.label);
+    return;
   }
+  const focus = event.target.closest('[data-focus-group]');
+  if (focus) {
+    setFocus(groupBy(), focus.dataset.focusGroup, focus.dataset.focusLabel);
+    return;
+  }
+  const fold = event.target.closest('[data-fold-section]');
+  if (fold) {
+    const by = groupBy();
+    const key = fold.dataset.foldSection;
+    const group = dimension(by).bucket(filteredTasks()).find((item) => item.key === key);
+    if (group) setFold(by, key, !isFolded(by, group));
+    renderTaskList();
+    return;
+  }
+  if (event.target.closest('[data-action="hold-all-queued"]')) holdAllQueued();
+});
+
+$('#task-groupby')?.addEventListener('click', (event) => {
+  const option = event.target.closest('[data-group-by]');
+  if (option) setGroupBy(option.dataset.groupBy);
+});
+
+$('#task-focus')?.addEventListener('click', (event) => {
+  const chipEl = event.target.closest('[data-clear-focus]');
+  if (!chipEl) return;
+  if (chipEl.dataset.clearFocus === '__all') clearFocus();
+  else setFocus(chipEl.dataset.clearFocus, null);
+  renderTaskList();
 });
 
 let searchTimer = null;
-$('#task-filter-btn')?.addEventListener('click', (event) => openFilterPanel(event.currentTarget));
-$('#task-active-filters')?.addEventListener('click', (event) => {
-  const chip = event.target.closest('[data-clear-filter]');
-  if (!chip) return;
-  if (chip.dataset.clearFilter === 'all') { state.taskSource = 'all'; state.taskSourceStatus = 'all'; state.taskOutcome = 'all'; }
-  else state[chip.dataset.clearFilter] = 'all';
-  renderTaskList();
-});
 
 $('#task-search')?.addEventListener('input', (event) => {
   clearTimeout(searchTimer);
@@ -1282,8 +1416,8 @@ on('progress', () => {
     for (const row of $$('#task-list .trow')) {
       const task = taskById(row.dataset.selectTask);
       if (task?.status === 'running') {
-        const sub = row.querySelector('.trow-sub');
-        if (sub) sub.textContent = taskSubtitle(task).slice(0, 140);
+        const bar = row.querySelector('.tprog');
+        if (bar) bar.title = task.progress || '执行中';
       }
     }
   }
