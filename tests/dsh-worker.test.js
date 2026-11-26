@@ -5,7 +5,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { findHarness, detect, execute } from '../workers/dsh/index.js';
-import { estimateTokens } from '../src/worker-runtime.js';
+import { estimateTokens, extractApproval, APPROVAL_GUIDE } from '../src/worker-runtime.js';
+
+// 在 Harness 进程里跑测试时，这些变量会让 findHarness 以为「静静自己跑在 Harness 里」，
+// 于是命令行前面多出 bin.js。测试要的是「只认 which 找到的 dsh」这条路。
+delete process.env.DSH_NODE_EXECUTABLE;
+delete process.env.DSH_INSTALL_DIR;
+delete process.env.DSH_HOME;
 
 function fakeApp() {
   const apps = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jj-dsh-')), 'Applications');
@@ -67,6 +73,8 @@ function fakeCtx(output, { stream = false, sessionId = null } = {}) {
     config: { apiKey: 'sk-test' },
     workspace: '/tmp/ws',
     sessionId,
+    approvalGuide: APPROVAL_GUIDE,
+    parseApproval: extractApproval,
     checkpoint: (data) => { checkpoints.push(data); return data; },
     emit: async (message) => { emitted.push(message); },
     exec: async (cmd, args, options) => {
@@ -100,7 +108,9 @@ test('execute：在工作区里跑 dsh headless --json，并把它自己的 Key 
   assert.equal(result.summary, '改好了');
   assert.equal(result.tokens, 7658, '用 Harness 报的 token 数');
   assert.equal(calls[0].cmd, '/usr/local/bin/dsh');
-  assert.deepEqual(calls[0].args, ['headless', '--json', '修一下测试']);
+  assert.deepEqual(calls[0].args.slice(0, 2), ['headless', '--json']);
+  assert.ok(calls[0].args[2].startsWith('修一下测试'), '任务指令原样传进去');
+  assert.match(calls[0].args[2], /\[\[APPROVAL\]\]/, '要带上「怎么停下来问主人」的约定');
   assert.equal(calls[0].options.cwd, '/tmp/ws');
   assert.equal(calls[0].options.env.DEEPSEEK_API_KEY, 'sk-test');
   assert.equal(calls[0].options.env.DSH_SESSION_ID, null);
@@ -170,4 +180,50 @@ test('execute：dsh 启动失败但退出码是 0 时按失败处理', async () 
   assert.equal(result.status, 'failed');
   assert.equal(result.retryable, false);
   assert.match(result.summary, /MISSING_CREDENTIAL/);
+});
+
+test('execute：按约定留了 [[APPROVAL]] 时停下来等主人拍板，不算做完', async () => {
+  const text = '方案我列好了，改哪条得你定。\n\n[[APPROVAL]] {"question":"先按哪个方案改？","options":["A：只加文案","B：文案+到期列"]}';
+  const { ctx } = fakeCtx({ stdout: jsonLines([
+    { type: 'session', sessionId: 'session-1' },
+    { type: 'final', sessionId: 'session-1', reason: { kind: 'completed' }, text }
+  ]) });
+  const result = await execute({ prompt: '修一下测试' }, ctx);
+  assert.equal(result.status, 'needs_approval');
+  assert.equal(result.approval.question, '先按哪个方案改？');
+  assert.deepEqual(result.approval.options, ['A：只加文案', 'B：文案+到期列']);
+  assert.equal(result.summary, '方案我列好了，改哪条得你定。');
+  assert.equal(result.sessionId, 'session-1', '拍板后要接着这个会话');
+});
+
+test('execute：拍板后接着做时，把主人的选择说清楚，不说成服务重启', async () => {
+  const { ctx, calls } = fakeCtx({ stdout: jsonLines(dshEvents) }, { sessionId: 'session-1' });
+  ctx.resume = { question: '先按哪个方案改？', options: ['A', 'B'], choice: 1 };
+  const result = await execute({ prompt: '修一下测试', title: '修一下' }, ctx);
+  assert.equal(result.status, 'done');
+  assert.match(calls[0].args[4], /主人选择了：B/);
+  assert.doesNotMatch(calls[0].args[4], /服务重启/);
+});
+
+test('execute：服务重启恢复还按原来的说法接着跑', async () => {
+  const { ctx, calls } = fakeCtx({ stdout: jsonLines(dshEvents) }, { sessionId: 'session-1' });
+  ctx.recovery = { checkpoint: { sessionId: 'session-1' } };
+  await execute({ prompt: '修一下测试' }, ctx);
+  assert.match(calls[0].args[4], /服务重启/);
+});
+
+test('execute：拍板后接着做但没存下会话时，原任务和主人的决定都带上，选择不丢', async () => {
+  const { ctx, calls } = fakeCtx({ stdout: jsonLines(dshEvents) });
+  ctx.resume = { question: '先按哪个方案改？', options: ['A', 'B'], choice: 0 };
+  await execute({ prompt: '修一下测试', title: '修一下' }, ctx);
+  const prompt = calls[0].args[2];
+  assert.ok(!calls[0].args.includes('--session-id'), '没有会话就开新会话');
+  assert.ok(prompt.startsWith('修一下测试'), '新会话不记得任务，要带上原指令');
+  assert.match(prompt, /先按哪个方案改？/);
+  assert.match(prompt, /主人选择了：A/);
+
+  const custom = fakeCtx({ stdout: jsonLines(dshEvents) });
+  custom.ctx.resume = { question: '先按哪个方案改？', options: ['A', 'B'], choice: 2, answer: '两个都不要，先问产品' };
+  await execute({ prompt: '修一下测试' }, custom.ctx);
+  assert.match(custom.calls[0].args[2], /这样决定：两个都不要，先问产品/);
 });

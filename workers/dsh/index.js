@@ -81,9 +81,22 @@ export async function execute(task, ctx) {
   // 服务重启会打断 dsh 进程；之前存过会话 id 的话，用 --session-id 接着上次的会话继续，
   // 而不是从头再来（分支、未提交的改动都还在工作区里）。
   const resumeSession = String(ctx.sessionId || ctx.recovery?.checkpoint?.sessionId || '').trim();
-  const prompt = resumeSession
-    ? `服务重启打断了上一轮执行。请从上次停下的地方继续，不要重复已经完成的工作；先检查当前工作区状态（分支、未提交改动），再完成剩余步骤并给出最终结果。\n\n原任务：${task.prompt || task.title}`
-    : (task.prompt || task.title);
+  const resume = ctx.resume || null;
+  let prompt = task.prompt || task.title;
+  if (resume) {
+    // 拍板后接着做：把主人的选择说清楚，别让它当成「服务重启」把同一个问题再问一遍。
+    const picked = resume.answer
+      ? `主人没有选给出的选项，而是这样决定：${resume.answer}`
+      : `主人选择了：${resume.choice >= 0 ? resume.options?.[resume.choice] ?? String(resume.choice) : '取消'}`;
+    prompt = resumeSession
+      ? `（接着上次的会话继续）上一轮你问「${resume.question}」，${picked}\n请按主人的决定继续完成，不要再问同一个问题。`
+      // 没存下会话（比如 Harness 没报会话 id）：新会话里它不记得问过什么，原任务和决定都要带上，不然选择就丢了。
+      : `${prompt}\n\n上一轮你问「${resume.question}」，${picked}\n请按主人的决定完成这个任务，不要再问同一个问题。`;
+  } else if (resumeSession && ctx.recovery) {
+    prompt = `服务重启打断了上一轮执行。请从上次停下的地方继续，不要重复已经完成的工作；先检查当前工作区状态（分支、未提交改动），再完成剩余步骤并给出最终结果。\n\n原任务：${task.prompt || task.title}`;
+  }
+  // 需要主人拍板时怎么停下来问：不告诉它，它在结果里随口问一句「要我接着改吗？」，任务就直接算完成了。
+  if (ctx.approvalGuide) prompt = `${prompt}\n\n${ctx.approvalGuide}`;
   await ctx.emit(resumeSession ? '继续上次的 Harness 会话…' : 'DeepSeek Harness 已启动，正在自己的会话里工作…');
 
   // 用 --json 跑：Harness 会把每一步（工具调用、文字、结束原因）逐行写到 stdout，
@@ -173,6 +186,17 @@ export async function execute(task, ctx) {
   const reason = finalEvent?.reason?.kind;
   if (reason && reason !== 'completed') {
     return { status: 'failed', summary: `DeepSeek Harness 没有正常结束（${reason}）。\n${text.slice(-1200)}` };
+  }
+  // 它按约定在最后一行留了 [[APPROVAL]]：这件事得停下来等主人决定，而不是算做完。
+  const approval = ctx.parseApproval?.(text);
+  if (approval) {
+    return {
+      status: 'needs_approval',
+      summary: approval.text,
+      approval: approval.approval,
+      tokens: usage?.totalTokens || ctx.estimateTokens(text),
+      sessionId: savedSession || null
+    };
   }
   return {
     status: 'done',
