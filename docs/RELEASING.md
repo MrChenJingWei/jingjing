@@ -76,6 +76,7 @@ Windows 是 `packaging/windows/` 里的 C# 外壳、安装包脚本。
 - **tag 与 package.json 不一致**：CI 直接失败。先改版本号提交，再打 tag。
 - **发出去发现有问题**：再发一个补丁版本（0.7.2），不要覆盖已发布的版本号，用户可能已经装了。
 - **macOS / Windows job 失败**：在 Actions 里重跑该 job，或手动 `workflow_dispatch`（按当前 `package.json` 版本重新上传）。
+- **Windows job 卡在「运行测试」**：本地 `npm test` 只跑 macOS/Linux，Windows 只在 CI 上跑，本地绿不代表 Windows 绿。先看失败用例（Actions 的 annotations，或 `gh run view <run-id> --log`）；最常见的是测试里写死了 `/` 路径分隔符，例如 `path.relative` 在 Windows 返回反斜杠——断言用 `path.join('a', 'b')`，或按平台比较。修完先 push `main`，等 `test` workflow 的 Windows job 通过，再打 tag（release 会重跑一遍）。v0.13.1 修过一次 `tests/permissions.test.js`。
 - **要撤掉发错的 tag**：`git push --delete origin v0.7.1` 后重打；但用户已经拉到的更新不会自动回滚。
 - **更新说明从哪来**：CI 读 tag 的附注；脚本把 `--notes` 写进 tag，所以写用户能看懂的话。
 
