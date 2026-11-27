@@ -25,7 +25,7 @@
 - 条目也可以带 `workspace`（工作区 id）：只认 `settings.workspaces` 里已有的 id，找不到就按没带处理，所以插件指不到任意目录；
 - 删除工作区时，失效的插件绑定会被清空；组里的失效工作区在下次建任务时回落到来源绑定的 / 默认工作区。
 
-**工作区只决定任务的 `cwd`，不是权限边界**：Worker 以当前 macOS 账户运行，文件权限和工具权限由系统、Claude Code / Codex 自身配置决定，静静不注入工具白名单或权限模式。
+**工作区本身不是权限边界，但上面的 `permission` 决定给编码 Worker 多少权限**：`settings.workspaces[].permission = { level, allow }` 由主人拍板时写入（`read` 只读 / `edit` 可改文件 / `full` 可改文件并跑命令），也可以按任务临时放开；Worker 仍以当前 macOS 账户运行，真正的边界是系统账户和 Claude Code / Codex 自身的配置，插件线程也不是安全沙箱。
 
 ## 谁能决定什么
 
@@ -43,7 +43,7 @@
 ## 执行边界
 
 - `shell` / `file` Worker 只在任务工作区里移动或写入文件，目标路径越出工作区（`isInside` 校验）直接失败；
-- Claude Code 以 `claude -p` 运行，工具权限交给 Claude Code 自身的用户配置，静静不追加权限参数，也不使用 `--dangerously-skip-permissions`；
+- Claude Code 以 `claude -p` 运行，权限按工作区 / 拍板放开的范围换算成 `--permission-mode acceptEdits`、`--allowedTools`、`--add-dir`（见 [src/permissions.js](../../src/permissions.js)）；从不使用 `--dangerously-skip-permissions` / `bypassPermissions`，被拦下的操作会停下来问主人；
 - 第三方 Worker 插件的 `execute` 在独立线程里运行，取消 / 超时后强制结束；但它仍是同一个 Node 进程、同一个系统账户，能读写本机文件，**不是安全沙箱**；
 - 来源插件在主线程运行，各入口有宿主强制的时间上限，但同步死循环仍会卡住整个服务；
 - 只安装可信插件；manifest 里的 `capabilities` 只是声明，不做强制。

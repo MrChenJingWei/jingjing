@@ -18,6 +18,8 @@ function promptFor(task, ctx) {
   if (ctx.recovery) {
     return '（静静：服务重启打断了你上一次的执行。请先检查已经完成的部分，然后从中断的地方继续完成原来的任务。）';
   }
+  // 上一轮被权限拦下、主人放开后接着跑：只说这句，别把原任务再派一遍（会话里已经有了）。
+  if (ctx.permissionNote && ctx.sessionId) return withGuide(ctx.permissionNote, ctx);
   const resume = ctx.resume;
   if (!resume) {
     // 主人在上一轮结果之后接着说：会话还在就只发这句话，Claude 记得前面做过什么；会话没了 task.prompt 里已经拼好了前几轮。
@@ -33,16 +35,31 @@ function promptFor(task, ctx) {
   return `${task.prompt}\n\n用户刚刚对「${resume.question}」选择了：${picked}。请在此基础上继续完成。`;
 }
 
+/**
+ * 后台运行没人能点「允许」，要提示的操作都会被拒。权限只能在启动时给（宿主算好放在 ctx.permissions）：
+ * 可改文件 → acceptEdits；改文件和跑命令 → 再放开 Bash；拍板时放开的命令逐条加进 --allowedTools。
+ * 从不用 bypassPermissions。没给的仍然按主人自己的 Claude Code 配置来。
+ */
+export function permissionArgs(ctx) {
+  const p = ctx.permissions || {};
+  const level = p.level || (ctx.options?.allowEdits ? 'edit' : 'read');
+  const args = [];
+  if (level === 'edit' || level === 'full') args.push('--permission-mode', 'acceptEdits');
+  const allowed = [...(level === 'full' ? ['Bash'] : []), ...(p.allow || [])];
+  // --allowedTools 后面可以跟多个值，下一个以 -- 开头的参数为止；每条规则单独一个参数，规则里可以有空格。
+  if (allowed.length) args.push('--allowedTools', ...allowed);
+  // 工作区挂了多个文件夹、拍板时放开了工作区外的目录：都加进 Claude Code 能访问的目录。
+  for (const dir of [...new Set([...(ctx.extraDirs || []), ...(p.dirs || [])])]) args.push('--add-dir', dir);
+  return args;
+}
+
 async function runOnce(bin, task, ctx, { resumeId, prompt }) {
   // 新会话预先指定 session id 并存为断点：服务重启后可以 --resume 接着跑，而不是从头再来。
   const sessionId = resumeId || crypto.randomUUID();
   const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
   if (resumeId) args.push('--resume', resumeId);
   else args.push('--session-id', sessionId);
-  // 静静明确允许改文件的任务（比如在插件草稿目录里写插件）才自动接受编辑；其他任务交给用户自己的权限配置。
-  if (ctx.options?.allowEdits) args.push('--permission-mode', 'acceptEdits');
-  // 工作区挂了多个文件夹：都加进 Claude Code 能访问的目录。
-  for (const dir of ctx.extraDirs || []) args.push('--add-dir', dir);
+  args.push(...permissionArgs(ctx));
   await ctx.checkpoint({ sessionId });
 
   let final = null;
@@ -56,7 +73,7 @@ async function runOnce(bin, task, ctx, { resumeId, prompt }) {
     const text = describeEvent(event);
     if (text) ctx.emit(text);
   });
-  // 工具权限交给 Claude Code 自身的用户配置和 macOS 账户权限，静静不覆盖。
+  // 权限已经在启动参数里（permissionArgs）；运行中没人能点「允许」，被拦下的操作会走拍板流程。
   const result = await ctx.exec(bin, args, { cwd: ctx.workspace, onOutput: (chunk) => parser.push(chunk) });
   parser.flush();
   return { result, final, sessionId: final?.session_id || current };
@@ -86,6 +103,8 @@ export async function execute(task, ctx) {
     return { status: 'failed', summary: `Claude Code 没有返回结果（退出码 ${run.result.code}）。\n${tail}` };
   }
   const text = String(final.result || '').trim();
+  // 被拦下的操作：交给宿主问主人要不要放开，放开后接着这个会话做。
+  const permissionDenials = Array.isArray(final.permission_denials) ? final.permission_denials : [];
   const cost = Number(final.total_cost_usd) || 0;
   const tokens = ctx.estimateTokens(text);
   if (final.is_error || (final.subtype && final.subtype !== 'success')) {
@@ -98,7 +117,7 @@ export async function execute(task, ctx) {
   }
   const approval = ctx.parseApproval(text);
   if (approval) {
-    return { status: 'needs_approval', summary: approval.text, approval: approval.approval, sessionId, tokens, cost };
+    return { status: 'needs_approval', summary: approval.text, approval: approval.approval, sessionId, tokens, cost, permissionDenials };
   }
-  return { status: 'done', summary: text || 'Claude Code 没有输出文字结果。', sessionId, tokens, cost };
+  return { status: 'done', summary: text || 'Claude Code 没有输出文字结果。', sessionId, tokens, cost, permissionDenials };
 }

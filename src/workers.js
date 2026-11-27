@@ -17,6 +17,7 @@ import { chat, demoTaskOutput, llmMode } from './llm.js';
 import { capabilityCatalog, capabilityLabels, normalizeCapabilityIds } from './capabilities.js';
 import { normalizeAliases } from './routing-signals.js';
 import { pickWorker } from './worker-routing.js';
+import { effectivePermissions } from './permissions.js';
 import { which, clearWhichCache as clearWhich, sleep, runCommand, extractApproval, estimateTokens, terminateChildren, APPROVAL_GUIDE, OUTCOME_GUIDE, withOutcome } from './worker-runtime.js';
 import { importPluginEntry } from './plugin-loader.js';
 
@@ -418,6 +419,8 @@ function hostContext(descriptor, task, ctx) {
     resume: ctx.resume || null,
     // 主人在已经结束的卡上「接着做」：{ round, text }。task.prompt 已经拼好了前几轮，能续会话的 Worker 可以只发 text。
     followup: ctx.followup || null,
+    // 上一轮被权限拦下、主人放开之后接着跑：能续会话的 Worker 用这句话代替任务原文，避免从头重做。
+    permissionNote: ctx.permissionNote || null,
     // 需要主人拍板时该怎么停下来问（[[APPROVAL]] 标记）；在提示词里转述给自己的 Agent。
     approvalGuide: APPROVAL_GUIDE,
     // 做完一轮后怎么说「这件事算不算完」（[[OUTCOME]] 标记）；APPROVAL_GUIDE 里已经带了，单独给不拼 APPROVAL_GUIDE 的 Worker 用。
@@ -425,6 +428,8 @@ function hostContext(descriptor, task, ctx) {
     sessionId: task.resume_payload?.session_id || null,
     // 任务级运行选项，比如插件草稿任务的 { allowEdits: true }：允许编码 Agent 在工作目录里直接改文件。
     options: parseTaskOptions(task.options),
+    // 这一次执行能用的权限：{ level: read|edit|full, allow: [规则], dirs: [目录] }。编码 Agent 换成自己的启动参数。
+    permissions: effectivePermissions(task, settings),
     memories: ctx.memories || [],
     tasks: ctx.tasks || [],
     workers: workerCatalog({ onlyAvailable: true }),
@@ -520,6 +525,22 @@ function normalizeResult(descriptor, result) {
   if (!RESULT_STATUSES.has(result.status)) throw new Error(`execute() 返回了未知状态：${result.status}`);
   if (result.status === 'needs_approval' && !result.approval?.question) {
     throw new Error('needs_approval 必须带 approval.question');
+  }
+  // 被拦下的操作（Claude Code 的 permission_denials）：只留认得的形状，调度器据此问主人要不要放开。
+  if (result.permissionDenials !== undefined) {
+    const list = Array.isArray(result.permissionDenials) ? result.permissionDenials : [];
+    result.permissionDenials = list
+      .filter((item) => item && typeof item === 'object' && typeof (item.tool_name || item.tool) === 'string')
+      .slice(0, 50)
+      .map((item) => {
+        const input = item.tool_input && typeof item.tool_input === 'object' ? item.tool_input : {};
+        // 只留定位这次操作要用的字段：Write 的 content 是整个文件内容，留着会撑大审批数据。
+        const kept = {};
+        for (const key of ['command', 'file_path', 'notebook_path', 'path', 'url']) {
+          if (typeof input[key] === 'string' && input[key]) kept[key] = input[key].slice(0, 600);
+        }
+        return { tool_name: String(item.tool_name || item.tool), tool_input: kept };
+      });
   }
   // done 时认出 Worker 给的结论（outcome 字段或输出末尾的 [[OUTCOME]] 标记）。
   return withOutcome(result);

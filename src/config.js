@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { normalizeWorkspacePermission } from './permissions.js';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -68,7 +69,9 @@ export const DEFAULT_SETTINGS = {
   channels: {
     telegram: { enabled: false, token: '', chatId: '' },
     feishu: { enabled: false, webhook: '' },
-    webhook: { enabled: false, url: '' }
+    webhook: { enabled: false, url: '' },
+    // 桌面 App（macOS / Windows）的系统通知：窗口在最前面时也弹。关掉就只在窗口不在前台时弹。
+    desktop: { whenFrontmost: true }
   },
   claude: {
     enabled: true
@@ -104,7 +107,9 @@ export function normalizeWorkspaces(settings) {
     const extraPaths = Array.isArray(item.extraPaths)
       ? [...new Set(item.extraPaths.map((p) => String(p || '').trim()).filter((p) => p && p !== dir))].slice(0, 12)
       : [];
-    cleaned.push({ id, name: name.slice(0, 60), path: dir, ...(extraPaths.length ? { extraPaths } : {}), ...(aliases.length ? { aliases } : {}) });
+    // permission：这个工作区里 Worker 能做什么（见 permissions.js）；只读、没放开命令时不存。
+    const permission = normalizeWorkspacePermission(item.permission);
+    cleaned.push({ id, name: name.slice(0, 60), path: dir, ...(extraPaths.length ? { extraPaths } : {}), ...(aliases.length ? { aliases } : {}), ...(permission ? { permission } : {}) });
   }
   if (!cleaned.length) {
     cleaned.push({

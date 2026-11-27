@@ -1,10 +1,11 @@
-import { db, now, uid, getSettings, rowTask, rowApproval, event, transaction } from './db.js';
+import { db, now, uid, getSettings, saveSettings, maskSettings, rowTask, rowApproval, event, transaction } from './db.js';
 import { TASK_OUTCOMES as OUTCOMES } from './worker-runtime.js';
 import { bus } from './events.js';
 import * as memory from './memory.js';
 import * as lifecycle from './lifecycle.js';
 import * as workflows from './workflows.js';
-import { runWorker, availability, isWorker, workerLimits, workerRecovery, workerLabelOf, defaultWorker, reportUrl, workerCatalog, terminateChildren } from './workers.js';
+import { runWorker, availability, isWorker, workerLimits, workerRecovery, workerLabelOf, defaultWorker, reportUrl, workerCatalog, terminateChildren, extraDirsFor } from './workers.js';
+import { effectivePermissions, requestFromDenials, describeRequest, isEmptyRequest, mergeGrant, mergeWorkspacePermission } from './permissions.js';
 import { namedWorker, handoffWorker } from './worker-routing.js';
 import { ensureWorkerRule, listWorkerRules } from './worker-rules.js';
 import * as channels from './channels.js';
@@ -327,6 +328,81 @@ function autoApprove(task, approvalId) {
   return true;
 }
 
+/** 任务上的 options 存在库里是 JSON 字符串，也兼容已经解析过的对象。 */
+function parseOptions(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value) || {}; } catch { return {}; }
+}
+
+/**
+ * 被权限拦下的操作 → 还要主人放开什么；已经放开过的会从 effectivePermissions 里滤掉，
+ * 所以同样的请求不会问第二遍。
+ */
+function permissionRequestFor(task, result, settings) {
+  const denials = Array.isArray(result.permissionDenials) ? result.permissionDenials : [];
+  if (!denials.length) return null;
+  const cwd = task.cwd || settings.defaultCwd || '';
+  const request = requestFromDenials(denials, {
+    workspace: cwd,
+    extraDirs: extraDirsFor(cwd, settings),
+    granted: effectivePermissions(task, settings)
+  });
+  return isEmptyRequest(request) ? null : request;
+}
+
+/**
+ * 有操作被拦下：停下来问主人。选项按「只这一次 / 以后这个工作区都允许 / 不放开」给，
+ * 选完由 approve() 把放开的内容记到任务或工作区上，再接着这个会话重跑。
+ */
+function askPermission(task, result, request, settings) {
+  const permissions = effectivePermissions(task, settings);
+  const workspace = (settings.workspaces || []).find((ws) => ws.id === permissions.workspaceId) || null;
+  // 命令规则和「可改文件」能记在工作区上；只是要用工作区外的目录时，「以后都允许」没有可记的东西。
+  const persistable = Boolean(workspace && (request.edit || request.rules.length));
+  const blocked = describeRequest(request, { workspace: task.cwd || '' });
+  const options = ['只放开这一次'];
+  const choices = ['task'];
+  if (persistable) {
+    options.push(`以后「${workspace.name}」都允许`);
+    choices.push('workspace');
+  }
+  options.push('不放开');
+  choices.push('deny');
+  const question = `「${workerLabelOf(task.worker)}」有几项操作被权限拦下了（后台执行时没人能点「允许」）：${blocked.join('；')}。`;
+  const approvalId = uid('a_');
+  transaction(() => {
+    db.prepare(`
+      INSERT INTO approvals(id, task_id, question, options, status, kind, custom, meta, created_at)
+      VALUES(?,?,?,?, 'pending', 'permission', 0, ?, ?)
+    `).run(approvalId, task.id, question, JSON.stringify(options), JSON.stringify({
+      request,
+      choices,
+      workspaceId: workspace?.id || null,
+      summary: String(result.summary || '').slice(0, 4000),
+      sessionId: result.sessionId || null,
+      tokens: result.tokens || 0,
+      cost: result.cost || 0
+    }), now());
+    setStatus(task.id, {
+      status: 'waiting_approval',
+      approval_id: approvalId,
+      result: result.summary || '',
+      progress: '有几项操作被拦下了，等你决定要不要放开',
+      tokens: (task.tokens || 0) + (result.tokens || 0),
+      cost: (task.cost || 0) + (result.cost || 0),
+      resume_payload: resumePayload(task.id, result.sessionId ? { session_id: result.sessionId } : {})
+    });
+    event(task.id, 'task/waiting_approval', { approvalId, question, options, kind: 'permission' });
+  });
+  const approval = getApproval(approvalId);
+  bus.emit('approval/created', { approval, task: getTask(task.id) });
+  emitTask(getTask(task.id));
+  // 不走 autoApprove：权限不能由习惯替主人放开。
+  channels.notifyApproval(approval, getTask(task.id)).catch((err) => console.warn('[channel]', err.message));
+  return approval;
+}
+
 async function execute(task) {
   const settings = getSettings();
   const limits = workerLimits(task.worker);
@@ -336,6 +412,12 @@ async function execute(task) {
   const recovery = task.resume_payload?.recovered || null;
   if (recovery) {
     const { recovered: _drop, ...rest } = task.resume_payload;
+    db.prepare('UPDATE tasks SET resume_payload = ? WHERE id = ?').run(JSON.stringify(rest), task.id);
+  }
+  // 上一轮被权限拦下、主人放开后接着跑：这句提示只用一次（Worker 用它代替任务原文继续会话）。
+  const permissionNote = task.resume_payload?.permission_note || null;
+  if (permissionNote) {
+    const { permission_note: _drop, ...rest } = task.resume_payload;
     db.prepare('UPDATE tasks SET resume_payload = ? WHERE id = ?').run(JSON.stringify(rest), task.id);
   }
 
@@ -393,6 +475,8 @@ async function execute(task) {
       resume,
       recovery,
       followup: followup ? { round: followup.round, text: followup.text } : null,
+      // 权限放开后接着跑：让 Worker 用这句话代替任务原文，别从头重做。
+      permissionNote,
       // Worker 只拿业务记忆；静静的人格记忆不进任务。
       memories: memory.context(`${task.title} ${task.prompt}`, { limit: 6, domain: 'work' }),
       tasks: listTasks({ limit: 10 }),
@@ -477,7 +561,13 @@ async function execute(task) {
       return;
     }
 
-    // done
+    // done：有操作被权限拦下时先问主人要不要放开；放开后接着这次的会话继续，不当成做完。
+    const permissionRequest = permissionRequestFor(task, result, settings);
+    if (permissionRequest) {
+      outcome = 'waiting_approval';
+      askPermission(task, result, permissionRequest, settings);
+      return;
+    }
     outcome = 'done';
     const summary = result.summary || '完成';
     // Worker 给了结论（比如 proposed：方案等你确认）就记下；没给就留空，由列表从结果推断。
@@ -663,6 +753,70 @@ export function approve(approvalId, choice, { by = 'user', answer = '' } = {}) {
       event(task.id, 'approval/resolved', { ...resolvedEvent, ...(rule ? { rule: { id: rule.id, name: rule.name } } : {}) });
     });
     if (rule) bus.emit('worker-rules/updated', { rules: listWorkerRules() });
+    return done(getTask(task.id));
+  }
+
+  // 被权限拦下的操作：把主人放开的范围记到任务（或工作区）上，再带着这个会话重跑一轮。
+  if (approval.kind === 'permission') {
+    const meta = approval.meta || {};
+    const request = meta.request && typeof meta.request === 'object' ? meta.request : null;
+    const action = meta.choices?.[index] || 'deny';
+    const resolvedEvent = { approvalId, choice: index, option: approval.options[index] ?? null, by, kind: 'permission' };
+    if (!request || action === 'deny') {
+      const blocked = request ? describeRequest(request, { workspace: task.cwd || '' }) : [];
+      const note = blocked.length ? `（没有放开的操作：\n${blocked.map((line) => `- ${line}`).join('\n')}）` : '';
+      const text = [String(task.result || meta.summary || '').trim(), note].filter(Boolean).join('\n\n');
+      transaction(() => {
+        resolveRow();
+        event(task.id, 'approval/resolved', resolvedEvent);
+      });
+      // 主人选择不放开：这轮就停在这里，和「选了不处理」一样算停止，不算完成。
+      return done(finalize(task.id, 'cancelled', { approval_id: null, result: text }, { data: { summary: text.slice(0, 2000), permission: 'denied' } }));
+    }
+    const nextHops = (task.hops || 0) + 1;
+    const limit = getSettings().maxHops || 6;
+    if (nextHops > limit) {
+      const message = `已经来回放开权限 ${nextHops - 1} 次还没做完，为避免无限循环已停止。可以把要求说得更具体后手动重试。`;
+      transaction(() => {
+        resolveRow();
+        event(task.id, 'approval/resolved', resolvedEvent);
+      });
+      return done(finalize(task.id, 'failed', { approval_id: null, error: message, result: message }, { data: { error: '权限放开次数超过上限', hops: nextHops } }));
+    }
+    // 「以后都允许」把改文件和命令规则记在工作区上；工作区外的目录换了任务未必还要，记在当前任务上。
+    const toWorkspace = action === 'workspace' && Boolean(meta.workspaceId);
+    if (toWorkspace) {
+      const settings = getSettings();
+      const workspaces = (settings.workspaces || []).map((ws) => (ws.id === meta.workspaceId
+        ? { ...ws, permission: mergeWorkspacePermission(ws.permission, request) }
+        : ws));
+      saveSettings({ workspaces });
+      bus.emit('settings/updated', { settings: maskSettings(getSettings()) });
+    }
+    const options = parseOptions(task.options);
+    const grant = mergeGrant(options.permissions?.grant, toWorkspace ? { ...request, rules: [] } : request);
+    const blocked = describeRequest(request, { workspace: task.cwd || '' });
+    const note = blocked.length
+      ? `已经放开了刚才被拦下的操作（${blocked.join('；')}）。请接着原来的任务继续，已经做完的部分不要重做。`
+      : '被拦下的操作已经放开了，请接着原来的任务继续，已经做完的部分不要重做。';
+    transaction(() => {
+      resolveRow();
+      setStatus(task.id, {
+        status: 'queued',
+        hops: nextHops,
+        approval_id: null,
+        progress: '权限放开了，接着这次的会话继续…',
+        options: JSON.stringify({ ...options, permissions: { ...(options.permissions || {}), grant } }),
+        resume_payload: JSON.stringify({ ...(task.resume_payload || {}), permission_note: note })
+      });
+      event(task.id, 'approval/resolved', resolvedEvent);
+      event(task.id, 'task/permission-granted', {
+        edit: Boolean(grant.edit),
+        rules: request.rules,
+        dirs: request.dirs,
+        scope: toWorkspace ? 'workspace' : 'task'
+      });
+    });
     return done(getTask(task.id));
   }
 
@@ -923,7 +1077,7 @@ export function continueTask(taskId, text, { by = 'user' } = {}) {
     ...(prev?.transcript || []),
     { round: round - 1, ask: prev?.text || null, status: task.status, result: clip(task.result || task.error, TURN_CHARS) }
   ].slice(-TRANSCRIPT_KEEP);
-  const { approval: _a, checkpoint: _c, recovered: _r, ...rest } = payload;
+  const { approval: _a, checkpoint: _c, recovered: _r, permission_note: _p, ...rest } = payload;
   transaction(() => {
     if (task.approval_id) {
       db.prepare("UPDATE approvals SET status = 'expired', resolved_at = ? WHERE id = ? AND status = 'pending'")

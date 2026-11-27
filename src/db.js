@@ -574,8 +574,29 @@ export function pluginSettings(settings = getSettings()) {
   return copy;
 }
 
+/**
+ * 工作区权限只由「拍板放开」这类流程写：设置页保存工作区时只带 id/name/path/extraPaths，
+ * 没有 permission 字段时要沿用原来的，别顺手把拍板放开的权限抹掉。显式传 permission（含 null，表示清掉）才改。
+ * 换了文件夹就当作新的工作区，不继承原来的权限（放开的范围跟着目录走）。
+ */
+function keepWorkspacePermissions(patch, current) {
+  const list = patch?.workspaces;
+  if (!Array.isArray(list) || !Array.isArray(current?.workspaces)) return patch;
+  const previous = new Map(current.workspaces.map((ws) => [ws.id, ws]));
+  const sameDir = (a, b) => String(a || '').trim() === String(b || '').trim();
+  return {
+    ...patch,
+    workspaces: list.map((ws) => {
+      if (!ws || typeof ws !== 'object' || 'permission' in ws) return ws;
+      const before = previous.get(ws.id);
+      return before?.permission && sameDir(before.path, ws.path) ? { ...ws, permission: before.permission } : ws;
+    })
+  };
+}
+
 export function saveSettings(patch) {
-  const next = deepMerge(getSettings(), patch);
+  const current = getSettings();
+  const next = deepMerge(current, keepWorkspacePermissions(patch, current));
   setSetting('config', next);
   return next;
 }

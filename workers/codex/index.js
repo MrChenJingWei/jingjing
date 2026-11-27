@@ -18,7 +18,9 @@ export async function execute(task, ctx) {
   await ctx.emit('Codex 已启动…');
   // 静静明确允许改文件的任务才用 --full-auto（只能写工作目录）；其他任务按 codex 自己的默认沙箱。
   // `--` 之后都当成 prompt：以「-」开头的消息（比如 Markdown 列表）不会被当成命令行选项。
-  const args = ['exec', ...(ctx.options?.allowEdits ? ['--full-auto'] : []), '--skip-git-repo-check', '--', prompt];
+  // 可改文件 / 改文件和跑命令（或插件草稿任务）：--full-auto 让它在工作区里改文件、跑命令；只读时用 Codex 自己的默认沙箱。
+  const level = ctx.permissions?.level || (ctx.options?.allowEdits ? 'edit' : 'read');
+  const args = ['exec', ...(level !== 'read' ? ['--full-auto'] : []), '--skip-git-repo-check', '--', prompt];
   const result = await ctx.exec(bin, args, { cwd: ctx.workspace });
   if (result.error === 'aborted') return { status: 'cancelled', summary: '任务已停止。' };
   const text = (result.stdout || result.stderr).trim() || `Codex 退出码 ${result.code}`;

@@ -82,7 +82,7 @@ const openedRounds = new Set();
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function approvalBlock(task, approval) {
-  const hostQuestion = approval.kind === 'routing' || approval.kind === 'recovery';
+  const hostQuestion = approval.kind === 'routing' || approval.kind === 'recovery' || approval.kind === 'permission';
   return `
     <div class="approval">
       <div class="approval-q">${icon('alert')}<span>${esc(approval.question)}</span></div>
@@ -804,6 +804,10 @@ function eventDetail(e) {
   if (e.type === 'task/remote_action') return `${e.data.actorName || e.data.actor} 在${e.data.label}里${{ approve: '拍板', continue: '让它接着做', cancel: '停掉了它' }[e.data.action] || e.data.action}`;
   if (e.type === 'task/remote_denied') return `${e.data.label} 的用户 ${e.data.actor || '（未知）'} 想${e.data.action === 'approve' ? '拍板' : '操作'}，不在「能拍板的人」里`;
   if (e.type === 'approval/resolved') return e.data.option ? (e.data.custom ? `你的决定：${e.data.option}` : `${e.data.by === 'habit' ? '按习惯自动' : ''}选择：${e.data.option}`) : '';
+  if (e.type === 'task/permission-granted') {
+    const bits = [e.data?.edit ? '改文件' : '', ...(e.data?.rules || []), ...(e.data?.dirs || []).map((dir) => `目录 ${dir}`)].filter(Boolean);
+    return `${e.data?.scope === 'workspace' ? '以后这个工作区' : '这次'}放开：${bits.join('、') || '被拦下的操作'}`;
+  }
   if (e.type === 'task/recovered') return { resume: '从断点继续', restart: '重新执行', ask: '等你决定是否重跑' }[e.data.mode] || '';
   if (e.type === 'task/started') return e.data.attempt > 1 ? `第 ${e.data.attempt} 次执行` : '';
   if (e.type === 'task/retry') return `第 ${e.data.attempt} 次尝试：${e.data.error || ''}`;

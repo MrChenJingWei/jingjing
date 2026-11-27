@@ -48,3 +48,21 @@ test('Claude Code Worker：附加文件夹用 --add-dir 传进去', async () => 
   const pairs = seen.map((arg, i) => (arg === '--add-dir' ? seen[i + 1] : null)).filter(Boolean);
   assert.deepEqual(pairs, ['/a/api', '/a/docs']);
 });
+
+test('保存工作区时没带 permission 就沿用原来的，别顺手把拍板放开的权限抹掉', async () => {
+  const { saveSettings, getSettings } = await import('../src/db.js');
+  const permission = { level: 'edit', allow: ['Bash(npm test:*)'] };
+  saveSettings({ workspaces: [{ id: 'w', name: '主', path: '/a/web', extraPaths: ['/a/api'], permission }] });
+  // 设置页保存时只回传这几个字段（权限在界面上还没有可编辑的地方）。
+  saveSettings({ workspaces: [{ id: 'w', name: '改了名', path: '/a/web', extraPaths: ['/a/api'] }] });
+  const kept = getSettings().workspaces.find((item) => item.id === 'w');
+  assert.equal(kept.name, '改了名');
+  assert.deepEqual(kept.permission, permission);
+  // 换了文件夹就当作新的工作区：权限跟着目录走，不继承。
+  saveSettings({ workspaces: [{ id: 'w', name: '改了名', path: '/a/other' }] });
+  assert.equal(getSettings().workspaces.find((item) => item.id === 'w').permission, undefined);
+  // 显式传 null 才是清掉。
+  saveSettings({ workspaces: [{ id: 'w', name: '改了名', path: '/a/other', permission: permission }] });
+  saveSettings({ workspaces: [{ id: 'w', name: '改了名', path: '/a/other', permission: null }] });
+  assert.equal(getSettings().workspaces.find((item) => item.id === 'w').permission, undefined);
+});

@@ -26,7 +26,7 @@
 | `dsh` | DeepSeek Harness | code · write-file · manage-files · text | 4 | resume | 60 分钟 / 1 / 0 |
 
 - `shell` / `file` 只在任务工作区里移动或写文件，越界（`isInside` 校验）直接失败；
-- `claude` 以 `claude -p` 运行，工具权限交给 Claude Code 自己的用户配置，静静不追加权限参数；
+- `claude` 以 `claude -p` 运行，权限由工作区 / 拍板放开的范围换算成 `--permission-mode`、`--allowedTools`、`--add-dir`；后台没人能点「允许」，被拦下的操作会停下来问主人，放开后接着原来的会话继续；
 - 编码类 Worker 存会话 id，拍板后、重启后能接着原来的会话。
 
 用户安装的 Worker 插件在 `<data>/plugins/<id>/`，由 [插件体系](plugins.md) 加载后注册进来。
