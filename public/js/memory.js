@@ -89,6 +89,7 @@ function renderMemories() {
     const about = m.subject && m.subject !== 'owner' && m.subject !== 'self' ? personName(m.subject) : '';
     const tags = [
       KIND_LABEL[m.kind] ? `<span class="mem-tag">${esc(KIND_LABEL[m.kind])}</span>` : '',
+      m.superseded_by ? '<span class="mem-tag" title="后来有新的说法，这条归档了；内容没删，可以点「想起来」恢复">已被新说法替代</span>' : '',
       about ? `<span class="mem-tag">关于 ${esc(about)}</span>` : '',
       ...(m.tags || []).map((t) => `<span class="mem-tag">#${esc(t)}</span>`)
     ].join('');

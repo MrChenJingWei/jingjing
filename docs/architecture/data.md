@@ -40,6 +40,7 @@
 | `sessions` | 会话（主人是 `main`，外人是 `ext:<id>`），带滚动摘要和 `encoded_upto` |
 | `messages` | 消息（含 task_id 引用、kind、meta） |
 | `memories` | 分层记忆，`domain` 分业务 / 人格；`memories_fts` 是 trigram 全文索引 |
+| `memory_refs` | 记忆挂的实体（工作区 / 分类 / 人 / 工具 / 文件），按 `(memory_id, kind, key)` 存 |
 | `people` | 认识的人（主人 id = `owner`）：熟悉度、好感、印象、来往次数 |
 | `persona_versions` | 人设的每一版 |
 

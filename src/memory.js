@@ -11,7 +11,8 @@
  * - 检索打分 = 相关 + 新近（保持率）+ 重要 + 情绪强度，参考 Generative Agents 的记忆流检索。
  * - 每天整理：快忘光的情景记忆归档（不删）；被反复想起的情景记忆转成语义记忆（复述巩固）。
  */
-import { db, now, uid } from './db.js';
+import { db, now, uid, getSetting, setSetting, transaction } from './db.js';
+import { hasName, listEntities, matchEntities, refsForMemory } from './entities.js';
 
 const LAYERS = new Set(['working', 'episodic', 'semantic', 'profile']);
 export const DOMAINS = ['work', 'persona'];
@@ -60,7 +61,13 @@ function hydrate(row) {
   return item;
 }
 
-export function remember({
+/**
+ * 写一条记忆（remember 的增强版，所有写入最终都走这里）：
+ * - 去重：同一件事只留一条，补重要度、延长稳定度；
+ * - refs：挂上这次说到的实体（工作区/分类/人/工具/文件），以后靠它被「触达」；
+ * - 冲突：同一主体同一类型的旧说法（偏好变了之类）归档并记 superseded_by——不删，记忆页能看到。
+ */
+export function write({
   text,
   layer = 'semantic',
   kind = 'fact',
@@ -70,7 +77,8 @@ export function remember({
   domain = 'work',
   subject = null,
   valence = null,
-  arousal = null
+  arousal = null,
+  refs = null
 }) {
   const clean = String(text || '').trim();
   if (!clean) return null;
@@ -78,15 +86,23 @@ export function remember({
   domain = domainOf(domain);
   importance = clamp(importance, 0, 1);
   const feel = { valence: valence == null ? null : clamp(valence, -1, 1), arousal: arousal == null ? null : clamp(arousal, 0, 1) };
+  const linked = refsForMemory(clean, { domain, refs });
 
   const dup = findSame(clean, layer, domain);
   if (dup) {
     // 同一件事又被提起（原话一样，或者只是说法稍有不同）：不重复记，而是更重要一点、记得更牢，淡忘的重新想起来。
-    db.prepare('UPDATE memories SET importance = MAX(importance, ?), subject = COALESCE(subject, ?), archived = 0 WHERE id = ?').run(importance, subject, dup.id);
+    // 如果它之前被后来的说法替代过，这次重新提起就是又改回来了：把替代它的那条也归档。
+    const supersededBy = dup.superseded_by || null;
+    db.prepare('UPDATE memories SET importance = MAX(importance, ?), subject = COALESCE(subject, ?), archived = 0, superseded_by = NULL WHERE id = ?').run(importance, subject, dup.id);
+    if (supersededBy) {
+      db.prepare('UPDATE memories SET archived = 1, superseded_by = ? WHERE id = ? AND COALESCE(archived, 0) = 0').run(dup.id, supersededBy);
+    }
     reinforce(dup.id);
+    linkRefs(dup.id, linked);
     return get(dup.id);
   }
 
+  const superseded = findSupersedable(clean, { layer, kind, domain, subject });
   const id = uid('m_');
   db.prepare(`
     INSERT INTO memories(id, layer, kind, text, tags, importance, source, created_at, use_count, domain, stability, valence, arousal, subject, archived)
@@ -95,7 +111,31 @@ export function remember({
     id, layer, kind, clean, JSON.stringify(tags), importance, source, now(), domain,
     initialStability(layer, importance, feel.arousal || 0), feel.valence, feel.arousal, subject
   );
+  linkRefs(id, linked);
+  if (superseded) db.prepare('UPDATE memories SET archived = 1, superseded_by = ? WHERE id = ?').run(id, superseded.id);
   return get(id);
+}
+
+/** 兼容旧调用：remember 就是 write。 */
+export function remember(options) {
+  return write(options);
+}
+
+/** 给这条记忆挂实体引用（重复的忽略）。 */
+function linkRefs(memoryId, refs) {
+  if (!refs?.length) return 0;
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO memory_refs(memory_id, kind, key, role, weight, created_at)
+    VALUES(?,?,?, 'about', 1, ?)
+  `);
+  let added = 0;
+  for (const ref of refs) added += stmt.run(memoryId, ref.kind, ref.key, now()).changes;
+  return added;
+}
+
+/** 记忆挂了哪些实体（记忆页/测试用）。 */
+export function refsOf(memoryId) {
+  return db.prepare('SELECT kind, key FROM memory_refs WHERE memory_id = ? ORDER BY kind, key').all(memoryId);
 }
 
 export function get(id) {
@@ -122,6 +162,39 @@ function findSame(text, layer, domain) {
     if (score > bestScore) { best = row; bestScore = score; }
   }
   return bestScore >= SAME_MEMORY ? best : null;
+}
+
+// 会被「新说法」替代的类型：偏好、画像、事实、手动记的笔记。
+// 经历（episodic）和日记不参与：发生过的事不会因为后来又说了一句就被替代。
+const SUPERSEDABLE_KINDS = new Set(['preference', 'profile', 'fact', 'note']);
+// 新说法里出现这些字，说明是在更新/否定旧说法，而不是补充一件新事。
+// 只认明确的「换掉/不要了」说法；单独的「不」「没」「现在」太容易误伤，宁可漏也先不替代。
+const CHANGE_MARK = /(?:不再|不用|不要|别用|不喜欢|不爱|不想|改成|换成|改为|换为|改到|换到|改回|换回|取消|停止|作废|重新|以后不|现在不|已经不用|已经改成)/;
+
+/**
+ * 找一条「被这句话更新掉」的旧记忆：同一主体、同一类型、说法相近，并且新说法在否定/更新它。
+ * 只挑最像的一条；宁可漏，不要误杀。命中后旧条目归档并记 superseded_by，不删除。
+ */
+function findSupersedable(text, { layer, kind, domain, subject }) {
+  if (!SUPERSEDABLE_KINDS.has(kind) && layer !== 'profile') return null;
+  if (String(text).length < 4) return null;
+  const rows = db.prepare(`
+    SELECT * FROM memories
+    WHERE domain = ? AND subject IS ? AND kind = ?
+      AND COALESCE(archived, 0) = 0 AND superseded_by IS NULL
+    ORDER BY created_at DESC LIMIT 100
+  `).all(domain, subject ?? null, kind);
+  // 只有明确在更新/否定的说法才替代；单纯补一条同类偏好（「喜欢用 vim」之后「喜欢用 emacs」）
+  // 不动旧的——宁可留着两条，也不要自动把旧信息藏掉。
+  if (!CHANGE_MARK.test(text)) return null;
+  const threshold = 0.5;
+  let best = null;
+  let bestScore = 0;
+  for (const row of rows) {
+    const score = similarity(text, row.text);
+    if (score > bestScore) { best = row; bestScore = score; }
+  }
+  return bestScore >= threshold ? best : null;
 }
 
 /** 想起一次：间隔越久、当时越模糊，巩固得越多。 */
@@ -270,7 +343,7 @@ export function similarity(a, b) {
  * 回想：从记忆里挑出和眼下最相关的几条，并巩固它们。
  * subjects：只看关于这些人的记忆（null 表示不限；给外人用时传 [null, 'self', 对方]，别人的事不往外说）。
  */
-export function recall(query, { limit = 8, domain = 'work', subjects = null, focus = null, reinforceHits = true, at = Date.now() } = {}) {
+export function recall(query, { limit = 8, domain = 'work', subjects = null, focus = null, reinforceHits = true, at = Date.now(), refs = [] } = {}) {
   const scope = domainOf(domain);
   const pool = new Map();
   const add = (rows) => { for (const row of rows) if (!pool.has(row.id)) pool.set(row.id, row); };
@@ -278,18 +351,24 @@ export function recall(query, { limit = 8, domain = 'work', subjects = null, foc
   add(db.prepare(`${base} ORDER BY COALESCE(last_used_at, created_at) DESC LIMIT 200`).all(scope));
   add(db.prepare(`${base} ORDER BY importance DESC LIMIT 60`).all(scope));
   if (query) add(search(query, 30, { domain: scope }));
+  // 情境触达：当前工作区/分类/人/工具/文件对上的记忆加分（文本里提到 + 写入时挂过引用），
+  // 这样"消息里没提那个项目"也能把项目里的旧经验捞出来。
+  const touched = refs?.length ? touchedRefs([...pool.keys()], refs) : new Map();
   const allowed = subjects ? new Set(subjects) : null;
   const scored = [];
   for (const m of pool.values()) {
     if (allowed && !allowed.has(m.subject ?? null)) continue;
     const r = retention(m, at);
     const rel = query ? relevance(query, `${m.text} ${m.tags || ''}`) : 0;
+    const mentioned = refs?.length ? refMatches(`${m.text} ${m.tags || ''}`, refs) : 0;
     const score = 1.2 * rel
       + 0.5 * r
       + 0.4 * (m.importance ?? 0.5)
       + 0.25 * (m.arousal || 0)
       + (focus && m.subject === focus ? 0.4 : 0)
-      + (m.layer === 'profile' ? 0.15 : 0);
+      + (m.layer === 'profile' ? 0.15 : 0)
+      + 0.8 * Math.min(mentioned, 3)
+      + 1.0 * Math.min(touched.get(m.id) || 0, 3);
     scored.push({ m, score });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -299,8 +378,36 @@ export function recall(query, { limit = 8, domain = 'work', subjects = null, foc
 }
 
 /** 拼装可注入提示词的记忆上下文。Router / Worker 用业务域（默认）；静静以自己身份说话时用 persona。 */
-export function context(query, { limit = 6, domain = 'work', subjects = null, focus = null } = {}) {
-  return recall(query, { limit: limit + 4, domain, subjects, focus });
+export function context(query, { limit = 6, domain = 'work', subjects = null, focus = null, refs = [] } = {}) {
+  return recall(query, { limit: limit + 4, domain, subjects, focus, refs });
+}
+
+/** 这几条记忆里有哪些挂过这些实体（一次查完，按 memory_id 计数）。 */
+function touchedRefs(ids, refs) {
+  const out = new Map();
+  const want = new Set(refs.map((ref) => `${ref.kind}:${ref.key}`));
+  for (let i = 0; i < ids.length; i += 400) {
+    const chunk = ids.slice(i, i + 400);
+    const rows = db.prepare(`
+      SELECT memory_id, kind, key FROM memory_refs
+      WHERE memory_id IN (${chunk.map(() => '?').join(',')})
+    `).all(...chunk);
+    for (const row of rows) {
+      if (!want.has(`${row.kind}:${row.key}`)) continue;
+      out.set(row.memory_id, (out.get(row.memory_id) || 0) + 1);
+    }
+  }
+  return out;
+}
+
+/** 记忆正文里提到了几个当前实体（最多算 3 个，避免一条长记忆把分刷满）。 */
+function refMatches(text, refs) {
+  let hits = 0;
+  for (const ref of refs) {
+    if (hits >= 3) break;
+    if (hasName(text, ref.name)) hits += 1;
+  }
+  return hits;
 }
 
 function agoText(iso, at = Date.now()) {
@@ -397,4 +504,31 @@ export function domainStats() {
     counts[domainOf(row.domain)] += row.count;
   }
   return counts;
+}
+
+/* ------------------------------- 实体引用 ------------------------------- */
+
+// 回填版本：旧库第一次启动时给已有记忆补 refs；逻辑或参数变了就 +1，下次启动重跑。
+const REFS_BACKFILL_VERSION = 1;
+
+/**
+ * 给还没有引用、或者老版本的记忆补上实体引用（幂等，可以重复跑）。
+ * 用主题词表（工作区/分类/人/工具/文件）扫记忆正文，不调模型；人格域不自动挂业务实体。
+ */
+export function backfillMemoryRefs({ force = false, batch = 500 } = {}) {
+  if (!force && Number(getSetting('memory_refs_backfill', 0)) >= REFS_BACKFILL_VERSION) return 0;
+  const entities = listEntities();
+  const rows = db.prepare('SELECT id, text, domain FROM memories').all();
+  let added = 0;
+  for (let i = 0; i < rows.length; i += batch) {
+    const chunk = rows.slice(i, i + batch);
+    transaction(() => {
+      for (const row of chunk) {
+        if (domainOf(row.domain) !== 'work') continue;
+        added += linkRefs(row.id, matchEntities(row.text, { entities }));
+      }
+    });
+  }
+  setSetting('memory_refs_backfill', REFS_BACKFILL_VERSION);
+  return added;
 }

@@ -114,6 +114,19 @@ db.exec(`
     INSERT INTO memories_fts(rowid, text, tags) VALUES (new.rowid, new.text, new.tags);
   END;
 
+  -- 记忆的实体引用：这条记忆跟哪个工作区 / 分类 / 人 / 工具 / 文件有关（见 src/entities.js）。
+  -- 不单独建实体表：key 直接复用工作区 id、task_categories.key、people.id、工具名、文件名。
+  CREATE TABLE IF NOT EXISTS memory_refs (
+    memory_id  TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    role       TEXT,
+    weight     REAL NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (memory_id, kind, key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_refs_entity ON memory_refs(kind, key);
+
   CREATE TABLE IF NOT EXISTS source_plugins (
     id           TEXT PRIMARY KEY,
     enabled      INTEGER NOT NULL DEFAULT 0,
@@ -420,6 +433,8 @@ ensureColumn('memories', 'valence', 'REAL');
 ensureColumn('memories', 'arousal', 'REAL');
 ensureColumn('memories', 'subject', 'TEXT');
 ensureColumn('memories', 'archived', 'INTEGER');
+// 被新记忆替代（偏好变了之类）：旧条目不删，归档并在记忆页可见；superseded_by 指向新的那条。
+ensureColumn('memories', 'superseded_by', 'TEXT');
 db.exec(`
   UPDATE memories SET stability = CASE layer
     WHEN 'profile' THEN 365 WHEN 'semantic' THEN 90 WHEN 'episodic' THEN 14 ELSE 2 END * (0.5 + importance)

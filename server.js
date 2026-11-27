@@ -1268,6 +1268,15 @@ try {
 server.on('error', (err) => console.error('[server]', err));
 
 scheduler.init();
+// 记忆的实体引用：老库第一次启动时在后台补一遍（幂等；补过之后只在新记忆写入时更新）。
+setTimeout(() => {
+  try {
+    const added = memory.backfillMemoryRefs();
+    if (added) console.log(`[memory] 补了 ${added} 条记忆的实体引用`);
+  } catch (err) {
+    console.warn('[memory] 补记忆的实体引用失败：', err.message);
+  }
+}, 3000).unref();
 // 每 6 小时检查一次，每天最多自动归档一次；启动一分钟后先检查一次。
 const runArchive = () => {
   try { archive.maybeAutoArchive(); } catch (err) { console.warn('[archive] 自动归档失败：', err.message); }

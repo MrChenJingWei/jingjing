@@ -286,6 +286,9 @@ export function merge(keepId, otherId) {
     }
     db.prepare('UPDATE messages SET session_id = ? WHERE session_id = ?').run(keepSession, otherSession);
     db.prepare('UPDATE memories SET subject = ? WHERE subject = ?').run(keep.id, other.id);
+    // 记忆上挂的「关于谁」也跟着并过去；同一段记忆两边都挂过的，重复的那条引用直接丢掉。
+    db.prepare("UPDATE OR IGNORE memory_refs SET key = ? WHERE kind = 'person' AND key = ?").run(keep.id, other.id);
+    db.prepare("DELETE FROM memory_refs WHERE kind = 'person' AND key = ?").run(other.id);
     db.prepare('UPDATE tasks SET requester = ? WHERE requester = ?').run(keep.id, other.id);
     db.prepare('UPDATE people_aliases SET person_id = ? WHERE person_id = ?').run(keep.id, other.id);
     const snapshot = {
@@ -337,6 +340,9 @@ export function unbind(personId, aliasId) {
       const list = (ids) => JSON.stringify(ids || []);
       db.prepare('UPDATE tasks SET requester = ? WHERE requester = ? AND id IN (SELECT value FROM json_each(?))').run(row.alias_id, person.id, list(snap.tasks));
       db.prepare('UPDATE memories SET subject = ? WHERE subject = ? AND id IN (SELECT value FROM json_each(?))').run(row.alias_id, person.id, list(snap.memories));
+      // 当时搬过来的记忆引用也还回去。
+      db.prepare("UPDATE OR IGNORE memory_refs SET key = ? WHERE kind = 'person' AND key = ? AND memory_id IN (SELECT value FROM json_each(?))").run(row.alias_id, person.id, list(snap.memories));
+      db.prepare("DELETE FROM memory_refs WHERE kind = 'person' AND key = ? AND memory_id IN (SELECT value FROM json_each(?))").run(person.id, list(snap.memories));
       db.prepare('UPDATE people_aliases SET person_id = ? WHERE person_id = ? AND alias_id IN (SELECT value FROM json_each(?))').run(row.alias_id, person.id, list(snap.aliases));
       const { other: b, keepBefore: a, keepAfter } = snap.session || {};
       if (b && !sessionRow(aliasSession)) {

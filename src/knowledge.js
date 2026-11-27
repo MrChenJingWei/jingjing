@@ -287,7 +287,16 @@ export function markUsed(task) {
     const row = db.prepare('SELECT * FROM task_knowledge WHERE id = ?').get(id);
     if (row && !row.promoted && row.confirmed && !row.hidden && row.used_count >= promoteAt) {
       const category = db.prepare("SELECT title FROM task_categories WHERE key = ? AND state <> 'merged'").get(row.scope_key);
-      memory.remember({ text: `${category?.title ? `「${category.title}」：` : ''}${row.text}`, layer: 'semantic', kind: 'fact', source: 'knowledge', domain: 'work', importance: 0.6 });
+      // 晋升成记忆时保留它所属的分类域：以后这个分类的活才会想起它（文本前缀只是给人看的）。
+      memory.write({
+        text: `${category?.title ? `「${category.title}」：` : ''}${row.text}`,
+        layer: 'semantic',
+        kind: 'fact',
+        source: 'knowledge',
+        domain: 'work',
+        importance: 0.6,
+        refs: [{ kind: 'category', key: row.scope_key }]
+      });
       db.prepare('UPDATE task_knowledge SET promoted = 1 WHERE id = ?').run(id);
     }
   }

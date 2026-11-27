@@ -13,6 +13,7 @@ import * as scheduler from './scheduler.js';
 import * as sourceLinks from './source-links.js';
 import * as relay from './relay.js';
 import * as memory from './memory.js';
+import { matchEntities } from './entities.js';
 import * as classification from './task-classification.js';
 import * as knowledge from './knowledge.js';
 import * as people from './people.js';
@@ -551,23 +552,30 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
     // 工作区：工作流程指定的 > 条目自己带的（来源里按项目配的，比如 TAPD 每个项目落到各自的代码目录）> 来源的 > 默认。
     const itemWorkspace = workspaceById(item.workspace);
     const taskWorkspace = workflows.resolveWorkspace(flow) || itemWorkspace || workspace;
+    // 分类域：这时任务还没建、也没有归属行，按条目现场算域（只在来源「开启」自动归类时）。
+    // 只进 prompt，不进路由：下面挑 Worker 时完全不看它。
+    let scope = null;
+    try {
+      scope = classification.scopeFor(id, item);
+    } catch (err) {
+      console.warn('[discovery] 读取分类失败：', err.message);
+    }
     // 关键点可能早就进了静静的本地记忆（项目背景、历史任务结论、用户习惯），
     // 直接带上最相关的几条，比让 Worker 自己去翻数据库更准、也更省时间。
+    // 触达点 = 条目来自的工作区 + 正文提到的项目/人/工具/文件 + 它所属的分类域。
     let recalled = [];
     try {
-      recalled = memory.context(rawText, { domain: 'work', limit: 3 });
+      const refs = matchEntities(rawText, { cwd: taskWorkspace.path });
+      if (scope) refs.push({ kind: 'category', key: scope.key, name: scope.title || scope.key });
+      recalled = memory.context(rawText, { domain: 'work', limit: 3, refs });
     } catch (err) {
       console.warn('[discovery] 读取相关记忆失败：', err.message);
     }
     const memoryText = recalled.length
       ? `相关记忆（内部参考，可能不全对；只用来判断，不要把原文写进给用户的回复）：\n${memory.serializeForPrompt(recalled)}`
       : '';
-    // 分类域上的历史知识：这时任务还没建、也没有归属行，按条目现场算域（只在来源「开启」自动归类时）。
-    // 只进 prompt，不进路由：下面挑 Worker 时完全不看它。
     let injected = [];
-    let scope = null;
     try {
-      scope = classification.scopeFor(id, item);
       if (scope) injected = knowledge.context(knowledge.settings().includeAncestors ? scope.keys : [scope.key], { query: rawText });
     } catch (err) {
       console.warn('[discovery] 读取分类知识失败：', err.message);

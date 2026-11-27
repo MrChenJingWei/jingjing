@@ -14,6 +14,7 @@ import * as memory from './memory.js';
 import * as affect from './affect.js';
 import * as people from './people.js';
 import * as conversation from './conversation.js';
+import { matchEntities } from './entities.js';
 
 const MAX_CHAT_REPLY = 500;
 const HISTORY_TURNS = 10;
@@ -41,7 +42,9 @@ export function ownerSelf(query, settings = getSettings()) {
   const owner = people.ensure(people.OWNER);
   const self = selfKnowledge();
   const selfIds = new Set(self.map((m) => m.id));
-  const work = memory.context(query, { limit: 6, domain: 'work', focus: people.OWNER });
+  // 这句话提到的项目/人/工具/文件，连同当前的工作区，作为「触达点」参与召回。
+  const refs = matchEntities(query, { settings });
+  const work = memory.context(query, { limit: 6, domain: 'work', focus: people.OWNER, refs });
   const persona = memory.context(query, { limit: 3, domain: 'persona' }).filter((m) => !selfIds.has(m.id));
   return [
     personaStyle(settings),

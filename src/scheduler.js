@@ -6,6 +6,7 @@ import * as lifecycle from './lifecycle.js';
 import * as workflows from './workflows.js';
 import { runWorker, availability, isWorker, workerLimits, workerRecovery, workerLabelOf, defaultWorker, reportUrl, workerCatalog, terminateChildren, extraDirsFor } from './workers.js';
 import { effectivePermissions, requestFromDenials, describeRequest, isEmptyRequest, mergeGrant, mergeWorkspacePermission } from './permissions.js';
+import { matchEntities } from './entities.js';
 import { namedWorker, handoffWorker } from './worker-routing.js';
 import { ensureWorkerRule, listWorkerRules } from './worker-rules.js';
 import * as channels from './channels.js';
@@ -470,6 +471,8 @@ async function execute(task) {
   try {
     const resume = task.resume_payload?.approval || null;
     const followup = task.resume_payload?.followup || null;
+    // 任务在哪个工作区里跑、说到哪些项目/人/工具/文件：这些都算「触达点」，参与记忆召回。
+    const recallRefs = matchEntities(`${task.title} ${task.prompt}`, { settings, cwd: task.cwd });
     const work = Promise.resolve().then(() => runWorker(withFollowup(getTask(task.id)), {
       signal: controller.signal,
       resume,
@@ -478,7 +481,7 @@ async function execute(task) {
       // 权限放开后接着跑：让 Worker 用这句话代替任务原文，别从头重做。
       permissionNote,
       // Worker 只拿业务记忆；静静的人格记忆不进任务。
-      memories: memory.context(`${task.title} ${task.prompt}`, { limit: 6, domain: 'work' }),
+      memories: memory.context(`${task.title} ${task.prompt}`, { limit: 6, domain: 'work', refs: recallRefs }),
       tasks: listTasks({ limit: 10 }),
       onProgress,
       checkpoint,
@@ -584,13 +587,16 @@ async function execute(task) {
     }, { data: { summary: summary.slice(0, 2000), tokens: result.tokens || 0 } });
 
     if (settings.autoRemember && summary && summary.length > 20 && task.origin !== 'seed') {
-      memory.remember({
+      // 这条结果记在当前任务的工作区下：以后在同一个项目里干活能把它捞出来。
+      const wsRefs = matchEntities('', { settings, cwd: task.cwd }).filter((ref) => ref.kind === 'workspace');
+      memory.write({
         text: `任务「${task.title}」的结果：${summary.slice(0, 400)}`,
         layer: 'episodic',
         kind: 'task_result',
         tags: [task.worker],
         importance: 0.4,
-        source: 'scheduler'
+        source: 'scheduler',
+        refs: wsRefs
       });
     }
   } catch (err) {
