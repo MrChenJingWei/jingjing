@@ -11,6 +11,7 @@
 | 模块 | 管什么 |
 | --- | --- |
 | `memory.js` | 长期记忆：写入、检索、遗忘、回想 |
+| `context.js` | 统一装配：常驻/按需分档、token 预算、「为什么被想起」 |
 | `conversation.js` | 工作记忆：每段对话最近的原话 + 滚动摘要 |
 | `affect.js` | 心情（PAD 模型） |
 | `people.js` | 认识的人：熟悉度、好感、印象 |
@@ -68,6 +69,10 @@
 - 老库启动后 3 秒在后台补一遍引用；`settings.memory_refs_backfill` 记版本，重复跑不会重复加。
 
 完整的诊断、外部做法和后续规划见 [记忆的联想与图谱](memory-graph.md)。
+
+## 统一装配
+
+对话、派任务、来源都走 `src/context.js` 的 `buildMemoryContext()`：一次 recall + token 预算（常驻画像 300 / 按需 700；来源任务缩到 200 / 500），每条记忆带「为什么被想起」。派任务时 `llm` Worker 用 `ctx.memories`，其他 Worker 在指令后带一段「背景」；每次注入记一条 `memory/injected` 事件（ids + 原因 + token 数）。
 
 ## 一句话进来之后
 

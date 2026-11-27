@@ -7,6 +7,7 @@ import * as workflows from './workflows.js';
 import { runWorker, availability, isWorker, workerLimits, workerRecovery, workerLabelOf, defaultWorker, reportUrl, workerCatalog, terminateChildren, extraDirsFor } from './workers.js';
 import { effectivePermissions, requestFromDenials, describeRequest, isEmptyRequest, mergeGrant, mergeWorkspacePermission } from './permissions.js';
 import { matchEntities } from './entities.js';
+import { buildMemoryContext, injectionPayload } from './context.js';
 import { namedWorker, handoffWorker } from './worker-routing.js';
 import { ensureWorkerRule, listWorkerRules } from './worker-rules.js';
 import * as channels from './channels.js';
@@ -472,7 +473,14 @@ async function execute(task) {
     const resume = task.resume_payload?.approval || null;
     const followup = task.resume_payload?.followup || null;
     // 任务在哪个工作区里跑、说到哪些项目/人/工具/文件：这些都算「触达点」，参与记忆召回。
+    // 和对话用同一套装配：常驻 + 按需 + token 预算；Worker 拿到的 ctx.memories 就是这份。
     const recallRefs = matchEntities(`${task.title} ${task.prompt}`, { settings, cwd: task.cwd });
+    const memoryBundle = buildMemoryContext({ query: `${task.title} ${task.prompt}`, refs: recallRefs, settings });
+    // 只有 llm Worker 会把 ctx.memories 拼进提示词；记一份「这次注入了什么、为什么」方便复盘。
+    if (task.worker === 'llm') {
+      const payload = injectionPayload(memoryBundle, 'worker');
+      if (payload) event(task.id, 'memory/injected', payload);
+    }
     const work = Promise.resolve().then(() => runWorker(withFollowup(getTask(task.id)), {
       signal: controller.signal,
       resume,
@@ -481,7 +489,7 @@ async function execute(task) {
       // 权限放开后接着跑：让 Worker 用这句话代替任务原文，别从头重做。
       permissionNote,
       // Worker 只拿业务记忆；静静的人格记忆不进任务。
-      memories: memory.context(`${task.title} ${task.prompt}`, { limit: 6, domain: 'work', refs: recallRefs }),
+      memories: memoryBundle.items,
       tasks: listTasks({ limit: 10 }),
       onProgress,
       checkpoint,

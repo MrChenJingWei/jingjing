@@ -15,6 +15,8 @@ import { classify, heuristicClassify, chat as llmChat, chatWithTools, toolsSuppo
 import * as workflows from './workflows.js';
 import * as forge from './plugin-forge.js';
 import { ownerSelf } from './persona.js';
+import { matchEntities } from './entities.js';
+import { buildTaskBackground, injectionPayload } from './context.js';
 import * as mind from './mind.js';
 import * as conversation from './conversation.js';
 
@@ -479,9 +481,14 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
     const folderScoped = picked?.abilities?.includes('manage-files') && !picked.abilities.includes('code');
     const cwd = folderScoped ? resolveFolderCwd(clean, folderBase) : base;
     const title = decision.title || makeTitle(clean);
+    // 记忆：llm Worker 由调度器放进 ctx.memories；其余 Worker 在指令后面带一段「背景」。
+    const memoryRefs = matchEntities(`${title}\n${clean}`, { settings, cwd });
+    const background = worker === 'llm'
+      ? { text: '', bundle: null }
+      : buildTaskBackground({ query: `${title}\n${clean}`, refs: memoryRefs, settings });
     task = scheduler.createTask({
       title,
-      prompt: buildChatTaskPrompt({ clean, brief: decision.brief, history }) + workflows.promptSection(workflow),
+      prompt: buildChatTaskPrompt({ clean, brief: decision.brief, history }) + background.text + workflows.promptSection(workflow),
       worker,
       cwd,
       origin: 'chat',
@@ -491,6 +498,8 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
       workflowId: workflow?.id || null,
       workflowName: workflow?.name || ''
     });
+    const injection = injectionPayload(background.bundle, 'chat');
+    if (injection) event(task.id, 'memory/injected', injection);
     const workerLabel = picked?.label || worker;
     const flowNote = workflow ? `按${workflow.source === 'learned' ? '习惯' : '工作流程'}「${workflow.name}」，` : '';
     const allNotes = `${note}${ruleNote}${evidenceNote}`;

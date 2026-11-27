@@ -1,12 +1,12 @@
 # 记忆的联想与图谱（方案）
 
-> 代码：`src/memory.js` · `src/persona.js` · `src/router.js` · `src/discovery.js` · `src/scheduler.js` · `src/knowledge.js` · `src/workflows.js`
+> 代码：`src/memory.js` · `src/entities.js` · `src/context.js` · `src/persona.js` · `src/router.js` · `src/discovery.js` · `src/scheduler.js` · `src/knowledge.js` · `src/workflows.js`
 >
 > 相关：[记忆与心智](memory.md) · [外部对象、归类与知识](external.md) · [Router](router.md)
 >
 > 返回 [总体架构](../ARCHITECTURE.md)
 >
-> 状态：**M0–M1 已实现**（情境解析 / 运行时实体命中 / refs 持久化 / 统一写入 / 冲突标记）；M2–M3 仍是计划。实现记录见下方「进展」。
+> 状态：**M0–M2 已实现**（情境解析 / 运行时实体命中 / refs 持久化 / 统一写入 / 冲突标记 / 统一装配与预算）；M3 仍是计划。实现记录见下方「进展」。
 
 ## 要解决的问题
 
@@ -162,7 +162,7 @@ score = 1.2×字面相关 + 0.5×保持率 + 0.4×重要度 + 0.25×情绪 + 0.4
 | --- | --- | --- |
 | M0 情境解析 + 运行时实体命中 | 已完成 | 新增 `src/entities.js`；`recall/context` 支持 `refs`；对话 / 派任务 / 来源三处接入 |
 | M1 refs 持久化 + 统一写入 + 冲突标记 | 已完成 | `memory_refs` 表、`memories.superseded_by`、`memory.write()`、启动回填、知识晋升保留分类引用、`people.merge` 同步引用、记忆页标记 |
-| M2 统一装配与全局预算 | 未开始 | — |
+| M2 统一装配与全局预算 | 已完成 | 新增 `src/context.js`；对话/派任务/来源共用 `buildMemoryContext()`；token 预算 + 「为什么被想起」；非 llm Worker 的指令带背景段；`memory/injected` 事件 |
 | M3 边 / 时间失效 / 冷层 / 流程挂实体 | 未开始 | — |
 
 实现与草图的两处偏差（有意）：
@@ -170,7 +170,7 @@ score = 1.2×字面相关 + 0.5×保持率 + 0.4×重要度 + 0.25×情绪 + 0.4
 1. **不建 `entities` 表**：refs 直接存 `(kind, key)`，key 复用工作区 id / 分类 key / people.id / 工具名 / 文件名，避免实体表与事实来源不同步。
 2. **冲突先保守标记**：只在明确否定/更新且相似度 ≥ 0.5 时替代；不做自动语义替换，也不调模型判断。
 
-测试：`tests/entities.test.js`（6）、`tests/memory-refs.test.js`（10）、`tests/context-memory.test.js`（1），全量 337 通过。
+测试：`tests/entities.test.js`（6）、`tests/memory-refs.test.js`（10）、`tests/context-memory.test.js`（1）、`tests/context-budget.test.js`（4）、`tests/chat-task-context.test.js` 里的派任务背景（1），全量 342 通过。
 
 ## 分阶段
 
@@ -191,12 +191,13 @@ score = 1.2×字面相关 + 0.5×保持率 + 0.4×重要度 + 0.25×情绪 + 0.4
 - 老库启动后 3 秒后台回填（`memory_refs_backfill` 记版本，幂等可重跑）；
 - 验收已覆盖：偏好变更后旧说法不再注入但可查（`tests/memory-refs.test.js`）。
 
-### P2 统一装配与全局预算（未开始）
+### P2 统一装配与全局预算（已完成）
 
-- 抽出唯一的 composer：对话 / 任务 / 来源只是排版不同，取的是同一份 bundle；
-- 预算从“条数”改成“token”，常驻层与按需层分开；
-- 补上缺口：对话派出的编码任务也能拿到与对话一致的记忆（现在只有 `llm` Worker 拿）。
-- 验收：同一轮里同一条记忆不重复注入；注入总量不超预算。
+- `src/context.js`：`buildMemoryContext()` 一次 recall + 分常驻（画像/偏好，300 token）/ 按需（事实/经历，700 token）两档；`renderMemoryBlock()` 只输出选中的行；
+- 每个入口都用它：对话（`persona.ownerSelf`）、派任务（`scheduler` 的 `ctx.memories`）、来源任务（`discovery`，预算缩到 200 / 500）；
+- 每条记忆带「为什么被想起」（关于哪个实体 / 画像 / 和这句话相关 / 最近或重要），写进提示词和 `memory/injected` 事件；
+- 补上缺口：对话派给**非 llm Worker** 的任务，指令后面拼一段「背景」；`llm` Worker 继续用 `ctx.memories`，调度器只在它身上记注入事件，避免同一条记忆两处重复；
+- 验收已覆盖：预算不超、同轮不重复（`tests/context-budget.test.js`）；派任务指令带背景与注入事件（`tests/chat-task-context.test.js`）。
 
 ### P3 记忆之间建边 + 时间失效 + 冷层 + 流程挂实体（未开始）
 
@@ -213,9 +214,9 @@ score = 1.2×字面相关 + 0.5×保持率 + 0.4×重要度 + 0.25×情绪 + 0.4
 | 进入某工作区、消息不含关键词 | 带回该工作区下的历史坑 / 结论 | 已覆盖（`tests/context-memory.test.js`） |
 | 偏好变更（“喜欢 A” → “不喜欢 A 了”） | 只注入新事实，旧事实不出现 | 已覆盖（`tests/memory-refs.test.js`） |
 | 人格对话（外人） | 不出现任何业务记忆 | 已覆盖（`tests/memory-domain.test.js`） |
-| 来源任务 | 分类知识 + 该分类下的记忆一起进 prompt |
+| 来源任务 | 分类知识 + 该分类下的记忆一起进 prompt | 已实现（分类知识仍用独立预算） |
 | 归档（已淡忘）记忆 | 实体强命中时可被召回 |
-| 同一轮多个入口 | 同一记忆不重复注入，总量不超预算 |
+| 同一轮多个入口 | 同一记忆不重复注入，总量不超预算 | 已覆盖（`tests/context-budget.test.js`） |
 
 指标：人工标注 20 个“必须联想才能答对”的场景算**召回命中率**；孤立节点占比、平均度、每次注入 token、被主人纠正 / 重说的比例；每次注入记录激活路径（“为什么被想起”）。
 

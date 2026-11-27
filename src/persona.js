@@ -15,6 +15,7 @@ import * as affect from './affect.js';
 import * as people from './people.js';
 import * as conversation from './conversation.js';
 import { matchEntities } from './entities.js';
+import { buildMemoryContext, renderMemoryBlock } from './context.js';
 
 const MAX_CHAT_REPLY = 500;
 const HISTORY_TURNS = 10;
@@ -43,8 +44,9 @@ export function ownerSelf(query, settings = getSettings()) {
   const self = selfKnowledge();
   const selfIds = new Set(self.map((m) => m.id));
   // 这句话提到的项目/人/工具/文件，连同当前的工作区，作为「触达点」参与召回。
+  // 业务记忆走统一装配（常驻 + 按需 + token 预算），和派任务时用的是同一套选择标准。
   const refs = matchEntities(query, { settings });
-  const work = memory.context(query, { limit: 6, domain: 'work', focus: people.OWNER, refs });
+  const work = buildMemoryContext({ query, refs, settings, focus: people.OWNER });
   const persona = memory.context(query, { limit: 3, domain: 'persona' }).filter((m) => !selfIds.has(m.id));
   return [
     personaStyle(settings),
@@ -54,7 +56,7 @@ export function ownerSelf(query, settings = getSettings()) {
     `你和主人：${people.describe(owner)}`,
     '',
     '长期记忆（主人的偏好、项目、做事经验和你们聊过的事）：',
-    memory.serializeForPrompt(work) || '（暂无）',
+    renderMemoryBlock(work) || '（暂无）',
     ...section('关于你自己（人格记忆）：', memory.serializeForPrompt(persona)),
     ...section('这句话里提到的、你认识的人：', mentionedPeople(query))
   ];

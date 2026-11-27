@@ -12,8 +12,8 @@ import * as persona from './persona.js';
 import * as scheduler from './scheduler.js';
 import * as sourceLinks from './source-links.js';
 import * as relay from './relay.js';
-import * as memory from './memory.js';
 import { matchEntities } from './entities.js';
+import { buildMemoryContext, injectionPayload, renderMemoryBlock } from './context.js';
 import * as classification from './task-classification.js';
 import * as knowledge from './knowledge.js';
 import * as people from './people.js';
@@ -563,16 +563,17 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
     // 关键点可能早就进了静静的本地记忆（项目背景、历史任务结论、用户习惯），
     // 直接带上最相关的几条，比让 Worker 自己去翻数据库更准、也更省时间。
     // 触达点 = 条目来自的工作区 + 正文提到的项目/人/工具/文件 + 它所属的分类域。
-    let recalled = [];
+    let memoryBundle = null;
     try {
       const refs = matchEntities(rawText, { cwd: taskWorkspace.path });
       if (scope) refs.push({ kind: 'category', key: scope.key, name: scope.title || scope.key });
-      recalled = memory.context(rawText, { domain: 'work', limit: 3, refs });
+      // 来源任务用更小的预算：正文里还有条目内容、工作区目录、分类知识要占地方。
+      memoryBundle = buildMemoryContext({ query: rawText, refs, budget: { always: 200, onDemand: 500 } });
     } catch (err) {
       console.warn('[discovery] 读取相关记忆失败：', err.message);
     }
-    const memoryText = recalled.length
-      ? `相关记忆（内部参考，可能不全对；只用来判断，不要把原文写进给用户的回复）：\n${memory.serializeForPrompt(recalled)}`
+    const memoryText = memoryBundle?.items?.length
+      ? `相关记忆（内部参考，可能不全对；只用来判断，不要把原文写进给用户的回复）：\n${renderMemoryBlock(memoryBundle)}`
       : '';
     let injected = [];
     try {
@@ -647,6 +648,8 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
     });
     recordItem(id, item, 'task', task.id, decision.reason || '需要处理');
     if (injected.length) knowledge.recordInjection(task.id, injected, scope?.key);
+    const memoryInjection = injectionPayload(memoryBundle, 'discovery');
+    if (memoryInjection) event(task.id, 'memory/injected', memoryInjection);
     details.push({
       externalId: item.externalId,
       title: task.title,

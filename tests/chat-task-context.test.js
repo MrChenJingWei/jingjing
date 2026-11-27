@@ -9,7 +9,8 @@ import { removeTemp } from './temp.js';
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-chat-context-'));
 process.env.JINGJING_DATA_DIR = dataDir;
 
-const { saveSettings } = await import('../src/db.js');
+const { db, saveSettings } = await import('../src/db.js');
+const memory = await import('../src/memory.js');
 const { validateManifest } = await import('../src/plugin-spec.js');
 const workers = await import('../src/workers.js');
 const router = await import('../src/router.js');
@@ -88,4 +89,31 @@ test('对话里先说要做什么、再说「你让 xx 干」：派出去的任�
   };
   const second = await router.handleMessage('你让quiet干', { sessionId });
   assert.ok(second.task.prompt.startsWith('把项目的 tapd 工作流抽取成通用规则'));
+});
+
+test('派任务时把同一套记忆选择拼进指令（不是 llm Worker 也能拿到项目背景）', async () => {
+  const wsDir = path.join(dataDir, 'blue');
+  fs.mkdirSync(wsDir, { recursive: true });
+  saveSettings({ workspaces: [{ id: 'w_blue', name: '蓝马项目', path: wsDir }] });
+  const remembered = memory.write({
+    text: 'beta 合并前要跑 migrate',
+    layer: 'semantic',
+    kind: 'fact',
+    refs: [{ kind: 'workspace', key: 'w_blue' }]
+  });
+
+  const sessionId = 's_memory';
+  script = () => reply({ tool_calls: [{ type: 'function', function: { name: 'create_task', arguments: JSON.stringify({ title: '跑测试', worker: 'quiet' }) } }] });
+  const out = await router.handleMessage('把测试跑一下', { sessionId, workspaceId: 'w_blue' });
+  assert.equal(out.task.cwd, wsDir, '任务落在指定的工作区');
+  assert.match(out.task.prompt, /背景（静静记得的/);
+  assert.match(out.task.prompt, /beta 合并前要跑 migrate/);
+  assert.match(out.task.prompt, /关于蓝马项目/);
+
+  const injected = db.prepare("SELECT data FROM task_events WHERE task_id = ? AND type = 'memory/injected'").get(out.task.id);
+  assert.ok(injected, '记下这次注入了什么');
+  const data = JSON.parse(injected.data);
+  assert.equal(data.scene, 'chat');
+  assert.ok(data.ids.includes(remembered.id));
+  assert.ok(data.why.some((item) => item.id === remembered.id && /蓝马项目/.test(item.why)));
 });
