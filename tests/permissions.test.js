@@ -1,6 +1,7 @@
 // Worker 权限：工作区/任务/拍板放开怎么合成这一次执行的权限，以及被拦下的操作要怎么问主人。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   normalizeWorkspacePermission,
   normalizeRules,
@@ -136,5 +137,6 @@ test('describeRequest：给主人看的说明用相对路径，工作区外的�
     dirs: ['/work/other'],
     tools: []
   }, { workspace: '/work/main' });
-  assert.deepEqual(lines, ['改文件：src/a.js', '跑命令：npm test', '用工作区外的目录：/work/other']);
+  // Windows 上 path.relative 返回反斜杠，断言跟着平台走。
+  assert.deepEqual(lines, [`改文件：${path.join('src', 'a.js')}`, '跑命令：npm test', '用工作区外的目录：/work/other']);
 });
