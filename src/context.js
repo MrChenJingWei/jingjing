@@ -16,6 +16,8 @@ import { hasName } from './entities.js';
 
 // 常驻：画像 / 偏好这类短句；按需：事实、经历。总量是两者之和。
 export const BUDGET = Object.freeze({ always: 300, onDemand: 700 });
+// 人格记忆（她自己的事、和外面的人聊过的事）单独一小档。
+export const PERSONA_BUDGET = Object.freeze({ always: 200, onDemand: 150 });
 
 /** 这条记忆为什么被想起：先看正文提到，再看写入时挂过的实体，最后看层级和字面。 */
 function whyFor(item, { query, refs }) {
@@ -36,12 +38,14 @@ function whyFor(item, { query, refs }) {
  * 选出这次要用的记忆。
  * budget 可覆盖（来源任务用更小的预算）；refs 是当前情境的触达点（工作区/分类/人/工具/文件）。
  */
-export function buildMemoryContext({ query = '', refs = [], domain = 'work', settings = getSettings(), budget = BUDGET, focus = null } = {}) {
+export function buildMemoryContext({ query = '', refs = [], domain = 'work', settings = getSettings(), budget = BUDGET, focus = null, subjects = null, exclude = [] } = {}) {
   const caps = { always: Number(budget?.always) || 0, onDemand: Number(budget?.onDemand) || 0 };
-  const candidates = memory.recall(query, { limit: 14, domain, refs, focus });
+  const skip = new Set(exclude || []);
+  const candidates = memory.recall(query, { limit: 14, domain, refs, focus, subjects });
   const items = [];
   const tokens = { always: 0, onDemand: 0 };
   for (const item of candidates) {
+    if (skip.has(item.id)) continue;
     const why = whyFor(item, { query, refs });
     const line = `${memory.serializeForPrompt([item])}（${why}）`;
     const cost = estimateTokens(line);
@@ -68,8 +72,9 @@ export function buildMemoryContext({ query = '', refs = [], domain = 'work', set
 
 /** 拼成提示词里的记忆段（每行带「为什么被想起」）。没有可选的就返回空串。 */
 export function renderMemoryBlock(bundle) {
-  if (!bundle?.items?.length) return '';
-  return bundle.items.map((item) => item.line).join('\n');
+  const items = Array.isArray(bundle) ? bundle : bundle?.items;
+  if (!items?.length) return '';
+  return items.map((item) => item.line || `${memory.serializeForPrompt([item])}（${item.why || '画像'}）`).join('\n');
 }
 
 /**

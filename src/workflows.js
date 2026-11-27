@@ -161,6 +161,7 @@ export function parseWorkflow(raw, { file = '', mtimeMs = 0 } = {}) {
     negatives,
     worker: meta.worker || '',
     workspace: meta.workspace || '',
+    category: meta.category || '',
     source,
     fileStatus,
     status: fileStatus,
@@ -350,23 +351,40 @@ function implicitScore(workflow, text) {
  * 找和这句话匹配的生效流程。显式 when 优先（文档优先于习惯，命中越长越具体）；
  * 没有 when 的文档按名称模糊匹配。返回 { workflow, how } 或 null。
  */
+/**
+ * 流程绑的分类域和当前情境里的分类对不对得上。
+ * 流程文件里存的是分类标题（人能看懂），匹配时按 key / 标题都认，分类改名也能对上。
+ */
+function categoryMatches(workflowCategory, refs) {
+  if (!workflowCategory) return false;
+  const cats = (refs || []).filter((ref) => ref.kind === 'category');
+  if (!cats.length) return false;
+  const row = db.prepare("SELECT key, title FROM task_categories WHERE axis = 'relation' AND (key = ? OR title = ?)").get(workflowCategory, workflowCategory);
+  const want = new Set([workflowCategory, row?.key, row?.title].filter(Boolean));
+  return cats.some((ref) => want.has(ref.key) || want.has(ref.name));
+}
+
 export function matchWorkflow(text, { workflows = all(), includeInactive = false, refs = [] } = {}) {
   const pool = workflows.filter((w) => includeInactive || w.status === 'active');
-  // 实体键只做同分时的偏好：两个流程都命中同样的触发词时，优先当前情境所在工作区的那个；
+  // 实体键只做同分时的偏好：两个流程都命中同样的触发词时，优先当前情境所在工作区 / 分类域的那个；
   // 不参与「有没有命中」的判断，避免「进了这个工作区就自动套所有流程」。
   const workspaceIds = new Set((refs || []).filter((ref) => ref.kind === 'workspace').map((ref) => ref.key));
   const settings = workspaceIds.size ? getSettings() : null;
-  const workspaceBonus = (workflow) => {
-    if (!settings) return 0;
-    const ws = resolveWorkspace(workflow, settings);
-    return ws && workspaceIds.has(ws.id) ? 1 : 0;
+  const entityBonus = (workflow) => {
+    let bonus = 0;
+    if (settings) {
+      const ws = resolveWorkspace(workflow, settings);
+      if (ws && workspaceIds.has(ws.id)) bonus += 1;
+    }
+    if (categoryMatches(workflow.category, refs)) bonus += 1;
+    return bonus;
   };
   let best = null;
   for (const workflow of pool) {
     if (!workflow.trigger && !workflow.terms?.length) continue;
     const hit = matchCompiled(text, workflow);
     if (!hit) continue;
-    const score = (workflow.source === 'doc' ? 1000 : 0) + hit.length + workspaceBonus(workflow) * 0.9;
+    const score = (workflow.source === 'doc' ? 1000 : 0) + hit.length + entityBonus(workflow) * 0.9;
     if (!best || score > best.score) best = { workflow, how: 'when', score };
   }
   if (best) return best;
@@ -374,7 +392,7 @@ export function matchWorkflow(text, { workflows = all(), includeInactive = false
     if (workflow.trigger || workflow.terms?.length || workflow.source !== 'doc') continue;
     const base = implicitScore(workflow, text);
     if (base < 0.6) continue;
-    const score = base + workspaceBonus(workflow) * 0.2;
+    const score = base + entityBonus(workflow) * 0.2;
     if (!best || score > best.score) best = { workflow, how: 'name', score };
   }
   return best;
@@ -634,12 +652,15 @@ export async function learnFromTask(task, events = [], { workerLabel, workspaceN
   const defaultWorkspace = (settings.workspaces || []).find((w) => w.id === settings.defaultWorkspaceId);
   const learnedWorkspace = workspaceName && defaultWorkspace?.name !== workspaceName ? workspaceName : '';
 
+  // 学流程时把这次任务所属的分类域一起记下来：以后再派到这个域，优先用它。
+  const category = (task.classifications || []).find((row) => row?.axis === 'relation' && row.title)?.title || '';
   const file = uniqueFile(LEARNED_DIR, name);
   const header = frontmatter({
     name,
     when,
     worker: task.worker,
     workspace: learnedWorkspace,
+    category,
     auto: answers ? 'false' : '',
     answers,
     status: 'candidate',

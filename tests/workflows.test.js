@@ -205,3 +205,32 @@ test('两个流程命中同样时，优先当前情境所在工作区的那个',
   // 没有情境时仍然照常命中（不会因为没 refs 就不触发）。
   assert.ok(wf.matchWorkflow('做一次发布检查').workflow);
 });
+
+test('流程可以绑分类域：同样命中时优先对得上的分类', () => {
+  const write = (file, name, category) => fs.writeFileSync(path.join(wf.WORKFLOW_DIR, file), `---\nname: ${name}\nwhen: 归类测试\ncategory: ${category}\n---\n1. 做`, 'utf8');
+  write('cat-blue.md', '归类流程蓝马', '蓝马需求');
+  write('cat-other.md', '归类流程其他', '别的需求');
+  wf.reload();
+
+  const pick = wf.matchWorkflow('做一下归类测试', { refs: [{ kind: 'category', key: 'cat_blue', name: '蓝马需求' }] });
+  assert.equal(pick.workflow.name, '归类流程蓝马');
+  const other = wf.matchWorkflow('做一下归类测试', { refs: [{ kind: 'category', key: 'cat_other', name: '别的需求' }] });
+  assert.equal(other.workflow.name, '归类流程其他');
+  // 没有分类情境时照常按触发词命中。
+  assert.ok(wf.matchWorkflow('做一下归类测试').workflow);
+});
+
+test('从任务学流程时继承任务所属的分类域', async () => {
+  const task = {
+    id: 't_learn_cat',
+    title: '蓝马需求进度整理',
+    prompt: '蓝马需求进度整理',
+    worker: 'llm',
+    classifications: [{ axis: 'relation', state: 'member', title: '蓝马需求' }]
+  };
+  const learned = await wf.learnFromTask(task, [], { workerLabel: '问答', force: true });
+  assert.equal(learned.workflow.category, '蓝马需求');
+  wf.setStatus(learned.workflow.id, 'active');
+  const hit = wf.matchWorkflow(task.prompt, { refs: [{ kind: 'category', key: 'cat_blue', name: '蓝马需求' }] });
+  assert.equal(hit.workflow.category, '蓝马需求');
+});

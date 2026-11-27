@@ -163,16 +163,16 @@ memories.valid_from / valid_to
 | --- | --- | --- |
 | M0 情境解析 + 运行时实体命中 | 已完成 | 新增 `src/entities.js`；`recall/context` 支持 `refs`；对话 / 派任务 / 来源三处接入 |
 | M1 refs 持久化 + 统一写入 + 冲突标记 | 已完成 | `memory_refs` 表、`memories.superseded_by`、`memory.write()`、启动回填、知识晋升保留分类引用、`people.merge` 同步引用、记忆页标记 |
-| M2 统一装配与全局预算 | 已完成 | 新增 `src/context.js`；对话/派任务/来源共用 `buildMemoryContext()`；token 预算 + 「为什么被想起」；非 llm Worker 的指令带背景段；`memory/injected` 事件 |
-| M3 边 / 时间失效 / 冷层 / 流程挂实体 | 已完成 | `memory_edges`（same_topic / same_task / supersedes）、两跳联想、`valid_from/valid_to`、冷层召回、流程命中同分时优先当前工作区 |
+| M2 统一装配与全局预算 | 已完成 | 新增 `src/context.js`；对话/派任务/来源共用 `buildMemoryContext()`；token 预算 + 「为什么被想起」；人格记忆也分档预算；非 llm Worker 的指令带背景段；`memory/injected` 事件 |
+| M3 边 / 时间失效 / 冷层 / 流程挂实体 | 已完成 | `memory_edges`（same_topic / same_task / supersedes）、两跳联想、`valid_from/valid_to`、冷层召回、流程命中同分时优先当前工作区 / 分类域 |
 
 实现与草图的三处偏差（有意）：
 
 1. **不建 `entities` 表**：refs 直接存 `(kind, key)`，key 复用工作区 id / 分类 key / people.id / 工具名 / 文件名，避免实体表与事实来源不同步。
 2. **冲突先保守标记**：只在明确否定/更新且相似度 ≥ 0.5 时替代；不做自动语义替换，也不调模型判断。
-3. **流程只按工作区做同分偏好**：流程没有分类字段，`learnFromTask` 仍只继承 workspace；按分类键绑定留到以后。
+3. **流程的分类域只存标题**：`category` 写分类标题（人能看懂），匹配时按 key / 标题都认；分类改名后旧流程仍能通过 key 解析对上。只做同分偏好，不制造新触发。
 
-测试：`tests/entities.test.js`（6）、`tests/memory-refs.test.js`（10）、`tests/context-memory.test.js`（1）、`tests/context-budget.test.js`（4）、`tests/memory-edges.test.js`（7）、`tests/chat-task-context.test.js` 里的派任务背景（1）、`tests/workflows.test.js` 里的工作区优先（1），全量 350 通过。
+测试：`tests/entities.test.js`（6）、`tests/memory-refs.test.js`（10）、`tests/context-memory.test.js`（1）、`tests/context-budget.test.js`（5）、`tests/memory-edges.test.js`（7）、`tests/chat-task-context.test.js` 里的派任务背景（1）、`tests/workflows.test.js` 里的工作区/分类优先与继承（3），全量 353 通过。
 
 ## 分阶段
 
@@ -196,7 +196,7 @@ memories.valid_from / valid_to
 ### P2 统一装配与全局预算（已完成）
 
 - `src/context.js`：`buildMemoryContext()` 一次 recall + 分常驻（画像/偏好，300 token）/ 按需（事实/经历，700 token）两档；`renderMemoryBlock()` 只输出选中的行；
-- 每个入口都用它：对话（`persona.ownerSelf`）、派任务（`scheduler` 的 `ctx.memories`）、来源任务（`discovery`，预算缩到 200 / 500）；
+- 每个入口都用它：对话（`persona.ownerSelf`，业务 300/700、人格 200/150）、派任务（`scheduler` 的 `ctx.memories`）、来源任务（`discovery`，预算缩到 200 / 500）；
 - 每条记忆带「为什么被想起」（关于哪个实体 / 画像 / 和这句话相关 / 最近或重要），写进提示词和 `memory/injected` 事件；
 - 补上缺口：对话派给**非 llm Worker** 的任务，指令后面拼一段「背景」；`llm` Worker 继续用 `ctx.memories`，调度器只在它身上记注入事件，避免同一条记忆两处重复；
 - 验收已覆盖：预算不超、同轮不重复（`tests/context-budget.test.js`）；派任务指令带背景与注入事件（`tests/chat-task-context.test.js`）。
@@ -208,9 +208,9 @@ memories.valid_from / valid_to
 - 冷层：`archived`（且非 `superseded`）但挂在当前触达点上的记忆按 0.7 参与召回，想起后自动复活；
 - 有效期：`valid_from` / `valid_to`；被替代时记失效时间，`recall` / `search(validOnly)` 默认过滤；
 - `maintain()` 让 `same_topic` 边每天衰减 2%、剪掉太弱且 90 天没一起出现的边、清掉悬空边；
-- 工作流程：`matchWorkflow()` 接受 `refs`，只在「已经命中」的前提下，同分时优先当前工作区的流程（不制造新触发），`learnFromTask` 继续继承 workspace；
-- 未做：`before / after / cause / conflict` 边；流程按分类键绑定（流程没有分类字段）。
-- 验收已覆盖：两跳、冷层复活、过期过滤、域隔离、边维护、性能（`tests/memory-edges.test.js`）；流程工作区优先（`tests/workflows.test.js`）。
+- 工作流程：`matchWorkflow()` 接受 `refs`，只在「已经命中」的前提下，同分时优先当前工作区 / 分类域的流程（不制造新触发）；`learnFromTask` 把任务的 workspace 和 `classifications` 里的分类标题写进流程；
+- 未做：`before / after / cause / conflict` 边。
+- 验收已覆盖：两跳、冷层复活、过期过滤、域隔离、边维护、性能（`tests/memory-edges.test.js`）；流程工作区 / 分类优先（`tests/workflows.test.js`）。
 
 ## 验收场景与指标
 
@@ -223,7 +223,8 @@ memories.valid_from / valid_to
 | 归档（已淡忘）记忆 | 实体强命中时可被召回 | 已覆盖（`tests/memory-edges.test.js`） |
 | 需要串两条记忆才能答对 | 两跳联想能带出候选池外的旧经验 | 已覆盖（`tests/memory-edges.test.js`） |
 | 记忆过期 | 过期事实不再注入但记录保留 | 已覆盖（`tests/memory-edges.test.js`） |
-| 两个同类流程 | 优先当前工作区的那个，不制造新触发 | 已覆盖（`tests/workflows.test.js`） |
+| 两个同类流程 | 优先当前工作区 / 分类域的那个，不制造新触发 | 已覆盖（`tests/workflows.test.js`） |
+| 人格记忆 | 也走 token 预算，且不混业务域 | 已覆盖（`tests/context-budget.test.js`） |
 | 一万条记忆、五千条边 | `recall` P95 < 80ms | 实测 ≈16ms（`tests/memory-edges.test.js`） |
 | 同一轮多个入口 | 同一记忆不重复注入，总量不超预算 | 已覆盖（`tests/context-budget.test.js`） |
 

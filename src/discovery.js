@@ -541,11 +541,19 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
     // 先用原消息匹配触发词；没命中再看模型挑的流程；最后用模型改写的任务名再匹配一次
     // （「蓝马的4.5做的怎么样了」里没有「进度」，改写成「回复蓝马4.5需求进度」就有了）。
     const rawText = `${item.title}\n${item.content || ''}`;
+    // 分类域：这时任务还没建、也没有归属行，按条目现场算域（只在来源「开启」自动归类时）。
+    let scope = null;
+    try {
+      scope = classification.scopeFor(id, item);
+    } catch (err) {
+      console.warn('[discovery] 读取分类失败：', err.message);
+    }
     const forcedFlow = forced?.workflow ? workflows.getWorkflow(forced.workflow) : null;
-    // 条目提到的工作区/项目/人，用来在同样命中时优先对应工作区的流程。
+    // 条目提到的工作区/项目/人 + 它所属的分类域，用来在同样命中时优先对应情境的流程。
     const flowRefs = matchEntities(rawText, { settings: getSettings() });
     const itemWs = workspaceById(item.workspace);
     if (itemWs) flowRefs.push({ kind: 'workspace', key: itemWs.id, name: itemWs.name });
+    if (scope) flowRefs.push({ kind: 'category', key: scope.key, name: scope.title || scope.key });
     const flow = forcedFlow
       || workflows.matchWorkflow(rawText, { refs: flowRefs })?.workflow
       || (decision.workflow ? workflows.getWorkflow(decision.workflow) : null)
@@ -556,14 +564,7 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
     // 工作区：工作流程指定的 > 条目自己带的（来源里按项目配的，比如 TAPD 每个项目落到各自的代码目录）> 来源的 > 默认。
     const itemWorkspace = workspaceById(item.workspace);
     const taskWorkspace = workflows.resolveWorkspace(flow) || itemWorkspace || workspace;
-    // 分类域：这时任务还没建、也没有归属行，按条目现场算域（只在来源「开启」自动归类时）。
-    // 只进 prompt，不进路由：下面挑 Worker 时完全不看它。
-    let scope = null;
-    try {
-      scope = classification.scopeFor(id, item);
-    } catch (err) {
-      console.warn('[discovery] 读取分类失败：', err.message);
-    }
+    // 分类域只进 prompt，不进路由：下面挑 Worker 时完全不看它。
     // 关键点可能早就进了静静的本地记忆（项目背景、历史任务结论、用户习惯），
     // 直接带上最相关的几条，比让 Worker 自己去翻数据库更准、也更省时间。
     // 触达点 = 条目来自的工作区 + 正文提到的项目/人/工具/文件 + 它所属的分类域。

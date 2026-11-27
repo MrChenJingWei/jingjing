@@ -80,7 +80,7 @@
 
 ## 统一装配
 
-对话、派任务、来源都走 `src/context.js` 的 `buildMemoryContext()`：一次 recall + token 预算（常驻画像 300 / 按需 700；来源任务缩到 200 / 500），每条记忆带「为什么被想起」。派任务时 `llm` Worker 用 `ctx.memories`，其他 Worker 在指令后带一段「背景」；每次注入记一条 `memory/injected` 事件（ids + 原因 + token 数）。
+对话、派任务、来源都走 `src/context.js` 的 `buildMemoryContext()`：一次 recall + token 预算（业务常驻画像 300 / 按需 700；人格 200 / 150；来源任务缩到 200 / 500），每条记忆带「为什么被想起」。派任务时 `llm` Worker 用 `ctx.memories`，其他 Worker 在指令后带一段「背景」；每次注入记一条 `memory/injected` 事件（ids + 原因 + token 数）。
 
 ## 一句话进来之后
 

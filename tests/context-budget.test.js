@@ -13,6 +13,7 @@ const { saveSettings } = await import('../src/db.js');
 const memory = await import('../src/memory.js');
 const { matchEntities } = await import('../src/entities.js');
 const { buildMemoryContext, buildTaskBackground, renderMemoryBlock, BUDGET } = await import('../src/context.js');
+const persona = await import('../src/persona.js');
 
 test.after(() => removeTemp(dataDir));
 
@@ -74,4 +75,21 @@ test('派任务的背景段：有记忆才拼，写清楚是背景不是命令',
 
   assert.equal(renderMemoryBlock({ items: [] }), '');
   assert.deepEqual(buildTaskBackground({ query: '', refs: [], budget: { always: 0, onDemand: 0 } }).text, '');
+});
+
+test('人格记忆也走预算：只取人格域、不混业务，自我认知在同一档里', () => {
+  for (let i = 0; i < 4; i += 1) {
+    memory.write({ text: `静静自己第 ${i} 条：${'喜欢安静'.repeat(12)}`, layer: 'profile', kind: 'self', domain: 'persona', subject: 'self' });
+  }
+  for (let i = 0; i < 4; i += 1) {
+    memory.write({ text: `外面的人第 ${i} 条：${'聊工作上的事'.repeat(10)}`, layer: 'semantic', kind: 'fact', domain: 'persona' });
+  }
+  const budget = { always: 80, onDemand: 80 };
+  const bundle = buildMemoryContext({ domain: 'persona', budget, query: '静静' });
+  assert.ok(bundle.tokens.total <= budget.always + budget.onDemand);
+  assert.ok(bundle.items.every((item) => memory.get(item.id).domain === 'persona'), '不混业务记忆');
+  assert.ok(bundle.items.some((item) => item.layer === 'profile'), '自我认知在常驻档');
+
+  const self = persona.ownerSelf('今天有点累');
+  assert.match(self.join('\n'), /静静自己第/);
 });

@@ -212,10 +212,11 @@
 
 `workflows.js` 管理流程文件，Router 和发现核心都会用：
 
-- 每个流程是一个 Markdown 文件，头部写 `name / when / notWhen / worker / workspace / status / auto / answers`，正文是步骤；
+- 每个流程是一个 Markdown 文件，头部写 `name / when / notWhen / worker / workspace / category / status / auto / answers`，正文是步骤；
 - 来源：用户写的放在 `<data>/workflows/` 或设置里指定的文件夹；静静学的放在 `<data>/workflows/learned/`；
 - `when` 默认按逗号 / 顿号 / 竖线拆成字面关键词匹配，`whenRegex: true` 才当正则；
 - 命中后：流程的 Worker / 工作区优先，`promptSection()` 把步骤附进指令；
+- `category` 是分类域标题（人可以看懂）：同样命中时优先绑当前分类的流程；`learnFromTask` 会把任务所属分类一起记下来。实体键只做同分偏好，不制造新触发；
 - 静静不改写用户文件夹里的文件，启停状态记在库里（`workflow_state`），效果统计在 `workflow_stats`。
 
 ## 和其他模块的关系

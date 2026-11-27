@@ -15,7 +15,7 @@ import * as affect from './affect.js';
 import * as people from './people.js';
 import * as conversation from './conversation.js';
 import { matchEntities } from './entities.js';
-import { buildMemoryContext, renderMemoryBlock } from './context.js';
+import { buildMemoryContext, renderMemoryBlock, PERSONA_BUDGET } from './context.js';
 
 const MAX_CHAT_REPLY = 500;
 const HISTORY_TURNS = 10;
@@ -41,23 +41,22 @@ function section(title, body) {
  */
 export function ownerSelf(query, settings = getSettings()) {
   const owner = people.ensure(people.OWNER);
-  const self = selfKnowledge();
-  const selfIds = new Set(self.map((m) => m.id));
   // 这句话提到的项目/人/工具/文件，连同当前的工作区，作为「触达点」参与召回。
-  // 业务记忆走统一装配（常驻 + 按需 + token 预算），和派任务时用的是同一套选择标准。
+  // 业务和人格记忆都走统一装配（常驻 + 按需 + token 预算），只是预算分档。
   const refs = matchEntities(query, { settings });
   const work = buildMemoryContext({ query, refs, settings, focus: people.OWNER });
-  const persona = memory.context(query, { limit: 3, domain: 'persona' }).filter((m) => !selfIds.has(m.id));
+  const persona = buildMemoryContext({ query, refs, settings, domain: 'persona', budget: PERSONA_BUDGET });
+  const selfText = renderMemoryBlock(persona.items.filter((m) => m.kind === 'self')) || renderMemoryBlock(selfKnowledge());
   return [
     personaStyle(settings),
-    ...section('你对自己的认识：', memory.serializeForPrompt(self)),
+    ...section('你对自己的认识：', selfText),
     ...(affect.moodLine() ? ['', affect.moodLine()] : []),
     '',
     `你和主人：${people.describe(owner)}`,
     '',
     '长期记忆（主人的偏好、项目、做事经验和你们聊过的事）：',
     renderMemoryBlock(work) || '（暂无）',
-    ...section('关于你自己（人格记忆）：', memory.serializeForPrompt(persona)),
+    ...section('关于你自己（人格记忆）：', renderMemoryBlock(persona.items.filter((m) => m.kind !== 'self'))),
     ...section('这句话里提到的、你认识的人：', mentionedPeople(query))
   ];
 }
@@ -114,7 +113,15 @@ export async function chatReply({ text, where = '', person = null, settings = ge
   if (llmMode(settings) === 'demo') return { reply: '' };
 
   const subjects = [null, 'self', ...(who ? [who.id] : [])];
-  const remembered = memory.serializeForPrompt(memory.context(content.slice(0, 200), { domain: 'persona', limit: 6, subjects, focus: who?.id || null }));
+  const selfIds = selfKnowledge().map((m) => m.id);
+  const remembered = renderMemoryBlock(buildMemoryContext({
+    query: content.slice(0, 200),
+    domain: 'persona',
+    subjects,
+    focus: who?.id || null,
+    budget: { always: 200, onDemand: 200 },
+    exclude: selfIds
+  }));
   const summary = sessionId ? conversation.summaryOf(sessionId) : '';
   const system = [
     '你是「静静」，主人电脑上的 AI 管家，也有自己的性格。',
