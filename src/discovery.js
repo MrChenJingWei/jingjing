@@ -542,10 +542,14 @@ async function processFresh(id, plugin, fresh, verb, override = null) {
     // （「蓝马的4.5做的怎么样了」里没有「进度」，改写成「回复蓝马4.5需求进度」就有了）。
     const rawText = `${item.title}\n${item.content || ''}`;
     const forcedFlow = forced?.workflow ? workflows.getWorkflow(forced.workflow) : null;
+    // 条目提到的工作区/项目/人，用来在同样命中时优先对应工作区的流程。
+    const flowRefs = matchEntities(rawText, { settings: getSettings() });
+    const itemWs = workspaceById(item.workspace);
+    if (itemWs) flowRefs.push({ kind: 'workspace', key: itemWs.id, name: itemWs.name });
     const flow = forcedFlow
-      || workflows.matchWorkflow(rawText)?.workflow
+      || workflows.matchWorkflow(rawText, { refs: flowRefs })?.workflow
       || (decision.workflow ? workflows.getWorkflow(decision.workflow) : null)
-      || (decision.title ? workflows.matchWorkflow(decision.title)?.workflow : null)
+      || (decision.title ? workflows.matchWorkflow(decision.title, { refs: flowRefs })?.workflow : null)
       || null;
     const forcedWorker = forced?.worker ? catalog.find((w) => w.id === forced.worker && w.available) : null;
     const flowWorker = forcedWorker || (flow?.worker ? catalog.find((w) => w.id === flow.worker && w.available) : null);

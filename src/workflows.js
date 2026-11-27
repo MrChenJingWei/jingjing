@@ -350,21 +350,32 @@ function implicitScore(workflow, text) {
  * 找和这句话匹配的生效流程。显式 when 优先（文档优先于习惯，命中越长越具体）；
  * 没有 when 的文档按名称模糊匹配。返回 { workflow, how } 或 null。
  */
-export function matchWorkflow(text, { workflows = all(), includeInactive = false } = {}) {
+export function matchWorkflow(text, { workflows = all(), includeInactive = false, refs = [] } = {}) {
   const pool = workflows.filter((w) => includeInactive || w.status === 'active');
+  // 实体键只做同分时的偏好：两个流程都命中同样的触发词时，优先当前情境所在工作区的那个；
+  // 不参与「有没有命中」的判断，避免「进了这个工作区就自动套所有流程」。
+  const workspaceIds = new Set((refs || []).filter((ref) => ref.kind === 'workspace').map((ref) => ref.key));
+  const settings = workspaceIds.size ? getSettings() : null;
+  const workspaceBonus = (workflow) => {
+    if (!settings) return 0;
+    const ws = resolveWorkspace(workflow, settings);
+    return ws && workspaceIds.has(ws.id) ? 1 : 0;
+  };
   let best = null;
   for (const workflow of pool) {
     if (!workflow.trigger && !workflow.terms?.length) continue;
     const hit = matchCompiled(text, workflow);
     if (!hit) continue;
-    const score = (workflow.source === 'doc' ? 1000 : 0) + hit.length;
+    const score = (workflow.source === 'doc' ? 1000 : 0) + hit.length + workspaceBonus(workflow) * 0.9;
     if (!best || score > best.score) best = { workflow, how: 'when', score };
   }
   if (best) return best;
   for (const workflow of pool) {
     if (workflow.trigger || workflow.terms?.length || workflow.source !== 'doc') continue;
-    const score = implicitScore(workflow, text);
-    if (score >= 0.6 && (!best || score > best.score)) best = { workflow, how: 'name', score };
+    const base = implicitScore(workflow, text);
+    if (base < 0.6) continue;
+    const score = base + workspaceBonus(workflow) * 0.2;
+    if (!best || score > best.score) best = { workflow, how: 'name', score };
   }
   return best;
 }

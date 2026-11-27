@@ -25,6 +25,8 @@ function whyFor(item, { query, refs }) {
   const linked = memory.refsOf(item.id);
   const byLink = refs.find((ref) => linked.some((row) => row.kind === ref.kind && row.key === ref.key));
   if (byLink) return `关于${byLink.name}`;
+  if (item.cold) return '淡忘后又被触达想起';
+  if (item.activated) return '通过相关记忆联想';
   if (item.layer === 'profile') return '画像';
   if (query && memory.relevance(query, `${item.text} ${tags}`) > 0) return '和这句话相关';
   return '最近或重要';
@@ -49,6 +51,10 @@ export function buildMemoryContext({ query = '', refs = [], domain = 'work', set
     if (tokens.always + tokens.onDemand + cost > caps.always + caps.onDemand) break;
     tokens[bucket] += cost;
     items.push({ ...item, why, bucket, tokens: cost, line });
+  }
+  // 同一次被放进提示词的几条互相连边：以后想起其中一条，更容易带出另一条。
+  if (items.length >= 2) {
+    try { memory.coActivate(items.map((item) => item.id)); } catch (err) { console.warn('[context] 记忆连边失败：', err.message); }
   }
   return {
     query,

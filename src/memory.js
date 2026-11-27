@@ -93,9 +93,9 @@ export function write({
     // 同一件事又被提起（原话一样，或者只是说法稍有不同）：不重复记，而是更重要一点、记得更牢，淡忘的重新想起来。
     // 如果它之前被后来的说法替代过，这次重新提起就是又改回来了：把替代它的那条也归档。
     const supersededBy = dup.superseded_by || null;
-    db.prepare('UPDATE memories SET importance = MAX(importance, ?), subject = COALESCE(subject, ?), archived = 0, superseded_by = NULL WHERE id = ?').run(importance, subject, dup.id);
+    db.prepare('UPDATE memories SET importance = MAX(importance, ?), subject = COALESCE(subject, ?), archived = 0, superseded_by = NULL, valid_to = NULL WHERE id = ?').run(importance, subject, dup.id);
     if (supersededBy) {
-      db.prepare('UPDATE memories SET archived = 1, superseded_by = ? WHERE id = ? AND COALESCE(archived, 0) = 0').run(dup.id, supersededBy);
+      db.prepare('UPDATE memories SET archived = 1, superseded_by = ?, valid_to = ? WHERE id = ? AND COALESCE(archived, 0) = 0').run(dup.id, now(), supersededBy);
     }
     reinforce(dup.id);
     linkRefs(dup.id, linked);
@@ -104,15 +104,21 @@ export function write({
 
   const superseded = findSupersedable(clean, { layer, kind, domain, subject });
   const id = uid('m_');
+  const stamp = now();
   db.prepare(`
-    INSERT INTO memories(id, layer, kind, text, tags, importance, source, created_at, use_count, domain, stability, valence, arousal, subject, archived)
-    VALUES(?,?,?,?,?,?,?,?,0,?,?,?,?,?,0)
+    INSERT INTO memories(id, layer, kind, text, tags, importance, source, created_at, use_count, domain, stability, valence, arousal, subject, archived, valid_from)
+    VALUES(?,?,?,?,?,?,?,?,0,?,?,?,?,?,0,?)
   `).run(
-    id, layer, kind, clean, JSON.stringify(tags), importance, source, now(), domain,
-    initialStability(layer, importance, feel.arousal || 0), feel.valence, feel.arousal, subject
+    id, layer, kind, clean, JSON.stringify(tags), importance, source, stamp, domain,
+    initialStability(layer, importance, feel.arousal || 0), feel.valence, feel.arousal, subject, stamp
   );
   linkRefs(id, linked);
-  if (superseded) db.prepare('UPDATE memories SET archived = 1, superseded_by = ? WHERE id = ?').run(id, superseded.id);
+  if (superseded) {
+    db.prepare('UPDATE memories SET archived = 1, superseded_by = ?, valid_to = ? WHERE id = ?').run(id, stamp, superseded.id);
+    // 新旧之间连一条边，方便以后解释「为什么这条不在了」。
+    const [a, b] = edgePair(superseded.id, id);
+    db.prepare("INSERT OR IGNORE INTO memory_edges(a,b,kind,weight,co_count,created_at,last_fired_at) VALUES(?,?,'supersedes',1,1,?,NULL)").run(a, b, stamp);
+  }
   return get(id);
 }
 
@@ -136,6 +142,99 @@ function linkRefs(memoryId, refs) {
 /** 记忆挂了哪些实体（记忆页/测试用）。 */
 export function refsOf(memoryId) {
   return db.prepare('SELECT kind, key FROM memory_refs WHERE memory_id = ? ORDER BY kind, key').all(memoryId);
+}
+
+/* ------------------------------- 记忆之间的边 ------------------------------- */
+
+const DAY_MS = 86400000;
+const EDGE_MAX = 2;
+const EDGE_MIN = 0.1;
+const CO_ACTIVATE_COOLDOWN = DAY_MS;
+
+/** a/b 按字典序排，正反只存一条。 */
+function edgePair(x, y) {
+  return String(x) < String(y) ? [String(x), String(y)] : [String(y), String(x)];
+}
+
+function clampEdge(weight) {
+  return Math.min(EDGE_MAX, Math.max(EDGE_MIN, Number(weight) || EDGE_MIN));
+}
+
+/**
+ * 给一条记忆连上别的记忆（同一次任务、同一主题）。
+ * 已经存在的边不重复插；返回新增条数。
+ */
+export function linkMemories(from, toIds, kind = 'same_topic', weight = 0.6) {
+  const source = String(from || '');
+  if (!source) return 0;
+  const sourceDomain = db.prepare('SELECT domain FROM memories WHERE id = ?').get(source)?.domain;
+  if (!sourceDomain) return 0;
+  const targets = [...new Set((Array.isArray(toIds) ? toIds : [toIds]).map(String).filter((id) => id && id !== source))]
+    .filter((id) => db.prepare('SELECT domain FROM memories WHERE id = ?').get(id)?.domain === sourceDomain)
+    .slice(0, 8);
+  if (!targets.length) return 0;
+  const stamp = now();
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO memory_edges(a, b, kind, weight, co_count, created_at, last_fired_at)
+    VALUES(?,?,?,?,1,?,NULL)
+  `);
+  let added = 0;
+  for (const id of targets) {
+    const [a, b] = edgePair(source, id);
+    added += stmt.run(a, b, kind, clampEdge(weight), stamp).changes;
+  }
+  return added;
+}
+
+/**
+ * 同一次被想起的几条互相连边（赫布式：一起出现就更容易一起出现）。
+ * 24 小时内同一对只长一次，权重封顶 2，避免越用越密。
+ */
+export function coActivate(ids, { at = Date.now() } = {}) {
+  const list = [...new Set((ids || []).map(String))].slice(0, 4);
+  if (list.length < 2) return 0;
+  const stamp = new Date(at).toISOString();
+  let changed = 0;
+  const find = db.prepare("SELECT weight, last_fired_at FROM memory_edges WHERE a = ? AND b = ? AND kind = 'same_topic'");
+  const insert = db.prepare("INSERT INTO memory_edges(a, b, kind, weight, co_count, created_at, last_fired_at) VALUES(?,?,'same_topic',0.5,1,?,?)");
+  const bump = db.prepare("UPDATE memory_edges SET weight = MIN(2, weight + 0.2), co_count = co_count + 1, last_fired_at = ? WHERE a = ? AND b = ? AND kind = 'same_topic'");
+  for (let i = 0; i < list.length; i += 1) {
+    for (let j = i + 1; j < list.length; j += 1) {
+      const [a, b] = edgePair(list[i], list[j]);
+      const row = find.get(a, b);
+      if (!row) { insert.run(a, b, stamp, stamp); changed += 1; continue; }
+      const last = row.last_fired_at ? Date.parse(row.last_fired_at) : 0;
+      if (!Number.isFinite(last) || at - last >= CO_ACTIVATE_COOLDOWN) {
+        bump.run(stamp, a, b);
+        changed += 1;
+      }
+    }
+  }
+  return changed;
+}
+
+/** 一条记忆的邻居（带边权和记忆整行）；只取同一个域，可选放行已淡忘的。 */
+function neighborsOf(id, { domain, allowArchived = false, at = Date.now(), limit = 3 } = {}) {
+  return db.prepare(`
+    SELECT e.weight, m.* FROM memory_edges e
+    JOIN memories m ON m.id = CASE WHEN e.a = ? THEN e.b ELSE e.a END
+    WHERE (e.a = ? OR e.b = ?) AND m.domain = ?
+      AND (COALESCE(m.archived, 0) = 0 OR ?)
+      AND (m.valid_to IS NULL OR m.valid_to > ?)
+    ORDER BY e.weight DESC, m.importance DESC LIMIT ?
+  `).all(id, id, id, domain, allowArchived ? 1 : 0, new Date(at).toISOString(), limit);
+}
+
+/** 和当前触达点挂在一起的、已经淡忘的记忆（冷层）：只在强命中时回来。 */
+function coldCandidates(domain, refs, stamp) {
+  const clauses = refs.map(() => '(r.kind = ? AND r.key = ?)');
+  const args = refs.flatMap((ref) => [ref.kind, ref.key]);
+  return db.prepare(`
+    SELECT DISTINCT m.* FROM memories m JOIN memory_refs r ON r.memory_id = m.id
+    WHERE m.domain = ? AND COALESCE(m.archived, 0) = 1 AND m.superseded_by IS NULL
+      AND (m.valid_to IS NULL OR m.valid_to > ?) AND (${clauses.join(' OR ')})
+    ORDER BY m.importance DESC LIMIT 20
+  `).all(domain, stamp, ...args);
 }
 
 export function get(id) {
@@ -248,7 +347,13 @@ export function update(id, patch = {}) {
 }
 
 export function forget(id) {
-  return db.prepare('DELETE FROM memories WHERE id = ?').run(id).changes > 0;
+  const removed = db.prepare('DELETE FROM memories WHERE id = ?').run(id).changes > 0;
+  if (removed) {
+    // 边和引用一起清掉，别留下指向已删记忆的悬空记录（记忆页删除时立刻生效）。
+    db.prepare('DELETE FROM memory_edges WHERE a = ? OR b = ?').run(id, id);
+    db.prepare('DELETE FROM memory_refs WHERE memory_id = ?').run(id);
+  }
+  return removed;
 }
 
 function likeEscape(q) {
@@ -259,7 +364,7 @@ function likeEscape(q) {
  * 按内容搜。domain 默认业务；传 'all' 或 null 两个域都搜（记忆页）。
  * touch=true 表示这是静静在「回想」（会巩固记忆）；记忆页里翻看不算。
  */
-export function search(query, limit = 12, { domain = 'work', touch = false, archived = false } = {}) {
+export function search(query, limit = 12, { domain = 'work', touch = false, archived = false, validOnly = false } = {}) {
   const q = String(query || '').trim();
   if (!q) return list({ limit, domain, archived });
   const scope = domainOf(domain, { allowAll: true });
@@ -267,6 +372,7 @@ export function search(query, limit = 12, { domain = 'work', touch = false, arch
   const filterArgs = [];
   if (scope) { filters.push('m.domain = ?'); filterArgs.push(scope); }
   if (archived !== 'all') { filters.push('COALESCE(m.archived, 0) = ?'); filterArgs.push(archived ? 1 : 0); }
+  if (validOnly) { filters.push('(m.valid_to IS NULL OR m.valid_to > ?)'); filterArgs.push(new Date().toISOString()); }
   const extra = filters.length ? ` AND ${filters.join(' AND ')}` : '';
   const rows = [];
   if ([...q].length >= 3) {
@@ -345,36 +451,89 @@ export function similarity(a, b) {
  */
 export function recall(query, { limit = 8, domain = 'work', subjects = null, focus = null, reinforceHits = true, at = Date.now(), refs = [] } = {}) {
   const scope = domainOf(domain);
+  const stamp = new Date(at).toISOString();
   const pool = new Map();
   const add = (rows) => { for (const row of rows) if (!pool.has(row.id)) pool.set(row.id, row); };
-  const base = 'SELECT * FROM memories WHERE domain = ? AND COALESCE(archived, 0) = 0';
-  add(db.prepare(`${base} ORDER BY COALESCE(last_used_at, created_at) DESC LIMIT 200`).all(scope));
-  add(db.prepare(`${base} ORDER BY importance DESC LIMIT 60`).all(scope));
-  if (query) add(search(query, 30, { domain: scope }));
+  const base = 'SELECT * FROM memories WHERE domain = ? AND COALESCE(archived, 0) = 0 AND (valid_to IS NULL OR valid_to > ?)';
+  add(db.prepare(`${base} ORDER BY COALESCE(last_used_at, created_at) DESC LIMIT 200`).all(scope, stamp));
+  add(db.prepare(`${base} ORDER BY importance DESC LIMIT 60`).all(scope, stamp));
+  if (query) add(search(query, 30, { domain: scope, validOnly: true }));
+  // 已经淡忘、但当初就挂在这些触达点上的记忆：强命中时允许回来（冷层）；被新说法替代过的不算。
+  const coldIds = new Set();
+  if (refs?.length) {
+    for (const row of coldCandidates(scope, refs, stamp)) {
+      coldIds.add(row.id);
+      add([row]);
+    }
+  }
   // 情境触达：当前工作区/分类/人/工具/文件对上的记忆加分（文本里提到 + 写入时挂过引用），
   // 这样"消息里没提那个项目"也能把项目里的旧经验捞出来。
   const touched = refs?.length ? touchedRefs([...pool.keys()], refs) : new Map();
   const allowed = subjects ? new Set(subjects) : null;
-  const scored = [];
-  for (const m of pool.values()) {
-    if (allowed && !allowed.has(m.subject ?? null)) continue;
+  const mentioned = new Map();
+  const baseScore = (m) => {
     const r = retention(m, at);
     const rel = query ? relevance(query, `${m.text} ${m.tags || ''}`) : 0;
-    const mentioned = refs?.length ? refMatches(`${m.text} ${m.tags || ''}`, refs) : 0;
-    const score = 1.2 * rel
+    const hits = refs?.length ? refMatches(`${m.text} ${m.tags || ''}`, refs) : 0;
+    mentioned.set(m.id, hits);
+    return 1.2 * rel
       + 0.5 * r
       + 0.4 * (m.importance ?? 0.5)
       + 0.25 * (m.arousal || 0)
       + (focus && m.subject === focus ? 0.4 : 0)
       + (m.layer === 'profile' ? 0.15 : 0)
-      + 0.8 * Math.min(mentioned, 3)
+      + 0.8 * Math.min(hits, 3)
       + 1.0 * Math.min(touched.get(m.id) || 0, 3);
+  };
+  const baseScores = new Map();
+  for (const m of pool.values()) baseScores.set(m.id, baseScore(m));
+
+  // 联想：从分最高的几条出发，沿边扩散 1–2 跳；每跳衰减，每个种子最多带 3 个邻居。
+  const activation = new Map();
+  const activate = (id, value) => {
+    if (!(value > 0)) return;
+    activation.set(id, Math.max(activation.get(id) || 0, value));
+  };
+  const seeds = [...baseScores.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+  for (const [id, score] of seeds) {
+    if (score < 0.7) continue;
+    // 只有「这条记忆是当前触达点直接命中的」才允许顺着它把淡忘的邻居拉回来。
+    const strong = (touched.get(id) || 0) > 0 || (mentioned.get(id) || 0) > 0;
+    for (const row of neighborsOf(id, { domain: scope, allowArchived: strong, at, limit: 3 })) {
+      if (allowed && !allowed.has(row.subject ?? null)) continue;
+      if (!pool.has(row.id)) pool.set(row.id, row);
+      activate(row.id, score * clampEdge(row.weight) * 0.5);
+    }
+  }
+  const hop1 = [...activation.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  for (const [id, score] of hop1) {
+    for (const row of neighborsOf(id, { domain: scope, allowArchived: false, at, limit: 2 })) {
+      if (row.id === id) continue;
+      if (allowed && !allowed.has(row.subject ?? null)) continue;
+      if (!pool.has(row.id)) pool.set(row.id, row);
+      activate(row.id, score * clampEdge(row.weight) * 0.25);
+    }
+  }
+
+  const scored = [];
+  for (const m of pool.values()) {
+    if (allowed && !allowed.has(m.subject ?? null)) continue;
+    if (!baseScores.has(m.id)) baseScores.set(m.id, baseScore(m));
+    // 冷层排在同分之前先打个折：只有真的很相关时才回来。
+    const score = (baseScores.get(m.id) + (activation.get(m.id) || 0)) * (coldIds.has(m.id) ? 0.7 : 1);
     scored.push({ m, score });
   }
   scored.sort((a, b) => b.score - a.score);
   const picked = scored.slice(0, limit).map((item) => item.m);
   if (reinforceHits) for (const m of picked) reinforce(m.id, at);
-  return picked.map((m) => get(m.id));
+  return picked.map((m) => {
+    const item = get(m.id);
+    if (!item) return null;
+    const act = activation.get(m.id);
+    if (act) item.activated = Number(act.toFixed(2));
+    if (coldIds.has(m.id)) item.cold = true;
+    return item;
+  }).filter(Boolean);
 }
 
 /** 拼装可注入提示词的记忆上下文。Router / Worker 用业务域（默认）；静静以自己身份说话时用 persona。 */
@@ -452,7 +611,20 @@ export function maintain(at = Date.now()) {
       faded += 1;
     }
   }
-  return { faded, consolidated };
+  // 联想边也会腐烂：同主题的慢慢衰减，太弱又很久没一起出现的剪掉；指向已删记忆的边一并清掉。
+  let edges = 0;
+  try {
+    db.prepare("UPDATE memory_edges SET weight = weight * 0.98 WHERE kind = 'same_topic'").run();
+    edges += db.prepare(`
+      DELETE FROM memory_edges
+      WHERE kind = 'same_topic' AND weight < 0.1
+        AND (last_fired_at IS NULL OR last_fired_at < ?)
+    `).run(new Date(at - 90 * DAY_MS).toISOString()).changes;
+    edges += db.prepare('DELETE FROM memory_edges WHERE a NOT IN (SELECT id FROM memories) OR b NOT IN (SELECT id FROM memories)').run().changes;
+  } catch (err) {
+    console.warn('[memory] 整理记忆边失败：', err.message);
+  }
+  return { faded, consolidated, edges };
 }
 
 /** 从一句话里抽取值得长期记住的事实（不依赖模型，保证离线可用） */

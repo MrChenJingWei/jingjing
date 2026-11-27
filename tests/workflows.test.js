@@ -10,7 +10,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-workflows-'));
 const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-user-flows-'));
 process.env.JINGJING_DATA_DIR = dataDir;
 
-const { saveSettings } = await import('../src/db.js');
+const { saveSettings, getSettings } = await import('../src/db.js');
 const { SANDBOX_DIR } = await import('../src/config.js');
 const wf = await import('../src/workflows.js');
 const workers = await import('../src/workers.js');
@@ -180,4 +180,28 @@ test('流程触发词：默认按字面词匹配，支持排除词；老流程�
   const legacy = wf.parseWorkflow('---\nname: 老流程\nwhen: ^周报\nwhenRegex: true\n---\n1. 写', { file: '/x/legacy.md' });
   assert.ok(wf.matchWorkflow('周报汇总', { workflows: [legacy] }));
   assert.equal(wf.matchWorkflow('写周报', { workflows: [legacy] }), null);
+});
+
+test('两个流程命中同样时，优先当前情境所在工作区的那个', () => {
+  const settings = getSettings();
+  const aPath = path.join(dataDir, 'ws-a');
+  const bPath = path.join(dataDir, 'ws-b');
+  fs.mkdirSync(aPath, { recursive: true });
+  fs.mkdirSync(bPath, { recursive: true });
+  saveSettings({
+    workspaces: [
+      ...settings.workspaces,
+      { id: 'w_a', name: 'A 项目', path: aPath },
+      { id: 'w_b', name: 'B 项目', path: bPath }
+    ]
+  });
+  const a = wf.createWorkflow({ name: '发布检查 A', when: '发布检查', worker: 'llm', workspace: 'A 项目', steps: '1. 检查 A' });
+  const b = wf.createWorkflow({ name: '发布检查 B', when: '发布检查', worker: 'llm', workspace: 'B 项目', steps: '1. 检查 B' });
+
+  const pickA = wf.matchWorkflow('做一次发布检查', { refs: [{ kind: 'workspace', key: 'w_a', name: 'A 项目' }] });
+  assert.equal(pickA.workflow.id, a.id, '在 A 项目里优先 A 的流程');
+  const pickB = wf.matchWorkflow('做一次发布检查', { refs: [{ kind: 'workspace', key: 'w_b', name: 'B 项目' }] });
+  assert.equal(pickB.workflow.id, b.id, '在 B 项目里优先 B 的流程');
+  // 没有情境时仍然照常命中（不会因为没 refs 就不触发）。
+  assert.ok(wf.matchWorkflow('做一次发布检查').workflow);
 });

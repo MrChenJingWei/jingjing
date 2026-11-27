@@ -343,7 +343,9 @@ export async function handleMessage(text, { sessionId = MAIN_SESSION, source = '
   // 明显是在提问、要记东西或问进度的消息不套流程。
   const quick = heuristicClassify(clean);
   const asking = /(?:[?？]|吗)\s*$/.test(clean) || ['remember', 'status', 'recall', 'plugin'].includes(quick.intent);
-  const flowHit = asking ? null : workflows.matchWorkflow(clean);
+  // 提到的工作区/项目/人/工具只用来在同样命中时优先对应工作区的流程。
+  const flowRefs = matchEntities(clean, { settings });
+  const flowHit = asking ? null : workflows.matchWorkflow(clean, { refs: flowRefs });
   let decision;
   let directReply = null;
   if (flowHit) {

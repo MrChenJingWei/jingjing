@@ -597,7 +597,7 @@ async function execute(task) {
     if (settings.autoRemember && summary && summary.length > 20 && task.origin !== 'seed') {
       // 这条结果记在当前任务的工作区下：以后在同一个项目里干活能把它捞出来。
       const wsRefs = matchEntities('', { settings, cwd: task.cwd }).filter((ref) => ref.kind === 'workspace');
-      memory.write({
+      const remembered = memory.write({
         text: `任务「${task.title}」的结果：${summary.slice(0, 400)}`,
         layer: 'episodic',
         kind: 'task_result',
@@ -606,6 +606,10 @@ async function execute(task) {
         source: 'scheduler',
         refs: wsRefs
       });
+      // 结果和这次用到的背景记忆连边：下次想起背景，就能顺着边找到这条结果。
+      if (remembered && memoryBundle?.items?.length) {
+        memory.linkMemories(remembered.id, memoryBundle.items.map((item) => item.id), 'same_task', 0.6);
+      }
     }
   } catch (err) {
     outcomeError = err.message;

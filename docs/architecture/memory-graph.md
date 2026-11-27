@@ -6,7 +6,7 @@
 >
 > 返回 [总体架构](../ARCHITECTURE.md)
 >
-> 状态：**M0–M2 已实现**（情境解析 / 运行时实体命中 / refs 持久化 / 统一写入 / 冲突标记 / 统一装配与预算）；M3 仍是计划。实现记录见下方「进展」。
+> 状态：**M0–M3 已实现**（触达点、refs、统一写入、统一装配与预算、联想边、有效期、冷层、流程按工作区优先）。实现记录见下方「进展」。
 
 ## 要解决的问题
 
@@ -119,36 +119,37 @@ memory_refs(memory_id, kind, key, role, weight, created_at)
 - 工作区 / 分类 / 人 / 工具的显示名在读取时从各自的事实来源解析（`src/entities.js`），改名不用同步表。
 - `memories.superseded_by`：被新说法替代的旧条目（归档、不删）。
 
-**计划（M3）**：
+**已实现（M3）**：
 
 ```text
-memory_edges(a, b, kind, weight, co_count, valid_from, valid_to, last_fired_at)
-   kind = same_topic | before | after | cause | supersedes | conflict
+memory_edges(a, b, kind, weight, co_count, created_at, last_fired_at)
+   a/b 按字典序存，正反只留一条
+   kind = same_topic（同一次被想起）| same_task（任务结果 ↔ 背景）| supersedes（替代）
+
+memories.valid_from / valid_to
+   被新说法替代时记失效时间；检索默认过滤，记录不删
 ```
 
-- 事实类记忆加时间区间（`valid_from` / `valid_to`），检索时过滤失效事实。
+- 目前只用了这三种边；`before / after / cause / conflict` 留给以后。
 - 工作流程仍是 Markdown 文件（用户可改），图里只存索引和边。
 
 ### 检索打分与预算
 
-**已实现（M0/M1）**：候选池不变（最近 200 + 重要 60 + 搜索 30），在原有打分上加两路触达：
+**已实现（M0–M3）**：候选池不变（最近 200 + 重要 60 + 搜索 30），在原有打分上依次加三路：
 
 ```text
-score = 1.2×字面相关 + 0.5×保持率 + 0.4×重要度 + 0.25×情绪 + 0.4×聚焦人 + 0.15×画像
-      + 0.8×min(正文提到当前实体数, 3)      # 记忆正文里直接提到
-      + 1.0×min(挂过的当前实体数, 3)        # 写入时挂过（memory_refs）
+基础分 = 1.2×字面相关 + 0.5×保持率 + 0.4×重要度 + 0.25×情绪 + 0.4×聚焦人 + 0.15×画像
+       + 0.8×min(正文提到当前实体数, 3)      # 记忆正文里直接提到
+       + 1.0×min(挂过的当前实体数, 3)        # 写入时挂过（memory_refs）
+
+激活分 = max over 1–2 跳(种子分 × 边权 × 0.5^跳数)
+         种子取基础分前 10；每个种子最多 3 个邻居；第二跳最多 8 个来源、每个 2 个邻居
+
+冷层：archived（且没有被替代）但挂在当前触达点上的记忆，按 0.7 折算参与
 ```
 
-**计划（M3）**：
-
-```text
-激活分(原子) = max over 路径(种子分 × Π 边权 × 衰减^跳数)，跳数 ≤ 2
-约束：每个种子来源最多 3 条；同一实体不重复进；总 token ≤ 预算；低于阈值不注入
-输出：{ 原子, 路径, 为什么 }  —— 原因写进 prompt，也写进任务事件
-```
-
-- 第一版不需要 PPR：两跳邻接 + 衰减就够，SQLite 递归查询能算，量级到几千条记忆仍然很轻。
-- `archived` 的记忆在实体强命中时允许被召回（冷层），解决“归档 = 永久失联”（M3）。
+- 邻接在 SQLite 里查，两跳足够；实测 1 万条记忆 + 5 千条边时 `recall` P95 ≈ 16ms。
+- 冷层解决"归档 = 永久失联"：淡忘的记忆被同一个工作区强命中时能回来，想起后自动恢复。
 
 ### 要保留的分支
 
@@ -163,14 +164,15 @@ score = 1.2×字面相关 + 0.5×保持率 + 0.4×重要度 + 0.25×情绪 + 0.4
 | M0 情境解析 + 运行时实体命中 | 已完成 | 新增 `src/entities.js`；`recall/context` 支持 `refs`；对话 / 派任务 / 来源三处接入 |
 | M1 refs 持久化 + 统一写入 + 冲突标记 | 已完成 | `memory_refs` 表、`memories.superseded_by`、`memory.write()`、启动回填、知识晋升保留分类引用、`people.merge` 同步引用、记忆页标记 |
 | M2 统一装配与全局预算 | 已完成 | 新增 `src/context.js`；对话/派任务/来源共用 `buildMemoryContext()`；token 预算 + 「为什么被想起」；非 llm Worker 的指令带背景段；`memory/injected` 事件 |
-| M3 边 / 时间失效 / 冷层 / 流程挂实体 | 未开始 | — |
+| M3 边 / 时间失效 / 冷层 / 流程挂实体 | 已完成 | `memory_edges`（same_topic / same_task / supersedes）、两跳联想、`valid_from/valid_to`、冷层召回、流程命中同分时优先当前工作区 |
 
-实现与草图的两处偏差（有意）：
+实现与草图的三处偏差（有意）：
 
 1. **不建 `entities` 表**：refs 直接存 `(kind, key)`，key 复用工作区 id / 分类 key / people.id / 工具名 / 文件名，避免实体表与事实来源不同步。
 2. **冲突先保守标记**：只在明确否定/更新且相似度 ≥ 0.5 时替代；不做自动语义替换，也不调模型判断。
+3. **流程只按工作区做同分偏好**：流程没有分类字段，`learnFromTask` 仍只继承 workspace；按分类键绑定留到以后。
 
-测试：`tests/entities.test.js`（6）、`tests/memory-refs.test.js`（10）、`tests/context-memory.test.js`（1）、`tests/context-budget.test.js`（4）、`tests/chat-task-context.test.js` 里的派任务背景（1），全量 342 通过。
+测试：`tests/entities.test.js`（6）、`tests/memory-refs.test.js`（10）、`tests/context-memory.test.js`（1）、`tests/context-budget.test.js`（4）、`tests/memory-edges.test.js`（7）、`tests/chat-task-context.test.js` 里的派任务背景（1）、`tests/workflows.test.js` 里的工作区优先（1），全量 350 通过。
 
 ## 分阶段
 
@@ -199,13 +201,16 @@ score = 1.2×字面相关 + 0.5×保持率 + 0.4×重要度 + 0.25×情绪 + 0.4
 - 补上缺口：对话派给**非 llm Worker** 的任务，指令后面拼一段「背景」；`llm` Worker 继续用 `ctx.memories`，调度器只在它身上记注入事件，避免同一条记忆两处重复；
 - 验收已覆盖：预算不超、同轮不重复（`tests/context-budget.test.js`）；派任务指令带背景与注入事件（`tests/chat-task-context.test.js`）。
 
-### P3 记忆之间建边 + 时间失效 + 冷层 + 流程挂实体（未开始）
+### P3 记忆之间建边 + 时间失效 + 冷层 + 流程挂实体（已完成）
 
-- 建 `memory_edges`：同主题、时间先后、因果、替代、冲突；
-- 共激活建边要有冷却、衰减、剪枝，避免越用越密；
-- 工作流程触发从“纯关键词”改成“实体键 + 关键词 + 历史成功率”，`learnFromTask` 继承任务的 workspace / 分类 refs；
-- 反思时做建边 / 剪边 / 失效，不放在回复路径上。
-- 验收：多跳场景能串起两条以上记忆；流程误触发不增加。
+- `memory_edges`：同一次注入的几条连 `same_topic`（24 小时冷却、每次 +0.2、上限 2）；任务结果和这次用到的背景连 `same_task`；被替代的新旧两条连 `supersedes`；跨域不连；
+- `recall` 从基础分前 10 条出发沿边扩散 1–2 跳（0.5 / 0.25 衰减），每跳设上限；候选池外的旧记忆也能被带回来，并带上 `activated` 分（提示词里写「通过相关记忆联想」）；
+- 冷层：`archived`（且非 `superseded`）但挂在当前触达点上的记忆按 0.7 参与召回，想起后自动复活；
+- 有效期：`valid_from` / `valid_to`；被替代时记失效时间，`recall` / `search(validOnly)` 默认过滤；
+- `maintain()` 让 `same_topic` 边每天衰减 2%、剪掉太弱且 90 天没一起出现的边、清掉悬空边；
+- 工作流程：`matchWorkflow()` 接受 `refs`，只在「已经命中」的前提下，同分时优先当前工作区的流程（不制造新触发），`learnFromTask` 继续继承 workspace；
+- 未做：`before / after / cause / conflict` 边；流程按分类键绑定（流程没有分类字段）。
+- 验收已覆盖：两跳、冷层复活、过期过滤、域隔离、边维护、性能（`tests/memory-edges.test.js`）；流程工作区优先（`tests/workflows.test.js`）。
 
 ## 验收场景与指标
 
@@ -215,7 +220,11 @@ score = 1.2×字面相关 + 0.5×保持率 + 0.4×重要度 + 0.25×情绪 + 0.4
 | 偏好变更（“喜欢 A” → “不喜欢 A 了”） | 只注入新事实，旧事实不出现 | 已覆盖（`tests/memory-refs.test.js`） |
 | 人格对话（外人） | 不出现任何业务记忆 | 已覆盖（`tests/memory-domain.test.js`） |
 | 来源任务 | 分类知识 + 该分类下的记忆一起进 prompt | 已实现（分类知识仍用独立预算） |
-| 归档（已淡忘）记忆 | 实体强命中时可被召回 |
+| 归档（已淡忘）记忆 | 实体强命中时可被召回 | 已覆盖（`tests/memory-edges.test.js`） |
+| 需要串两条记忆才能答对 | 两跳联想能带出候选池外的旧经验 | 已覆盖（`tests/memory-edges.test.js`） |
+| 记忆过期 | 过期事实不再注入但记录保留 | 已覆盖（`tests/memory-edges.test.js`） |
+| 两个同类流程 | 优先当前工作区的那个，不制造新触发 | 已覆盖（`tests/workflows.test.js`） |
+| 一万条记忆、五千条边 | `recall` P95 < 80ms | 实测 ≈16ms（`tests/memory-edges.test.js`） |
 | 同一轮多个入口 | 同一记忆不重复注入，总量不超预算 | 已覆盖（`tests/context-budget.test.js`） |
 
 指标：人工标注 20 个“必须联想才能答对”的场景算**召回命中率**；孤立节点占比、平均度、每次注入 token、被主人纠正 / 重说的比例；每次注入记录激活路径（“为什么被想起”）。

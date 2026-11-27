@@ -127,6 +127,20 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_memory_refs_entity ON memory_refs(kind, key);
 
+  -- 记忆之间的边：同一次被想起（same_topic）、同一次任务（same_task）、新说法替代旧说法（supersedes）。
+  -- a/b 按字典序存，正反只留一条；weight 0–2，co_count 记一起出现的次数。
+  CREATE TABLE IF NOT EXISTS memory_edges (
+    a             TEXT NOT NULL,
+    b             TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    weight        REAL NOT NULL DEFAULT 0.5,
+    co_count      INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT NOT NULL,
+    last_fired_at TEXT,
+    PRIMARY KEY (a, b, kind)
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_edges_b ON memory_edges(b, kind);
+
   CREATE TABLE IF NOT EXISTS source_plugins (
     id           TEXT PRIMARY KEY,
     enabled      INTEGER NOT NULL DEFAULT 0,
@@ -435,6 +449,15 @@ ensureColumn('memories', 'subject', 'TEXT');
 ensureColumn('memories', 'archived', 'INTEGER');
 // 被新记忆替代（偏好变了之类）：旧条目不删，归档并在记忆页可见；superseded_by 指向新的那条。
 ensureColumn('memories', 'superseded_by', 'TEXT');
+// 事实的有效期：null 表示一直有效；被替代时记下失效时间（检索默认过滤）。
+ensureColumn('memories', 'valid_from', 'TEXT');
+ensureColumn('memories', 'valid_to', 'TEXT');
+db.exec(`
+  UPDATE memories SET valid_from = created_at WHERE valid_from IS NULL;
+  UPDATE memories SET valid_to = (
+    SELECT newer.created_at FROM memories newer WHERE newer.id = memories.superseded_by
+  ) WHERE superseded_by IS NOT NULL AND valid_to IS NULL;
+`);
 db.exec(`
   UPDATE memories SET stability = CASE layer
     WHEN 'profile' THEN 365 WHEN 'semantic' THEN 90 WHEN 'episodic' THEN 14 ELSE 2 END * (0.5 + importance)

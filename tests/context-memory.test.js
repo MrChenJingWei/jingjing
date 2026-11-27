@@ -29,7 +29,7 @@ let seen = null;
 const manifest = validateManifest({ id: 'mem-worker', kind: 'worker', name: 'mem-worker', entry: 'index.js', worker: {} });
 workers.registerWorkerPlugin({
   manifest,
-  module: { execute: async (task, ctx) => { seen = ctx.memories; return { status: 'done', summary: '好了' }; } },
+  module: { execute: async (task, ctx) => { seen = ctx.memories; return { status: 'done', summary: '测试跑完了，所有用例都通过，没有发现新的失败' }; } },
   dir: path.join(dataDir, 'plugins', 'mem-worker'),
   isolate: false
 });
@@ -53,4 +53,11 @@ test('派任务时按工作区触达记忆：提示词里没提项目名也带�
     seen.some((m) => m.text.includes('migrate')),
     `应当带上工作区里的记忆：${seen.map((m) => m.text).join(' / ')}`
   );
+  // 任务结果和这次用到的背景记忆连了边。
+  await waitFor(() => viewedEdge(), '结果和背景连边');
+  assert.ok(viewedEdge());
+
+  function viewedEdge() {
+    return db.db.prepare("SELECT COUNT(*) AS c FROM memory_edges WHERE kind = 'same_task'").get().c > 0;
+  }
 });
