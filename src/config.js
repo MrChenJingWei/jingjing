@@ -55,6 +55,10 @@ export const DEFAULT_SETTINGS = {
     includeAncestors: true,
     promoteAt: 3
   },
+  // 记忆的可选增强：本地 embedding 开着时，后台把记忆向量化，找出相似记忆连边（只走 Ollama，默认关）。
+  memory: {
+    embedding: { enabled: false, model: '' }
+  },
   queuePaused: false,
   persona: '平静、具体、不奉承，像一个可靠的同事。',
   // 静静的心智：记住聊过的事、有心情、认得人、每天反思一次。

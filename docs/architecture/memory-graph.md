@@ -6,7 +6,7 @@
 >
 > 返回 [总体架构](../ARCHITECTURE.md)
 >
-> 状态：**M0–M3 已实现**（触达点、refs、统一写入、统一装配与预算、联想边、有效期、冷层、流程按工作区优先）。实现记录见下方「进展」。
+> 状态：**M0–M3 + 联想增强 已实现**（触达点、refs、统一写入、统一装配与预算、联想边、有效期、冷层、流程按工作区优先、embedding 相似边、记忆页图谱）。实现记录见下方「进展」。
 
 ## 要解决的问题
 
@@ -123,14 +123,19 @@ memory_refs(memory_id, kind, key, role, weight, created_at)
 
 ```text
 memory_edges(a, b, kind, weight, co_count, created_at, last_fired_at)
-   a/b 按字典序存，正反只留一条
-   kind = same_topic（同一次被想起）| same_task（任务结果 ↔ 背景）| supersedes（替代）
+   a/b 一般按字典序存，正反只留一条（before 是有向的）
+   kind = same_topic（同一次被想起）| same_task（任务结果 ↔ 背景）
+        | similar（embedding 相似）| before（同工作区任务结果的时间链）
+        | conflict（新旧说法冲突）| supersedes（替代）
+
+memory_vectors(memory_id, model, dim, vector, updated_at)
+   可选：开了本地 embedding 后才写；换模型可以重算
 
 memories.valid_from / valid_to
    被新说法替代时记失效时间；检索默认过滤，记录不删
 ```
 
-- 目前只用了这三种边；`before / after / cause / conflict` 留给以后。
+- `cause` 边还没有可靠信号，暂时不做（不硬造关系）。
 - 工作流程仍是 Markdown 文件（用户可改），图里只存索引和边。
 
 ### 检索打分与预算
@@ -165,6 +170,7 @@ memories.valid_from / valid_to
 | M1 refs 持久化 + 统一写入 + 冲突标记 | 已完成 | `memory_refs` 表、`memories.superseded_by`、`memory.write()`、启动回填、知识晋升保留分类引用、`people.merge` 同步引用、记忆页标记 |
 | M2 统一装配与全局预算 | 已完成 | 新增 `src/context.js`；对话/派任务/来源共用 `buildMemoryContext()`；token 预算 + 「为什么被想起」；人格记忆也分档预算；非 llm Worker 的指令带背景段；`memory/injected` 事件 |
 | M3 边 / 时间失效 / 冷层 / 流程挂实体 | 已完成 | `memory_edges`（same_topic / same_task / supersedes）、两跳联想、`valid_from/valid_to`、冷层召回、流程命中同分时优先当前工作区 / 分类域 |
+| M4 联想增强 | 已完成 | `before` 时间链、`conflict` 边、`similar`（Ollama embedding 后台索引）、记忆页图谱 |
 
 实现与草图的三处偏差（有意）：
 
@@ -172,7 +178,7 @@ memories.valid_from / valid_to
 2. **冲突先保守标记**：只在明确否定/更新且相似度 ≥ 0.5 时替代；不做自动语义替换，也不调模型判断。
 3. **流程的分类域只存标题**：`category` 写分类标题（人能看懂），匹配时按 key / 标题都认；分类改名后旧流程仍能通过 key 解析对上。只做同分偏好，不制造新触发。
 
-测试：`tests/entities.test.js`（6）、`tests/memory-refs.test.js`（10）、`tests/context-memory.test.js`（1）、`tests/context-budget.test.js`（5）、`tests/memory-edges.test.js`（7）、`tests/chat-task-context.test.js` 里的派任务背景（1）、`tests/workflows.test.js` 里的工作区/分类优先与继承（3），全量 353 通过。
+测试：`tests/entities.test.js`（6）、`tests/memory-refs.test.js`（10）、`tests/context-memory.test.js`（1）、`tests/context-budget.test.js`（5）、`tests/memory-edges.test.js`（8）、`tests/memory-similar.test.js`（4）、`tests/chat-task-context.test.js` 里的派任务背景（1）、`tests/workflows.test.js` 里的工作区/分类优先与继承（3），全量 358 通过。
 
 ## 分阶段
 
@@ -212,6 +218,15 @@ memories.valid_from / valid_to
 - 未做：`before / after / cause / conflict` 边。
 - 验收已覆盖：两跳、冷层复活、过期过滤、域隔离、边维护、性能（`tests/memory-edges.test.js`）；流程工作区 / 分类优先（`tests/workflows.test.js`）。
 
+### P4 联想增强（已完成）
+
+- **时间链**：同一个工作区的任务结果按时间串 `before` 边（有向，older → newer，权重 0.4）；`recall` 里沿着它能把「上一次之后发生了什么」带出来；
+- **冲突边**：旧说法被新说法替代时，除了 `supersedes` 再记一条 `conflict`（权重 0.8），图谱和以后的人工复盘都能看出这两条互相矛盾；
+- **相似边（可选）**：`settings.memory.embedding = { enabled, model }` 打开后，每 30 分钟用本机 Ollama 索引一批还没向量化的记忆（`memory_vectors`），余弦相似度 ≥ 0.72 的连 `similar` 边（最多 3 条，权重 0.5–1.2）；`POST /api/memories/index` 可以手动跑一次。查询时不实时算 embedding，所以回复路径不变慢；
+- **图谱视图**：`memory.graph()` + `GET /api/memories/graph` 返回当前域的记忆 / 实体节点和边；记忆页右上角「图谱」切成放射状视图，点节点看它连着什么；
+- 维护：`similar` 边每天衰减 1%，低于 0.1 剪掉；`forget()` 立刻清边；
+- 设置页「模型与人设 → 记忆的相似边」有开关和模型名；没有 Ollama 或模型时安静跳过（`skipped` 会说明原因）。
+
 ## 验收场景与指标
 
 | 场景 | 期望 | 状态 |
@@ -227,6 +242,9 @@ memories.valid_from / valid_to
 | 人格记忆 | 也走 token 预算，且不混业务域 | 已覆盖（`tests/context-budget.test.js`） |
 | 一万条记忆、五千条边 | `recall` P95 < 80ms | 实测 ≈16ms（`tests/memory-edges.test.js`） |
 | 同一轮多个入口 | 同一记忆不重复注入，总量不超预算 | 已覆盖（`tests/context-budget.test.js`） |
+| 说法不同、意思相近 | embedding 相似边把两条连起来（可选开启） | 已覆盖（`tests/memory-similar.test.js`） |
+| 同一工作区的连续任务 | 结果之间有 before 边，能顺着时间联想 | 已覆盖（`tests/memory-edges.test.js`） |
+| 打开记忆页图谱 | 当前域的记忆 / 实体和边能画出来 | 已覆盖数据层（`tests/memory-similar.test.js`）；界面在记忆页「图谱」 |
 
 指标：人工标注 20 个“必须联想才能答对”的场景算**召回命中率**；孤立节点占比、平均度、每次注入 token、被主人纠正 / 重说的比例；每次注入记录激活路径（“为什么被想起”）。
 
@@ -234,7 +252,8 @@ memories.valid_from / valid_to
 
 - 不引入图数据库（Neo4j 等），SQLite 两张表 + 两跳查询足够；
 - 不让模型每轮“在图里游走”——图只当检索索引，模型只看最终选中的原子；
-- 第一版不做 embedding（可作为后续额外种子，本地 ollama 可选）；
+- embedding 默认关、只在后台找相似边：不在查询路径上实时算向量，也不引外部向量库；
+- 图谱是只读视图：不在图上直接编辑记忆或边；
 - 不把工作流程搬进不可见的图里，文件仍是真相；
 - 不合并 `work` / `persona` 两个域。
 

@@ -141,6 +141,15 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_memory_edges_b ON memory_edges(b, kind);
 
+  -- 记忆的向量（可选）：开了 embedding 后才写；模型名一起存，换模型可以重算。
+  CREATE TABLE IF NOT EXISTS memory_vectors (
+    memory_id  TEXT PRIMARY KEY,
+    model      TEXT NOT NULL,
+    dim        INTEGER NOT NULL,
+    vector     BLOB NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS source_plugins (
     id           TEXT PRIMARY KEY,
     enabled      INTEGER NOT NULL DEFAULT 0,

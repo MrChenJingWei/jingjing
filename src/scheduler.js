@@ -607,8 +607,14 @@ async function execute(task) {
         refs: wsRefs
       });
       // 结果和这次用到的背景记忆连边：下次想起背景，就能顺着边找到这条结果。
-      if (remembered && memoryBundle?.items?.length) {
-        memory.linkMemories(remembered.id, memoryBundle.items.map((item) => item.id), 'same_task', 0.6);
+      if (remembered) {
+        if (memoryBundle?.items?.length) {
+          memory.linkMemories(remembered.id, memoryBundle.items.map((item) => item.id), 'same_task', 0.6);
+        }
+        // 同一个工作区里的结果按时间串起来：before 边让「上一次做完之后发生了什么」也能联想。
+        const workspaceKey = wsRefs.find((ref) => ref.kind === 'workspace')?.key;
+        const previous = memory.previousTaskResult(remembered.id, workspaceKey);
+        if (previous) memory.linkBefore(previous, remembered.id);
       }
     }
   } catch (err) {

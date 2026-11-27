@@ -115,9 +115,10 @@ export function write({
   linkRefs(id, linked);
   if (superseded) {
     db.prepare('UPDATE memories SET archived = 1, superseded_by = ?, valid_to = ? WHERE id = ?').run(id, stamp, superseded.id);
-    // 新旧之间连一条边，方便以后解释「为什么这条不在了」。
+    // 新旧之间连边：supersedes 记「谁替代了谁」，conflict 记「这两条是冲突的」。
     const [a, b] = edgePair(superseded.id, id);
     db.prepare("INSERT OR IGNORE INTO memory_edges(a,b,kind,weight,co_count,created_at,last_fired_at) VALUES(?,?,'supersedes',1,1,?,NULL)").run(a, b, stamp);
+    db.prepare("INSERT OR IGNORE INTO memory_edges(a,b,kind,weight,co_count,created_at,last_fired_at) VALUES(?,?,'conflict',0.8,1,?,NULL)").run(a, b, stamp);
   }
   return get(id);
 }
@@ -158,6 +159,25 @@ function edgePair(x, y) {
 
 function clampEdge(weight) {
   return Math.min(EDGE_MAX, Math.max(EDGE_MIN, Number(weight) || EDGE_MIN));
+}
+
+/** 同一工作区里上一条任务结果：用来把结果按时间串成 before 边。 */
+export function previousTaskResult(excludeId, workspaceKey) {
+  if (!workspaceKey) return null;
+  return db.prepare(`
+    SELECT m.id FROM memories m JOIN memory_refs r ON r.memory_id = m.id
+    WHERE r.kind = 'workspace' AND r.key = ? AND m.kind = 'task_result' AND m.id <> ?
+    ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1
+  `).get(String(workspaceKey), String(excludeId))?.id || null;
+}
+
+/** 把两条任务结果按时间串起来（older → newer）。before 是有向的，不按字典序存。 */
+export function linkBefore(olderId, newerId) {
+  if (!olderId || !newerId || olderId === newerId) return 0;
+  return db.prepare(`
+    INSERT OR IGNORE INTO memory_edges(a, b, kind, weight, co_count, created_at, last_fired_at)
+    VALUES(?,?, 'before', 0.4, 1, ?, NULL)
+  `).run(String(olderId), String(newerId), now()).changes;
 }
 
 /**
@@ -352,6 +372,7 @@ export function forget(id) {
     // 边和引用一起清掉，别留下指向已删记忆的悬空记录（记忆页删除时立刻生效）。
     db.prepare('DELETE FROM memory_edges WHERE a = ? OR b = ?').run(id, id);
     db.prepare('DELETE FROM memory_refs WHERE memory_id = ?').run(id);
+    db.prepare('DELETE FROM memory_vectors WHERE memory_id = ?').run(id);
   }
   return removed;
 }
@@ -615,12 +636,15 @@ export function maintain(at = Date.now()) {
   let edges = 0;
   try {
     db.prepare("UPDATE memory_edges SET weight = weight * 0.98 WHERE kind = 'same_topic'").run();
+    db.prepare("UPDATE memory_edges SET weight = weight * 0.99 WHERE kind = 'similar'").run();
     edges += db.prepare(`
       DELETE FROM memory_edges
       WHERE kind = 'same_topic' AND weight < 0.1
         AND (last_fired_at IS NULL OR last_fired_at < ?)
     `).run(new Date(at - 90 * DAY_MS).toISOString()).changes;
+    edges += db.prepare("DELETE FROM memory_edges WHERE kind = 'similar' AND weight < 0.1").run().changes;
     edges += db.prepare('DELETE FROM memory_edges WHERE a NOT IN (SELECT id FROM memories) OR b NOT IN (SELECT id FROM memories)').run().changes;
+    db.prepare('DELETE FROM memory_vectors WHERE memory_id NOT IN (SELECT id FROM memories)').run();
   } catch (err) {
     console.warn('[memory] 整理记忆边失败：', err.message);
   }
@@ -667,6 +691,47 @@ export function archivedCount({ domain = null } = {}) {
   return scope
     ? db.prepare('SELECT COUNT(*) AS c FROM memories WHERE domain = ? AND archived = 1').get(scope).c
     : db.prepare('SELECT COUNT(*) AS c FROM memories WHERE archived = 1').get().c;
+}
+
+/**
+ * 记忆页的图谱：取当前域里重要 / 常想起的记忆，连同它们挂的实体和之间的边。
+ * 只读、限量；不参与召回，纯展示。
+ */
+export function graph({ domain = 'work', limit = 120 } = {}) {
+  const scope = domainOf(domain);
+  const rows = db.prepare(`
+    SELECT id, layer, kind, text, importance, created_at FROM memories
+    WHERE domain = ? AND COALESCE(archived, 0) = 0
+    ORDER BY importance DESC, COALESCE(last_used_at, created_at) DESC
+    LIMIT ?
+  `).all(scope, limit);
+  if (!rows.length) return { nodes: [], links: [] };
+  const ids = rows.map((row) => row.id);
+  const marks = ids.map(() => '?').join(',');
+  const refs = db.prepare(`SELECT memory_id, kind, key FROM memory_refs WHERE memory_id IN (${marks})`).all(...ids);
+  const edges = db.prepare(`SELECT a, b, kind, weight FROM memory_edges WHERE a IN (${marks}) AND b IN (${marks})`).all(...ids, ...ids);
+  const known = new Map(listEntities().map((entity) => [`${entity.kind}:${entity.key}`, entity.name]));
+  const nodes = rows.map((row) => ({
+    id: row.id,
+    type: 'memory',
+    layer: row.layer,
+    kind: row.kind,
+    title: row.text.slice(0, 80),
+    text: row.text.slice(0, 600),
+    importance: row.importance
+  }));
+  const links = [];
+  const seen = new Set();
+  for (const ref of refs) {
+    const key = `${ref.kind}:${ref.key}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      nodes.push({ id: `entity:${key}`, type: 'entity', entityKind: ref.kind, title: known.get(key) || ref.key });
+    }
+    links.push({ source: ref.memory_id, target: `entity:${key}`, kind: 'ref' });
+  }
+  for (const edge of edges) links.push({ source: edge.a, target: edge.b, kind: edge.kind, weight: edge.weight });
+  return { nodes, links };
 }
 
 /** 两个域各有多少条（记忆页的切换标签用，不含已淡忘的）。 */

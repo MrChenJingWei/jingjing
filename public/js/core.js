@@ -78,6 +78,8 @@ export const state = {
   memQuery: '',
   memArchived: false,
   memArchivedCount: 0,
+  // 记忆页的图谱模式（和图一起看关系）。
+  memGraph: false,
   // 静静的心智：心情、认识的人、上次反思、人设的历史。
   mind: null,
   memoryDomains: { work: 0, persona: 0 },

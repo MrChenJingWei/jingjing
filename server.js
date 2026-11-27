@@ -6,6 +6,7 @@ import { HOST, PORT, PUBLIC_DIR, DATA_DIR, DB_PATH } from './src/config.js';
 import { db, getSettings, getSetting, saveSettings, seedIfEmpty, maskSettings } from './src/db.js';
 import { bus } from './src/events.js';
 import * as memory from './src/memory.js';
+import * as memoryIndex from './src/memory-index.js';
 import * as mind from './src/mind.js';
 import * as persona from './src/persona.js';
 import * as people from './src/people.js';
@@ -634,6 +635,21 @@ async function handleRequest(req, res) {
     if (approveMatch && req.method === 'POST') {
       const body = await readBody(req);
       return json(res, 200, scheduler.approve(approveMatch[1], Number(body.choice), { by: body.by || 'web', answer: body.answer }));
+    }
+
+    if (req.method === 'GET' && pathname === '/api/memories/graph') {
+      const domain = url.searchParams.get('domain') === 'persona' ? 'persona' : 'work';
+      const limit = Math.min(200, Math.max(20, Number(url.searchParams.get('limit')) || 120));
+      return json(res, 200, { graph: memory.graph({ domain, limit }) });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/memories/index') {
+      try {
+        const result = await memoryIndex.indexSimilarMemories();
+        return json(res, 200, { ok: true, ...result });
+      } catch (err) {
+        return json(res, 400, { ok: false, error: err.message });
+      }
     }
 
     if (req.method === 'GET' && pathname === '/api/memories') {
@@ -1277,6 +1293,15 @@ setTimeout(() => {
     console.warn('[memory] 补记忆的实体引用失败：', err.message);
   }
 }, 3000).unref();
+
+// 记忆的相似边（可选，默认关）：开了 embedding 后每 30 分钟索引一批，找说法不同但意思近的记忆。
+const runMemoryIndex = () => {
+  memoryIndex.indexSimilarMemories()
+    .then((result) => { if (result.linked) console.log(`[memory] 相似边 +${result.linked}`); })
+    .catch((err) => console.warn('[memory] 相似边索引失败：', err.message));
+};
+setTimeout(runMemoryIndex, 2 * 60 * 1000).unref();
+setInterval(runMemoryIndex, 30 * 60 * 1000).unref();
 // 每 6 小时检查一次，每天最多自动归档一次；启动一分钟后先检查一次。
 const runArchive = () => {
   try { archive.maybeAutoArchive(); } catch (err) { console.warn('[archive] 自动归档失败：', err.message); }

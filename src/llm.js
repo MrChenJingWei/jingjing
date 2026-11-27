@@ -185,6 +185,47 @@ export function toolsSupported(cfg = getSettings()) {
  * 带工具的一次调用：模型要么直接回答（text），要么调用一个工具（toolCall）。
  * 模型不支持工具时抛错，并记住这个模型，之后 toolsSupported() 返回 false。
  */
+/**
+ * 本地 embedding（可选）：只走 Ollama，优先新版的 /api/embed（支持批量），失败再退回 /api/embeddings。
+ * 没开、没配模型或服务不可用时返回 null，调用方安静跳过。
+ */
+export async function embed(texts, { settings = getSettings() } = {}) {
+  const cfg = settings.memory?.embedding || {};
+  const list = (Array.isArray(texts) ? texts : [texts]).map((text) => String(text || '').slice(0, 2000)).filter(Boolean);
+  if (!cfg.enabled || !cfg.model || !list.length) return null;
+  const base = String(settings.ollamaUrl || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+  try {
+    const res = await fetch(`${base}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: cfg.model, input: list }),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.embeddings) && data.embeddings.length === list.length) return data.embeddings;
+    }
+  } catch { /* 老版本没有 /api/embed */ }
+  const out = [];
+  for (const text of list) {
+    try {
+      const res = await fetch(`${base}/api/embeddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: cfg.model, prompt: text }),
+        signal: AbortSignal.timeout(30000)
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!Array.isArray(data.embedding)) return null;
+      out.push(data.embedding);
+    } catch {
+      return null;
+    }
+  }
+  return out;
+}
+
 export async function chatWithTools({ messages, system, tools, temperature, maxTokens = 900, signal }) {
   const cfg = getSettings();
   const mode = llmMode(cfg);

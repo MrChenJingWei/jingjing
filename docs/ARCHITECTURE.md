@@ -159,7 +159,7 @@ finalize() → task/finished
 | [plugins.md](architecture/plugins.md) | 存放位置、加载、来源插件协议、宿主限制、安装、插件工坊 |
 | [channels.md](architecture/channels.md) | SSE、Telegram、通知、消息类来源的回传 |
 | [memory.md](architecture/memory.md) | 两个域、分层、读写时机、遗忘与回想、心智 |
-| [memory-graph.md](architecture/memory-graph.md) | 记忆联想的诊断、外部做法、目标结构与分阶段方案（M0–M3 已完成） |
+| [memory-graph.md](architecture/memory-graph.md) | 记忆联想的诊断、外部做法、目标结构与分阶段方案（M0–M3 + 联想增强 已完成） |
 | [external.md](architecture/external.md) | 绑定与状态同步；归类（插件协议、三态、切层、算归属、生命周期、界面）；知识（来源、注入、晋升） |
 | [data.md](architecture/data.md) | 表、库外数据、事件总线 |
 | [security.md](architecture/security.md) | 配对、网络、工作区、谁能决定什么、执行边界、凭据 |

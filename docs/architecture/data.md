@@ -41,7 +41,8 @@
 | `messages` | 消息（含 task_id 引用、kind、meta） |
 | `memories` | 分层记忆，`domain` 分业务 / 人格；`memories_fts` 是 trigram 全文索引；`superseded_by` / `valid_to` 记被替代和失效 |
 | `memory_refs` | 记忆挂的实体（工作区 / 分类 / 人 / 工具 / 文件），按 `(memory_id, kind, key)` 存 |
-| `memory_edges` | 记忆之间的边（`same_topic` / `same_task` / `supersedes`），带权重和一起出现的次数 |
+| `memory_edges` | 记忆之间的边（`same_topic` / `same_task` / `similar` / `before` / `conflict` / `supersedes`），带权重和一起出现的次数 |
+| `memory_vectors` | 可选的本地 embedding 向量（开了相似边才写），随模型名一起存 |
 | `people` | 认识的人（主人 id = `owner`）：熟悉度、好感、印象、来往次数 |
 | `persona_versions` | 人设的每一版 |
 

@@ -3064,3 +3064,34 @@ html[data-theme="dark"] .live-cat:hover, html[data-theme="dark"] .live-cat.is-op
 
 /* 侧栏底部（猫 + 深浅色）始终贴底：任务页上「正在发生」藏起来时，不再有它把底部撑下去。 */
 .sidebar-foot { margin-top: auto; }
+
+/* 记忆图谱：放射状布局，不做物理模拟；先让人看出谁和谁连着。 */
+.memory-graph {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.memory-graph[hidden] { display: none; }
+.memory-graph svg { display: block; width: 100%; height: auto; }
+.memory-graph .mg-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.memory-graph .mg-ref { stroke: var(--line-strong); stroke-dasharray: 3 4; }
+.memory-graph .mg-node { cursor: pointer; }
+.memory-graph .mg-node text { font-size: 10px; fill: var(--muted); pointer-events: none; }
+.memory-graph .mg-node:hover circle { stroke: var(--ink); stroke-width: 1.5; }
+.memory-graph .mg-info {
+  min-height: 18px;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}

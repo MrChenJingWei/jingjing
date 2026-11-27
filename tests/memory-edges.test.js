@@ -154,3 +154,13 @@ test('性能：一万条记忆、五千条边时，recall 仍然够快', () => {
   const p95 = times[Math.floor(times.length * 0.95) - 1];
   assert.ok(p95 < 250, `P95 ${p95.toFixed(1)}ms 太慢`);
 });
+
+test('同一个工作区的任务结果按时间串 before 边', () => {
+  const r1 = memory.write({ text: '任务 A 的结果：测试通过', layer: 'episodic', kind: 'task_result', refs });
+  const r2 = memory.write({ text: '任务 B 的结果：接口发版', layer: 'episodic', kind: 'task_result', refs });
+  assert.equal(memory.previousTaskResult(r2.id, 'w_edge'), r1.id);
+  assert.equal(memory.linkBefore(r1.id, r2.id), 1);
+  const edge = db.prepare("SELECT * FROM memory_edges WHERE kind = 'before'").get();
+  assert.equal(edge.a, r1.id);
+  assert.equal(edge.b, r2.id);
+});

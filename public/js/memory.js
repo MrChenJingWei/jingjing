@@ -114,6 +114,124 @@ function renderMemories() {
       </footer>
     </article>`;
   }).join('');
+  applyGraphMode();
+}
+
+/* ------------------------------ 图谱 ------------------------------ */
+
+const GRAPH_LAYER = { profile: '#c9a227', semantic: '#6a8cff', episodic: '#3fa9c4', working: '#9c99b3' };
+const GRAPH_ENTITY = { workspace: '#8f7fe0', category: '#d9668f', person: '#3fa9c4', tool: '#c97a1e', file: '#5a9e6f' };
+const GRAPH_EDGE = { same_topic: '#b9b4d6', similar: '#6a8cff', same_task: '#3fa9c4', before: '#5a9e6f', conflict: '#d9668f', supersedes: '#c97a1e' };
+const GRAPH_SHORT = (text, n) => (String(text || '').length > n ? `${String(text).slice(0, n)}…` : String(text || ''));
+
+/** 切到图谱时藏起列表，回来再显示。 */
+function applyGraphMode() {
+  const on = Boolean(state.memGraph);
+  const list = $('#memory-list');
+  const layers = $('#mem-layers');
+  const box = $('#memory-graph');
+  const search = $('#mem-search')?.closest('.search');
+  const btn = $('#mem-graph-btn');
+  if (list) list.hidden = on;
+  if (layers) layers.hidden = on;
+  if (search) search.hidden = on;
+  if (box) box.hidden = !on;
+  if (btn) btn.classList.toggle('is-active', on);
+  if (!on) return;
+  const mind = $('#mind-panel');
+  if (mind) mind.hidden = true;
+  loadGraph();
+}
+
+async function loadGraph() {
+  const box = $('#memory-graph');
+  if (!box) return;
+  const domain = state.memDomain;
+  box.innerHTML = '<p class="note">正在把记忆连成一张网…</p>';
+  try {
+    const data = await api(`/api/memories/graph?domain=${encodeURIComponent(domain)}&limit=120`);
+    if (!state.memGraph || state.memDomain !== domain) return;
+    renderGraph(box, data.graph || { nodes: [], links: [] });
+  } catch (err) {
+    box.innerHTML = `<p class="note">${esc(err.message)}</p>`;
+  }
+}
+
+/** 放射状布局：实体在外圈，记忆在内圈；不追求物理精确，先让人看出"谁和谁连着"。 */
+function renderGraph(box, graph) {
+  const memories = graph.nodes.filter((node) => node.type === 'memory');
+  const entities = graph.nodes.filter((node) => node.type === 'entity');
+  if (!memories.length) {
+    box.innerHTML = '<p class="note">这个域还没有能画出来的记忆。</p>';
+    return;
+  }
+  const W = 1000;
+  const H = 680;
+  const cx = W / 2;
+  const cy = H / 2;
+  const pos = new Map();
+  const entityCount = entities.length || 1;
+  entities.forEach((entity, i) => {
+    const angle = (i / entityCount) * Math.PI * 2 - Math.PI / 2;
+    pos.set(entity.id, { x: cx + Math.cos(angle) * 330, y: cy + Math.sin(angle) * 300 });
+  });
+  memories.forEach((item, i) => {
+    const angle = i * 2.399963;
+    const radius = 40 + 215 * Math.sqrt((i + 1) / memories.length);
+    pos.set(item.id, { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius * 0.92 });
+  });
+
+  const lines = graph.links.map((link) => {
+    const a = pos.get(link.source);
+    const b = pos.get(link.target);
+    if (!a || !b) return '';
+    if (link.kind === 'ref') {
+      return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" class="mg-ref" />`;
+    }
+    const color = GRAPH_EDGE[link.kind] || '#b9b4d6';
+    const width = (1 + Math.min(2, Number(link.weight) || 0.5)).toFixed(1);
+    return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${color}" stroke-width="${width}" opacity=".7" />`;
+  }).join('');
+
+  const entityNodes = entities.map((entity) => {
+    const p = pos.get(entity.id);
+    const color = GRAPH_ENTITY[entity.entityKind] || '#9c99b3';
+    return `<g class="mg-node" data-graph-node="${esc(entity.id)}">
+      <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="5" fill="${color}" />
+      <text x="${(p.x + 8).toFixed(1)}" y="${(p.y + 3).toFixed(1)}">${esc(GRAPH_SHORT(entity.title, 14))}</text>
+    </g>`;
+  }).join('');
+
+  const memoryNodes = memories.map((item) => {
+    const p = pos.get(item.id);
+    const color = GRAPH_LAYER[item.layer] || '#9c99b3';
+    const r = (3 + (Number(item.importance) || 0.5) * 4).toFixed(1);
+    return `<g class="mg-node" data-graph-node="${esc(item.id)}">
+      <title>${esc(item.text || item.title)}</title>
+      <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r}" fill="${color}" />
+    </g>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="mg-head">
+      <span>${memories.length} 条记忆 · ${entities.length} 个触达点</span>
+      <span>实线：记忆之间的边（相似 / 同一次 / 先后 / 冲突）· 虚线：挂的项目、人、工具、文件</span>
+    </div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="记忆关系图">${lines}${entityNodes}${memoryNodes}</svg>
+    <div class="mg-info" id="mem-graph-info">点一个点，看看它和什么连着。</div>`;
+  box.onclick = (event) => {
+    const hit = event.target.closest('[data-graph-node]');
+    if (!hit) return;
+    const id = hit.dataset.graphNode;
+    const node = graph.nodes.find((item) => item.id === id);
+    const info = box.querySelector('#mem-graph-info');
+    if (!node || !info) return;
+    const related = graph.links
+      .filter((link) => link.source === id || link.target === id)
+      .map((link) => graph.nodes.find((item) => item.id === (link.source === id ? link.target : link.source))?.title)
+      .filter(Boolean);
+    info.textContent = `${node.text || node.title}${related.length ? ` · 连着：${related.slice(0, 8).join('、')}` : ' · 还没有连线'}`;
+  };
 }
 
 /* ------------------------------ 心智面板 ------------------------------ */
@@ -473,6 +591,11 @@ async function restoreMemory(id) {
     toast(err.message);
   }
 }
+
+$('#mem-graph-btn')?.addEventListener('click', () => {
+  state.memGraph = !state.memGraph;
+  renderMemories();
+});
 
 $('#mem-domains')?.addEventListener('click', (event) => {
   const btn = event.target.closest('[data-mem-domain]');

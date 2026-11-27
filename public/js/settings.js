@@ -348,6 +348,30 @@ export async function saveSettings({ silent = false } = {}) {
 }
 
 $('#save-settings')?.addEventListener('click', () => saveSettings());
+
+$('#index-memories')?.addEventListener('click', async () => {
+  const button = $('#index-memories');
+  const result = $('#index-memories-result');
+  if (button) button.disabled = true;
+  if (result) result.textContent = '正在索引…';
+  try {
+    const data = await api('/api/memories/index', { method: 'POST' });
+    const text = data.skipped === 'disabled'
+      ? '先在上面开启并填好 embedding 模型，保存后再试。'
+      : data.skipped === 'no-embedding'
+        ? 'Ollama 没有返回向量：确认地址和模型名，以及模型已经拉下来。'
+        : data.skipped === 'nothing'
+          ? '没有新的记忆要索引。'
+          : `索引 ${data.indexed} 条，连了 ${data.linked} 条相似边。`;
+    if (result) result.textContent = text;
+    toast(text);
+  } catch (err) {
+    if (result) result.textContent = err.message;
+    toast(err.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+});
 $('#settings-form')?.addEventListener('submit', (event) => {
   event.preventDefault();
   // 只有表单类分页回车才保存；插件配置等分页有自己的保存按钮。

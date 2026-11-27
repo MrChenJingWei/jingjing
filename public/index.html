@@ -193,10 +193,14 @@
                 <svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>
                 <input id="mem-search" type="search" placeholder="搜记忆，例如「专注时间」「代码风格」" autocomplete="off" />
               </label>
+              <button type="button" class="btn ghost" id="mem-graph-btn" title="把记忆和它们挂的项目、人、工具连成一张网">
+                <svg class="i" viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><path d="m8.2 10.9 7.6-3.8M8.2 13.1l7.6 3.8"/></svg>图谱
+              </button>
             </div>
             <div class="mind-panel" id="mind-panel" hidden></div>
             <div class="status-tabs mem-layers" id="mem-layers" aria-label="按层级筛选"></div>
             <div class="memory-list" id="memory-list"></div>
+            <div class="memory-graph" id="memory-graph" hidden></div>
           </div>
         </div>
       </section>
@@ -257,6 +261,24 @@
                     <button type="button" class="btn" id="test-model">测试模型连接</button>
                     <button type="button" class="btn" id="fetch-models">获取模型列表</button>
                     <span class="test-result" id="model-test-result"></span>
+                  </div>
+                </section>
+                <section class="card">
+                  <div class="card-head"><h3>记忆的相似边（可选）</h3><p>用本机 Ollama 的 embedding 模型把「说法不同、意思相近」的记忆连起来，让联想不只靠字面。默认关；开启后每 30 分钟在后台索引一批，不占回复时间，也可以点下面的按钮马上跑一次。</p></div>
+                  <label class="switch-row">
+                    <span><b>后台索引相似记忆</b><small>只走 Ollama（地址用上面的 Ollama 地址）；没填模型时不会运行。</small></span>
+                    <input type="checkbox" name="memory.embedding.enabled" class="switch" />
+                  </label>
+                  <div class="grid-2">
+                    <label class="field span-2">
+                      <span>Embedding 模型</span>
+                      <input name="memory.embedding.model" placeholder="nomic-embed-text" />
+                      <small class="field-help">例如 nomic-embed-text、bge-m3；换模型后已有的向量不会自动重算，可以清掉再索引。</small>
+                    </label>
+                  </div>
+                  <div class="inline-actions">
+                    <button type="button" class="btn" id="index-memories">现在索引一批</button>
+                    <span class="test-result" id="index-memories-result"></span>
                   </div>
                 </section>
                 <section class="card">

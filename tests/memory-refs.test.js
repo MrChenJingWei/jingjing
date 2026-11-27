@@ -61,6 +61,8 @@ test('偏好变了：旧条目归档并记 superseded_by，不再被注入', () 
   const newer = memory.write({ text: '不喜欢深色主题了，改用浅色', layer: 'profile', kind: 'preference', subject: 'owner' });
   assert.equal(memory.get(older.id).archived, true);
   assert.equal(memory.get(older.id).superseded_by, newer.id);
+  const kinds = db.prepare('SELECT kind FROM memory_edges WHERE a IN (?, ?) AND b IN (?, ?)').all(older.id, newer.id, older.id, newer.id).map((row) => row.kind);
+  assert.ok(kinds.includes('supersedes') && kinds.includes('conflict'), '痕迹：替代 + 冲突');
 
   const picked = memory.context('深色主题');
   assert.ok(picked.some((m) => m.id === newer.id));
